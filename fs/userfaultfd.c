@@ -27,6 +27,7 @@
 #include <linux/syscalls.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/mempolicy.h>
+#include <linux/ppps.h>
 #include <linux/ioctl.h>
 #include <linux/security.h>
 #include <linux/hugetlb.h>
@@ -1212,7 +1213,7 @@ static __always_inline int validate_unaligned_range(
 {
 	__u64 task_size = mm->task_size;
 
-	if (len & ~PAGE_MASK)
+	if (len & ~MM_PAGE_MASK(mm))
 		return -EINVAL;
 	if (!len)
 		return -EINVAL;
@@ -1228,7 +1229,7 @@ static __always_inline int validate_unaligned_range(
 static __always_inline int validate_range(struct mm_struct *mm,
 					  __u64 start, __u64 len)
 {
-	if (start & ~PAGE_MASK)
+	if (start & ~MM_PAGE_MASK(mm))
 		return -EINVAL;
 
 	return validate_unaligned_range(mm, start, len);
@@ -1322,6 +1323,9 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
 		/* check not compatible vmas */
 		ret = -EINVAL;
 		if (!vma_can_userfault(cur, vm_flags, wp_async))
+			goto out_unlock;
+
+		if (!ppps_vma_validate_uffd_alignment(cur, start, end))
 			goto out_unlock;
 
 		/*
