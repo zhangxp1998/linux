@@ -661,6 +661,9 @@ int hmm_range_fault(struct hmm_range *range)
 	int ret;
 
 	mmap_assert_locked(mm);
+	/* HMM PFNs and DMA vectors cannot encode a subpage byte offset. */
+	if (ppps_mm_is_compat(mm))
+		return -EOPNOTSUPP;
 
 	do {
 		/* If range is no longer valid force retry. */

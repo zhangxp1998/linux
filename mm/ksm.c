@@ -700,7 +700,8 @@ static bool ksm_compatible(const struct file *file, vm_flags_t vm_flags)
 
 static bool vma_ksm_compatible(struct vm_area_struct *vma)
 {
-	return ksm_compatible(vma->vm_file, vma->vm_flags);
+	return !ppps_mm_is_compat(vma->vm_mm) &&
+		ksm_compatible(vma->vm_file, vma->vm_flags);
 }
 
 static struct vm_area_struct *find_mergeable_vma(struct mm_struct *mm,
@@ -2840,7 +2841,8 @@ static int __ksm_del_vma(struct vm_area_struct *vma)
 vm_flags_t ksm_vma_flags(struct mm_struct *mm, const struct file *file,
 			 vm_flags_t vm_flags)
 {
-	if (mm_flags_test(MMF_VM_MERGE_ANY, mm) &&
+	if (!ppps_mm_is_compat(mm) &&
+	    mm_flags_test(MMF_VM_MERGE_ANY, mm) &&
 	    __ksm_should_add_vma(file, vm_flags)) {
 		vm_flags |= VM_MERGEABLE;
 		/*
@@ -2890,6 +2892,8 @@ int ksm_enable_merge_any(struct mm_struct *mm)
 {
 	int err;
 
+	if (ppps_mm_is_compat(mm))
+		return -EOPNOTSUPP;
 	if (mm_flags_test(MMF_VM_MERGE_ANY, mm))
 		return 0;
 
@@ -2953,6 +2957,8 @@ int ksm_madvise(struct vm_area_struct *vma, unsigned long start,
 
 	switch (advice) {
 	case MADV_MERGEABLE:
+		if (ppps_mm_is_compat(mm))
+			return -EOPNOTSUPP;
 		if (vma->vm_flags & VM_MERGEABLE)
 			return 0;
 		if (!vma_ksm_compatible(vma))
@@ -2990,6 +2996,9 @@ int __ksm_enter(struct mm_struct *mm)
 	struct ksm_mm_slot *mm_slot;
 	struct mm_slot *slot;
 	int needs_wakeup;
+
+	if (ppps_mm_is_compat(mm))
+		return -EOPNOTSUPP;
 
 	mm_slot = mm_slot_alloc(mm_slot_cache);
 	if (!mm_slot)
