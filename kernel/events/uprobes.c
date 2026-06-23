@@ -28,6 +28,7 @@
 #include <linux/khugepaged.h>
 #include <linux/rcupdate_trace.h>
 #include <linux/oom.h>          /* check_stable_address_space */
+#include <linux/ppps.h>
 
 #include <linux/uprobes.h>
 
@@ -140,12 +141,12 @@ static bool valid_vma(struct vm_area_struct *vma, bool is_register)
 
 static unsigned long offset_to_vaddr(struct vm_area_struct *vma, loff_t offset)
 {
-	return vma->vm_start + offset - ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
+	return vma->vm_start + offset - vma_file_offset(vma);
 }
 
 static loff_t vaddr_to_offset(struct vm_area_struct *vma, unsigned long vaddr)
 {
-	return ((loff_t)vma->vm_pgoff << PAGE_SHIFT) + (vaddr - vma->vm_start);
+	return vma_file_offset(vma) + (vaddr - vma->vm_start);
 }
 
 /**
@@ -173,7 +174,7 @@ static int __replace_page(struct vm_area_struct *vma, unsigned long addr,
 	pte_t pte;
 
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm, addr,
-				addr + PAGE_SIZE);
+				addr + MM_PAGE_SIZE(mm));
 
 	if (new_page) {
 		new_folio = page_folio(new_page);
@@ -547,7 +548,8 @@ retry:
 
 		VM_BUG_ON_PAGE(!PageAnon(old_page), old_page);
 
-		index = vaddr_to_offset(vma, vaddr & PAGE_MASK) >> PAGE_SHIFT;
+		index = vaddr_to_offset(vma, vaddr & MM_PAGE_MASK(mm)) >>
+			PAGE_SHIFT;
 		orig_page = find_get_page(vma->vm_file->f_inode->i_mapping,
 					  index);
 
@@ -565,7 +567,8 @@ retry:
 		}
 	}
 
-	ret = __replace_page(vma, vaddr & PAGE_MASK, old_page, new_page);
+	ret = __replace_page(vma, vaddr & MM_PAGE_MASK(mm), old_page,
+			     new_page);
 	if (new_page)
 		put_page(new_page);
 put_old:
@@ -1295,7 +1298,7 @@ static int unapply_uprobe(struct uprobe *uprobe, struct mm_struct *mm)
 		    file_inode(vma->vm_file) != uprobe->inode)
 			continue;
 
-		offset = (loff_t)vma->vm_pgoff << PAGE_SHIFT;
+		offset = vma_file_offset(vma);
 		if (uprobe->offset <  offset ||
 		    uprobe->offset >= offset + vma->vm_end - vma->vm_start)
 			continue;
