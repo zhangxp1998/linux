@@ -171,7 +171,10 @@
 #define PTE_UXN			(_AT(pteval_t, 1) << 54)	/* User XN */
 #define PTE_SWBITS_MASK		_AT(pteval_t, (BIT(63) | GENMASK(58, 55)))
 
-#define PTE_ADDR_LOW		(((_AT(pteval_t, 1) << (50 - PAGE_SHIFT)) - 1) << PAGE_SHIFT)
+#define __PTE_ADDR_LOW(shift)	(((_AT(pteval_t, 1) << (50 - (shift))) - 1) << (shift))
+#define PTE_ADDR_LOW		__PTE_ADDR_LOW(PAGE_SHIFT)
+/* Also covers the PPPS slice bits between PAGE_SHIFT_COMPAT and PAGE_SHIFT. */
+#define PTE_ADDR_LOW_COMPAT	__PTE_ADDR_LOW(PAGE_SHIFT_COMPAT)
 #ifdef CONFIG_ARM64_PA_BITS_52
 #ifdef CONFIG_ARM64_64K_PAGES
 #define PTE_ADDR_HIGH		(_AT(pteval_t, 0xf) << 12)
