@@ -189,6 +189,10 @@ _KUNIT_CLK_MODULES_LIST = [
     "drivers/clk/clk_kunit_helpers.ko",
 ]
 
+_ARM64_KUNIT_MODULES_LIST = [
+    "arch/arm64/mm/pte-kunit.ko",
+]
+
 # buildifier: disable=unnamed-macro
 def get_kunit_modules_list(arch = None):
     """ Provides the list of GKI modules.
@@ -203,7 +207,7 @@ def get_kunit_modules_list(arch = None):
     if arch == "arm":
         kunit_modules_list += _KUNIT_CLK_MODULES_LIST
     elif arch == "arm64":
-        kunit_modules_list += _KUNIT_CLK_MODULES_LIST
+        kunit_modules_list += _ARM64_KUNIT_MODULES_LIST + _KUNIT_CLK_MODULES_LIST
     elif arch == "i386":
         kunit_modules_list += []
     elif arch == "x86_64":
