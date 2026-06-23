@@ -11,6 +11,7 @@
 #include <linux/uio.h>
 #include <linux/scatterlist.h>
 #include <linux/netfs.h>
+#include <linux/ppps.h>
 #include "internal.h"
 
 /**
@@ -39,12 +40,14 @@ ssize_t netfs_extract_user_iter(struct iov_iter *orig, size_t orig_len,
 {
 	struct bio_vec *bv = NULL;
 	struct page **pages;
+	struct page **pages_start;
 	unsigned int cur_npages;
 	unsigned int max_pages;
-	unsigned int npages = 0;
+	unsigned int bvec_npages = 0;
+	unsigned int pinned_npages = 0;
 	unsigned int i;
-	ssize_t ret;
-	size_t count = orig_len, offset, len;
+	ssize_t ret = 0;
+	size_t count = orig_len, offset;
 	size_t bv_size, pg_size;
 
 	if (WARN_ON_ONCE(!iter_is_ubuf(orig) && !iter_is_iovec(orig)))
@@ -56,49 +59,84 @@ ssize_t netfs_extract_user_iter(struct iov_iter *orig, size_t orig_len,
 	if (!bv)
 		return -ENOMEM;
 
-	/* Put the page list at the end of the bvec list storage.  bvec
-	 * elements are larger than page pointers, so as long as we work
-	 * 0->last, we should be fine.
-	 */
 	pg_size = array_size(max_pages, sizeof(*pages));
-	pages = (void *)bv + bv_size - pg_size;
+	pages = kvmalloc(pg_size, GFP_KERNEL);
+	if (!pages) {
+		kvfree(bv);
+		return -ENOMEM;
+	}
+	pages_start = pages;
 
-	while (count && npages < max_pages) {
+	while (count && pinned_npages < max_pages) {
 		ret = iov_iter_extract_pages(orig, &pages, count,
-					     max_pages - npages, extraction_flags,
+					     max_pages - pinned_npages, extraction_flags,
 					     &offset);
-		if (ret < 0) {
+		if (unlikely(ret <= 0)) {
+			ret = ret ?: -EIO;
 			pr_err("Couldn't get user pages (rc=%zd)\n", ret);
 			break;
 		}
 
-		if (ret > count) {
-			pr_err("get_pages rc=%zd more than %zu\n", ret, count);
+		if (WARN(ret > count,
+			 "%s: extract_pages overrun %zd > %zu bytes\n",
+			 __func__, ret, count)) {
+			ret = -EIO;
+			break;
+		}
+
+		size_t page_size;
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		size_t shift = MM_PAGE_SHIFT(current->mm);
+
+		page_size = 1UL << shift;
+#else
+		page_size = PAGE_SIZE;
+#endif
+
+		cur_npages = DIV_ROUND_UP((offset % page_size) + ret, page_size);
+
+		if (WARN(cur_npages > max_pages - bvec_npages,
+			 "%s: extract_pages overrun %u > %u pages\n",
+			 __func__, bvec_npages + cur_npages, max_pages)) {
+			ret = -EIO;
 			break;
 		}
 
 		count -= ret;
 		ret += offset;
-		cur_npages = DIV_ROUND_UP(ret, PAGE_SIZE);
 
-		if (npages + cur_npages > max_pages) {
-			pr_err("Out of bvec array capacity (%u vs %u)\n",
-			       npages + cur_npages, max_pages);
-			break;
-		}
+		size_t v_off = offset;
 
 		for (i = 0; i < cur_npages; i++) {
-			len = ret > PAGE_SIZE ? PAGE_SIZE : ret;
-			bvec_set_page(bv + npages + i, *pages++, len - offset, offset);
-			ret -= len;
-			offset = 0;
+			size_t bv_len = min_t(size_t, ret, page_size - (v_off % page_size));
+
+			bvec_set_page(bv + bvec_npages + i, *pages++, bv_len, v_off);
+			ret -= bv_len;
+			v_off = (v_off + bv_len) % PAGE_SIZE;
 		}
 
-		npages += cur_npages;
+		bvec_npages += cur_npages;
+		pinned_npages += cur_npages;
 	}
 
-	iov_iter_bvec(new, orig->data_source, bv, npages, orig_len - count);
-	return npages;
+	/* Note: Don't try to clean up after EIO.  Either we got no pages, so
+	 * nothing to clean up, or we got a buffer overrun, memory corruption
+	 * and can't trust the stuff in the buffer (a WARN was emitted).
+	 */
+
+	if (ret < 0 && (ret == -ENOMEM || pinned_npages == 0)) {
+		for (i = 0; i < pinned_npages; i++)
+			unpin_user_page(pages_start[i]);
+		kvfree(pages_start);
+		kvfree(bv);
+		return ret;
+	}
+
+	kvfree(pages_start);
+
+	iov_iter_bvec(new, orig->data_source, bv, bvec_npages, orig_len - count);
+	return bvec_npages;
 }
 EXPORT_SYMBOL_GPL(netfs_extract_user_iter);
 
