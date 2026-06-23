@@ -5,6 +5,7 @@
 #include <linux/spinlock.h>
 
 #include <linux/mm.h>
+#include <linux/ppps.h>
 #include <linux/memfd.h>
 #include <linux/memremap.h>
 #include <linux/pagemap.h>
@@ -2653,14 +2654,18 @@ long get_user_pages_remote(struct mm_struct *mm,
 		int *locked)
 {
 	int local_locked = 1;
+	long ret;
 
 	if (!is_valid_gup_args(pages, locked, &gup_flags,
 			       FOLL_TOUCH | FOLL_REMOTE))
 		return -EINVAL;
 
-	return __get_user_pages_locked(mm, start, nr_pages, pages,
+	mm_set_pgtable_mm(mm);
+	ret = __get_user_pages_locked(mm, start, nr_pages, pages,
 				       locked ? locked : &local_locked,
 				       gup_flags);
+	mm_clear_pgtable_mm();
+	return ret;
 }
 EXPORT_SYMBOL(get_user_pages_remote);
 
