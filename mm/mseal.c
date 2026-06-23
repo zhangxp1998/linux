@@ -14,6 +14,7 @@
 #include <linux/mmu_context.h>
 #include <linux/syscalls.h>
 #include <linux/sched.h>
+#include <linux/ppps.h>
 #include "internal.h"
 
 static inline void set_vma_sealed(struct vm_area_struct *vma)
@@ -221,10 +222,10 @@ int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
 		return ret;
 
 	start = untagged_addr(start);
-	if (!PAGE_ALIGNED(start))
+	if (!MM_PAGE_ALIGNED(mm, start))
 		return -EINVAL;
 
-	len = PAGE_ALIGN(len_in);
+	len = MM_PAGE_ALIGN(mm, len_in);
 	/* Check to see whether len was rounded up from small -ve to zero. */
 	if (len_in && !len)
 		return -EINVAL;
