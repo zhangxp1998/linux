@@ -934,6 +934,10 @@ struct mm_struct {
 
 		unsigned long flags; /* Must use atomic bitops to access */
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		u8 page_shift;
+#endif
+
 #ifdef CONFIG_AIO
 		spinlock_t			ioctx_lock;
 		struct kioctx_table __rcu	*ioctx_table;
