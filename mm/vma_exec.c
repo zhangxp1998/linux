@@ -7,6 +7,7 @@
 
 #include "vma_internal.h"
 #include "vma.h"
+#include <linux/ppps.h>
 
 /*
  * Relocate a VMA downwards by shift bytes. There cannot be any VMAs between
@@ -136,7 +137,7 @@ int create_init_stack_vma(struct mm_struct *mm, struct vm_area_struct **vmap,
 	 */
 	BUILD_BUG_ON(VM_STACK_FLAGS & VM_STACK_INCOMPLETE_SETUP);
 	vma->vm_end = STACK_TOP_MAX;
-	vma->vm_start = vma->vm_end - PAGE_SIZE;
+	vma->vm_start = vma->vm_end - MM_PAGE_SIZE(mm);
 	vm_flags_init(vma, VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP);
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 

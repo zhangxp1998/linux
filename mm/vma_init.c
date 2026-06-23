@@ -7,6 +7,7 @@
 
 #include "vma_internal.h"
 #include "vma.h"
+#include <linux/ppps.h>
 
 /* SLAB cache for vm_area_struct structures */
 static struct kmem_cache *vm_area_cachep;
@@ -47,6 +48,7 @@ static void vm_area_init_from(const struct vm_area_struct *src,
 	dest->vm_end = src->vm_end;
 	dest->anon_vma = src->anon_vma;
 	dest->vm_pgoff = src->vm_pgoff;
+	vma_set_slice_off(dest, vma_slice_off(src));
 	dest->vm_file = src->vm_file;
 	dest->vm_private_data = src->vm_private_data;
 	vm_flags_init(dest, src->vm_flags);
