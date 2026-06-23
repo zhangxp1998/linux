@@ -3730,17 +3730,6 @@ static inline unsigned long vm_end_gap(const struct vm_area_struct *vma)
 	return vm_end;
 }
 
-/**
- * vma_file_offset - byte offset at the start of a file-backed VMA
- * @vma: file-backed mapping
- *
- * Return: the VMA's page offset expressed in bytes.
- */
-static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
-{
-	return (loff_t)vma->vm_pgoff << PAGE_SHIFT;
-}
-
 static inline unsigned long vma_pages(const struct vm_area_struct *vma)
 {
 	return (vma->vm_end - vma->vm_start) >> MM_PAGE_SHIFT(vma->vm_mm);
