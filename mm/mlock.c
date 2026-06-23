@@ -527,12 +527,13 @@ static int apply_vma_lock_flags(unsigned long start, size_t len,
 	struct vm_area_struct *vma, *prev;
 	VMA_ITERATOR(vmi, current->mm, start);
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	unsigned long page_shift = MM_PAGE_SHIFT(current->mm);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	unsigned long align_shift = page_shift;
 #else
-	unsigned long page_shift = __PAGE_SHIFT;
+	unsigned long align_shift = __PAGE_SHIFT;
 #endif
-	unsigned long page_size = 1UL << page_shift;
+	unsigned long page_size = 1UL << align_shift;
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	VM_BUG_ON(start & (page_size - 1));
