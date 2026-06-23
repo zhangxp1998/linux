@@ -17,6 +17,8 @@
 #include <linux/shm.h>
 #include <linux/mman.h>
 #include <linux/pagemap.h>
+#include <linux/page_size_compat.h>
+#include <linux/ppps.h>
 #include <linux/swap.h>
 #include <linux/syscalls.h>
 #include <linux/capability.h>
