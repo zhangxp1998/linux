@@ -54,6 +54,9 @@
 #define ppps_mm_is_compat(mm)						\
 	((mm) && (mm)->page_shift == PAGE_SHIFT_COMPAT)
 
+unsigned long mm_default_map_window64(void);
+unsigned long mm_default_map_window64_of(struct mm_struct *mm);
+
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
 #define VA_BITS_COMPAT		VA_BITS
@@ -62,6 +65,9 @@
 	((void)(mm), PAGE_SHIFT)
 #define _MM_VA_BITS_HELPER(mm)		((void)(mm), VA_BITS)
 #define ppps_mm_is_compat(mm)		((void)(mm), false)
+
+#define mm_default_map_window64()	(1UL << VA_BITS_MIN)
+#define mm_default_map_window64_of(mm)	((void)(mm), (1UL << VA_BITS_MIN))
 
 #endif
 

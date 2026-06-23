@@ -61,7 +61,7 @@ void ptdump_walk(struct seq_file *s, struct ptdump_info *info);
 void note_page(struct ptdump_state *pt_st, unsigned long addr, int level,
 	       u64 val);
 #ifdef CONFIG_PTDUMP_DEBUGFS
-#define EFI_RUNTIME_MAP_END	DEFAULT_MAP_WINDOW_64
+#define EFI_RUNTIME_MAP_END	(UL(1) << VA_BITS_MIN)
 void __init ptdump_debugfs_register(struct ptdump_info *info, const char *name);
 #else
 static inline void ptdump_debugfs_register(struct ptdump_info *info,
