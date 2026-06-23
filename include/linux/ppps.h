@@ -67,6 +67,13 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 
 #define vma_set_slice_off(vma, val)	((vma)->vm_slice_off = (val))
 #define vma_slice_off(vma)		((vma)->vm_slice_off)
+#define vma_page_shift(vma) \
+	(ppps_mm_is_compat((vma)->vm_mm) ? \
+	 PAGE_SHIFT_COMPAT : PAGE_SHIFT)
+
+#define vma_slice_shift(vma) \
+	(ppps_mm_is_compat((vma)->vm_mm) ? \
+	 PPPS_SLICE_SHIFT : 0)
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
 #define VA_BITS_COMPAT		VA_BITS
@@ -85,15 +92,16 @@ static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_bin
 #define vma_slice_off(vma)		((void)(vma), 0)
 #endif
 
-#define MM_PAGE_SHIFT(...) \
-	_MM_PAGE_SHIFT_DISPATCH(__VA_ARGS__ __VA_OPT__(, /* */) PGTABLE_MM())
-#define _MM_PAGE_SHIFT_DISPATCH(a, ...) \
-	_MM_PAGE_SHIFT_HELPER(a)
+/* Out of line in both configurations: both are on the GKI symbol list. */
+unsigned long mm_task_size64(void);
+unsigned long mm_task_size64_of(struct mm_struct *mm);
 
-#define MM_VA_BITS(...) \
-	_MM_VA_BITS_DISPATCH(__VA_ARGS__ __VA_OPT__(, /* */) PGTABLE_MM())
-#define _MM_VA_BITS_DISPATCH(a, ...) \
-	_MM_VA_BITS_HELPER(a)
+#define PPPS_SLICE_SHIFT	(PAGE_SHIFT - PAGE_SHIFT_COMPAT)
+#define PPPS_SLICES_PER_PAGE	(1UL << PPPS_SLICE_SHIFT)
+#define PPPS_SLICE_MASK		(PPPS_SLICES_PER_PAGE - 1)
+
+#define MM_PAGE_SHIFT(mm)	_MM_PAGE_SHIFT_HELPER(mm)
+#define MM_VA_BITS(mm)		_MM_VA_BITS_HELPER(mm)
 
 #define PAGE_SIZE_COMPAT	(1UL << PAGE_SHIFT_COMPAT)
 #define PAGE_MASK_COMPAT	(~(PAGE_SIZE_COMPAT - 1))
@@ -200,3 +208,43 @@ static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_bin
 #endif /* __ASSEMBLY__ */
 
 #endif /* _LINUX_PPPS_H */
+
+#if defined(_LINUX_MMAP_LOCK_H) && !defined(_LINUX_PPPS_VMA_INDEX_H)
+#define _LINUX_PPPS_VMA_INDEX_H
+#ifndef __ASSEMBLY__
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
+					     unsigned long address)
+{
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return vma->vm_pgoff + ((address - vma->vm_start) >> PAGE_SHIFT);
+
+	/* For anonymous VMAs, there is no page cache layout to conform to. */
+	if (!vma->vm_ops) {
+		return vma->vm_pgoff +
+		       ((address - vma->vm_start) >> PAGE_SHIFT_COMPAT);
+	}
+
+	/*
+	 * For file-backed VMAs in compat processes, the VMA offset starts at a
+	 * host page boundary (vm_pgoff) but may be offset internally by a
+	 * number of 4KB slices (vm_slice_off).
+	 *
+	 * Convert the virtual address offset to compat slices, add the starting
+	 * slice offset, and scale the result back to native host pages to align
+	 * with page cache indexing.
+	 */
+	pgoff_t temp = (address - vma->vm_start) >> PAGE_SHIFT_COMPAT;
+
+	temp += vma_slice_off(vma);
+	return vma->vm_pgoff + (temp >> PPPS_SLICE_SHIFT);
+}
+#else
+static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
+					     unsigned long address)
+{
+	return vma->vm_pgoff + ((address - vma->vm_start) >> PAGE_SHIFT);
+}
+#endif
+#endif /* __ASSEMBLY__ */
+#endif /* _LINUX_MMAP_LOCK_H && !_LINUX_PPPS_VMA_INDEX_H */
