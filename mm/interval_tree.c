@@ -87,6 +87,18 @@ struct anon_vma_chain *
 anon_vma_interval_tree_iter_first(struct rb_root_cached *root,
 				  unsigned long first, unsigned long last)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	unsigned int scale = PAGE_SHIFT;
+
+	if (root->rb_root.rb_node) {
+		struct anon_vma_chain *avc = rb_entry(root->rb_root.rb_node,
+						      struct anon_vma_chain, rb);
+		if (avc->vma && avc->vma->vm_mm && avc->vma->vm_mm->page_shift)
+			scale = avc->vma->vm_mm->page_shift;
+	}
+	first = first << (PAGE_SHIFT - scale);
+	last = ((last + 1) << (PAGE_SHIFT - scale)) - 1;
+#endif
 	return __anon_vma_interval_tree_iter_first(root, first, last);
 }
 
@@ -94,6 +106,14 @@ struct anon_vma_chain *
 anon_vma_interval_tree_iter_next(struct anon_vma_chain *node,
 				 unsigned long first, unsigned long last)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	unsigned int scale = PAGE_SHIFT;
+
+	if (node->vma && node->vma->vm_mm && node->vma->vm_mm->page_shift)
+		scale = node->vma->vm_mm->page_shift;
+	first = first << (PAGE_SHIFT - scale);
+	last = ((last + 1) << (PAGE_SHIFT - scale)) - 1;
+#endif
 	return __anon_vma_interval_tree_iter_next(node, first, last);
 }
 
