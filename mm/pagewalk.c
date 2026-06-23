@@ -5,6 +5,7 @@
 #include <linux/hugetlb.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
+#include <linux/ppps.h>
 
 /*
  * We want to know the real level where a entry is located ignoring any
@@ -29,12 +30,13 @@ static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
 	int err = 0;
 
 	for (;;) {
-		err = ops->pte_entry(pte, addr, addr + PAGE_SIZE, walk);
+		err = ops->pte_entry(pte, addr,
+				     addr + MM_PAGE_SIZE(walk->mm), walk);
 		if (err)
-		       break;
-		if (addr >= end - PAGE_SIZE)
 			break;
-		addr += PAGE_SIZE;
+		if (addr >= end - MM_PAGE_SIZE(walk->mm))
+			break;
+		addr += MM_PAGE_SIZE(walk->mm);
 		pte++;
 	}
 	return err;
@@ -824,7 +826,7 @@ pte_table:
 		goto not_found;
 	pte = ptep_get(ptep);
 
-	entry_size = PAGE_SIZE;
+	entry_size = MM_PAGE_SIZE(vma->vm_mm);
 	fw->level = FW_LEVEL_PTE;
 	fw->ptep = ptep;
 	fw->pte = pte;
