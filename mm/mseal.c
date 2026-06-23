@@ -14,6 +14,7 @@
 #include <linux/page_size_compat.h>
 #include <linux/syscalls.h>
 #include <linux/sched.h>
+#include <linux/ppps.h>
 #include "internal.h"
 
 /*
@@ -148,10 +149,17 @@ int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
 		return -EINVAL;
 
 	start = untagged_addr(start);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (!MM_PAGE_ALIGNED(mm, start))
+		return -EINVAL;
+
+	len = MM_PAGE_ALIGN(mm, len_in);
+#else
 	if (!__PAGE_ALIGNED(start))
 		return -EINVAL;
 
 	len = __PAGE_ALIGN(len_in);
+#endif
 	/* Check to see whether len was rounded up from small -ve to zero. */
 	if (len_in && !len)
 		return -EINVAL;
