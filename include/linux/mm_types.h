@@ -1144,6 +1144,10 @@ struct mm_struct {
 
 		mm_flags_t flags; /* Must use mm_flags_* hlpers to access */
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		u8 page_shift;
+#endif
+
 #ifdef CONFIG_AIO
 		spinlock_t			ioctx_lock;
 		struct kioctx_table __rcu	*ioctx_table;
