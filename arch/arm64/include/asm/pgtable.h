@@ -13,6 +13,7 @@
 #include <asm/pgtable-hwdef.h>
 #include <asm/pgtable-prot.h>
 #include <asm/tlbflush.h>
+#include <linux/ppps.h>
 
 /*
  * VMALLOC range.
@@ -923,7 +924,8 @@ static inline phys_addr_t p4d_page_paddr(p4d_t p4d)
 	return __p4d_to_phys(p4d);
 }
 
-#define pud_index(addr)		(((addr) >> PUD_SHIFT) & (PTRS_PER_PUD - 1))
+#define pud_index(addr)		\
+	(((addr) >> MM_ADDR_PUD_SHIFT(addr)) & (MM_ADDR_PTRS_PER_PUD(addr) - 1))
 
 static inline pud_t *p4d_to_folded_pud(p4d_t *p4dp, unsigned long addr)
 {
@@ -1047,7 +1049,8 @@ static inline phys_addr_t pgd_page_paddr(pgd_t pgd)
 	return __pgd_to_phys(pgd);
 }
 
-#define p4d_index(addr)		(((addr) >> P4D_SHIFT) & (PTRS_PER_P4D - 1))
+#define p4d_index(addr)		\
+	(((addr) >> MM_ADDR_P4D_SHIFT(addr)) & (MM_ADDR_PTRS_PER_P4D(addr) - 1))
 
 static inline p4d_t *pgd_to_folded_p4d(pgd_t *pgdp, unsigned long addr)
 {
@@ -1109,7 +1112,8 @@ static inline p4d_t *p4d_offset_kimg(pgd_t *pgdp, u64 addr)
 
 static inline bool pgtable_l5_enabled(void) { return false; }
 
-#define p4d_index(addr)		(((addr) >> P4D_SHIFT) & (PTRS_PER_P4D - 1))
+#define p4d_index(addr)		\
+	(((addr) >> MM_ADDR_P4D_SHIFT(addr)) & (MM_ADDR_PTRS_PER_P4D(addr) - 1))
 
 /* Match p4d_offset folding in <asm/generic/pgtable-nop4d.h> */
 #define p4d_set_fixmap(addr)		NULL

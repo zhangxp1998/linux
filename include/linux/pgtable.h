@@ -16,6 +16,7 @@
 #include <linux/errno.h>
 #include <asm-generic/pgtable_uffd.h>
 #include <linux/page_table_check.h>
+#include <linux/ppps.h>
 
 #if 5 - defined(__PAGETABLE_P4D_FOLDED) - defined(__PAGETABLE_PUD_FOLDED) - \
 	defined(__PAGETABLE_PMD_FOLDED) != CONFIG_PGTABLE_LEVELS
@@ -66,13 +67,13 @@
 
 static inline unsigned long pte_index(unsigned long address)
 {
-	return (address >> PAGE_SHIFT) & (PTRS_PER_PTE - 1);
+	return (address >> MM_ADDR_PAGE_SHIFT(address)) & (MM_ADDR_PTRS_PER_PTE(address) - 1);
 }
 
 #ifndef pmd_index
 static inline unsigned long pmd_index(unsigned long address)
 {
-	return (address >> PMD_SHIFT) & (PTRS_PER_PMD - 1);
+	return (address >> MM_ADDR_PMD_SHIFT(address)) & (MM_ADDR_PTRS_PER_PMD(address) - 1);
 }
 #define pmd_index pmd_index
 #endif
@@ -80,14 +81,14 @@ static inline unsigned long pmd_index(unsigned long address)
 #ifndef pud_index
 static inline unsigned long pud_index(unsigned long address)
 {
-	return (address >> PUD_SHIFT) & (PTRS_PER_PUD - 1);
+	return (address >> MM_ADDR_PUD_SHIFT(address)) & (MM_ADDR_PTRS_PER_PUD(address) - 1);
 }
 #define pud_index pud_index
 #endif
 
 #ifndef pgd_index
 /* Must be a compile-time constant, so implement it as a macro */
-#define pgd_index(a)  (((a) >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1))
+#define pgd_index(a)  (((a) >> MM_ADDR_PGD_SHIFT(a)) & (MM_ADDR_PTRS_PER_PGD(a) - 1))
 #endif
 
 #ifndef pte_offset_kernel
@@ -504,7 +505,7 @@ static inline void clear_young_dirty_ptes(struct vm_area_struct *vma,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(vma->vm_mm);
 	}
 }
 #endif
@@ -684,7 +685,7 @@ static inline pte_t get_and_clear_full_ptes(struct mm_struct *mm,
 	pte = ptep_get_and_clear_full(mm, addr, ptep, full);
 	while (--nr) {
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 		tmp_pte = ptep_get_and_clear_full(mm, addr, ptep, full);
 		if (pte_dirty(tmp_pte))
 			pte = pte_mkdirty(pte);
@@ -722,7 +723,7 @@ static inline void clear_full_ptes(struct mm_struct *mm, unsigned long addr,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 	}
 }
 #endif
@@ -787,7 +788,7 @@ static inline void clear_not_present_full_ptes(struct mm_struct *mm,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 	}
 }
 #endif
@@ -856,7 +857,7 @@ static inline void wrprotect_ptes(struct mm_struct *mm, unsigned long addr,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 	}
 }
 #endif
@@ -1195,27 +1196,35 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
  */
 
 #define pgd_addr_end(addr, end)						\
-({	unsigned long __boundary = ((addr) + PGDIR_SIZE) & PGDIR_MASK;	\
+({									\
+	unsigned long __boundary = ((addr) + MM_ADDR_PGDIR_SIZE(addr)) &\
+				   MM_ADDR_PGDIR_MASK(addr);		\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 
 #ifndef p4d_addr_end
 #define p4d_addr_end(addr, end)						\
-({	unsigned long __boundary = ((addr) + P4D_SIZE) & P4D_MASK;	\
+({									\
+	unsigned long __boundary = ((addr) + MM_ADDR_P4D_SIZE(addr)) &	\
+				   MM_ADDR_P4D_MASK(addr);		\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 #endif
 
 #ifndef pud_addr_end
 #define pud_addr_end(addr, end)						\
-({	unsigned long __boundary = ((addr) + PUD_SIZE) & PUD_MASK;	\
+({									\
+	unsigned long __boundary = ((addr) + MM_ADDR_PUD_SIZE(addr)) &	\
+				   MM_ADDR_PUD_MASK(addr);		\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 #endif
 
 #ifndef pmd_addr_end
 #define pmd_addr_end(addr, end)						\
-({	unsigned long __boundary = ((addr) + PMD_SIZE) & PMD_MASK;	\
+({									\
+	unsigned long __boundary = ((addr) + MM_ADDR_PMD_SIZE(addr)) &	\
+				   MM_ADDR_PMD_MASK(addr);		\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 #endif
