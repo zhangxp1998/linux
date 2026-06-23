@@ -9,6 +9,7 @@
 #include <linux/capability.h>
 #include <linux/mman.h>
 #include <linux/mm.h>
+#include <linux/ppps.h>
 #include <linux/sched/user.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
@@ -305,10 +306,11 @@ void munlock_folio(struct folio *folio)
 }
 
 static inline unsigned int folio_mlock_step(struct folio *folio,
-		pte_t *pte, unsigned long addr, unsigned long end)
+		pte_t *pte, unsigned long addr, unsigned long end,
+		unsigned int page_shift)
 {
 	const fpb_t fpb_flags = FPB_IGNORE_DIRTY | FPB_IGNORE_SOFT_DIRTY;
-	unsigned int count = (end - addr) >> PAGE_SHIFT;
+	unsigned int count = (end - addr) >> page_shift;
 	pte_t ptent = ptep_get(pte);
 
 	if (!folio_test_large(folio))
@@ -381,7 +383,10 @@ static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
 		return 0;
 	}
 
-	for (pte = start_pte; addr != end; pte++, addr += PAGE_SIZE) {
+	unsigned int page_size = MM_PAGE_SIZE(vma->vm_mm);
+	unsigned int page_shift = MM_PAGE_SHIFT(vma->vm_mm);
+
+	for (pte = start_pte; addr != end; pte++, addr += page_size) {
 		ptent = ptep_get(pte);
 		if (!pte_present(ptent))
 			continue;
@@ -389,7 +394,7 @@ static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
 		if (!folio || folio_is_zone_device(folio))
 			continue;
 
-		step = folio_mlock_step(folio, pte, addr, end);
+		step = folio_mlock_step(folio, pte, addr, end, page_shift);
 		if (!allow_mlock_munlock(folio, vma, start, end, step))
 			goto next_entry;
 
@@ -400,7 +405,7 @@ static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
 
 next_entry:
 		pte += step - 1;
-		addr += (step - 1) << PAGE_SHIFT;
+		addr += (step - 1) << page_shift;
 	}
 	pte_unmap(start_pte);
 out:
@@ -487,7 +492,7 @@ static int mlock_fixup(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	/*
 	 * Keep track of amount of locked VM.
 	 */
-	nr_pages = (end - start) >> PAGE_SHIFT;
+	nr_pages = MM_PHYS_PFN(mm, end - start);
 	if (!(newflags & VM_LOCKED))
 		nr_pages = -nr_pages;
 	else if (oldflags & VM_LOCKED)
@@ -518,8 +523,11 @@ static int apply_vma_lock_flags(unsigned long start, size_t len,
 	struct vm_area_struct *vma, *prev;
 	VMA_ITERATOR(vmi, current->mm, start);
 
-	VM_BUG_ON(offset_in_page(start));
-	VM_BUG_ON(len != PAGE_ALIGN(len));
+	unsigned long page_shift = MM_PAGE_SHIFT(current->mm);
+	unsigned long page_size = 1UL << page_shift;
+
+	VM_BUG_ON(start & (page_size - 1));
+	VM_BUG_ON(len != ALIGN(len, page_size));
 	end = start + len;
 	if (end < start)
 		return -EINVAL;
@@ -594,7 +602,7 @@ static unsigned long count_mm_mlocked_page_nr(struct mm_struct *mm,
 		}
 	}
 
-	return count >> PAGE_SHIFT;
+	return count >> MM_PAGE_SHIFT(mm);
 }
 
 /*
@@ -615,17 +623,21 @@ static __must_check int do_mlock(unsigned long start, size_t len, vm_flags_t fla
 	unsigned long lock_limit;
 	int error = -ENOMEM;
 
+	unsigned long page_shift = MM_PAGE_SHIFT(current->mm);
+	unsigned long page_size = 1UL << page_shift;
+	unsigned long page_mask = ~(page_size - 1);
+
 	start = untagged_addr(start);
 
 	if (!can_do_mlock())
 		return -EPERM;
 
-	len = PAGE_ALIGN(len + (offset_in_page(start)));
-	start &= PAGE_MASK;
+	len = ALIGN(len + (start & (page_size - 1)), page_size);
+	start &= page_mask;
 
 	lock_limit = rlimit(RLIMIT_MEMLOCK);
-	lock_limit >>= PAGE_SHIFT;
-	locked = len >> PAGE_SHIFT;
+	lock_limit >>= page_shift;
+	locked = len >> page_shift;
 
 	if (mmap_write_lock_killable(current->mm))
 		return -EINTR;
@@ -678,10 +690,14 @@ SYSCALL_DEFINE2(munlock, unsigned long, start, size_t, len)
 {
 	int ret;
 
+	unsigned long page_shift = MM_PAGE_SHIFT(current->mm);
+	unsigned long page_size = 1UL << page_shift;
+	unsigned long page_mask = ~(page_size - 1);
+
 	start = untagged_addr(start);
 
-	len = PAGE_ALIGN(len + (offset_in_page(start)));
-	start &= PAGE_MASK;
+	len = ALIGN(len + (start & (page_size - 1)), page_size);
+	start &= page_mask;
 
 	if (mmap_write_lock_killable(current->mm))
 		return -EINTR;
@@ -755,7 +771,7 @@ SYSCALL_DEFINE1(mlockall, int, flags)
 		return -EPERM;
 
 	lock_limit = rlimit(RLIMIT_MEMLOCK);
-	lock_limit >>= PAGE_SHIFT;
+	lock_limit >>= MM_PAGE_SHIFT(current->mm);
 
 	if (mmap_write_lock_killable(current->mm))
 		return -EINTR;
