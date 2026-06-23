@@ -13,6 +13,7 @@
  */
 
 #include <linux/anon_inodes.h>
+#include <linux/ppps.h>
 #include <linux/slab.h>
 #include <linux/sched/autogroup.h>
 #include <linux/sched/mm.h>
@@ -1086,6 +1087,8 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 		__mm_flags_set_word(mm, default_dump_filter);
 		mm->def_flags = 0;
 	}
+
+	mm_inherit_pagesize(mm);
 
 	if (futex_mm_init(mm))
 		goto fail_mm_init;
