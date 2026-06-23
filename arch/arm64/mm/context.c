@@ -11,6 +11,7 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/ppps.h>
 
 #include <asm/cpufeature.h>
 #include <asm/mmu_context.h>
@@ -264,9 +265,11 @@ switch_mm_fastpath:
 
 	/*
 	 * Defer TTBR0_EL1 setting for user threads to uaccess_enable() when
-	 * emulating PAN.
+	 * emulating PAN. TCR_EL1 still has to describe the deferred page table.
 	 */
-	if (!system_uses_ttbr0_pan())
+	if (system_uses_ttbr0_pan())
+		mm_switch_tcr(mm);
+	else
 		cpu_switch_mm(mm->pgd, mm);
 }
 
@@ -346,6 +349,41 @@ asmlinkage void post_ttbr_update_workaround(void)
 			ARM64_WORKAROUND_CAVIUM_27456));
 }
 
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+void mm_switch_tcr(struct mm_struct *mm)
+{
+	unsigned long geometry, old_tcr, tcr;
+	const unsigned long geometry_mask = TCR_TG0_MASK | TCR_T0SZ_MASK;
+
+	if (!mm || mm == &init_mm)
+		return;
+
+	if (ppps_mm_is_compat(mm))
+		geometry = TCR_TG0_4K | TCR_T0SZ(VA_BITS_COMPAT);
+	else
+		geometry = TCR_TG0_NATIVE | TCR_T0SZ(vabits_actual);
+
+	old_tcr = read_sysreg(tcr_el1);
+	if ((old_tcr & geometry_mask) == geometry)
+		return;
+
+	/*
+	 * TCR_EL1.TG0 changes how TTBR0_EL1 is interpreted.  Stop walks and
+	 * discard translations using the old geometry before synchronising the
+	 * new value.  With SW TTBR0 PAN the hardware TTBR0 is already reserved;
+	 * overwriting it here would lose the deferred user page table.
+	 */
+	if (!system_uses_ttbr0_pan())
+		cpu_set_reserved_ttbr0();
+	local_flush_tlb_all();
+
+	tcr = (old_tcr & ~geometry_mask) | geometry;
+	write_sysreg(tcr, tcr_el1);
+	isb();
+}
+#endif
+
 void cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm)
 {
 	unsigned long ttbr1 = read_sysreg(ttbr1_el1);
@@ -363,6 +401,8 @@ void cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm)
 	/* Set ASID in TTBR1 since TCR.A1 is set */
 	ttbr1 &= ~TTBR_ASID_MASK;
 	ttbr1 |= FIELD_PREP(TTBR_ASID_MASK, asid);
+
+	mm_switch_tcr(mm);
 
 	cpu_set_reserved_ttbr0_nosync();
 	write_sysreg(ttbr1, ttbr1_el1);
