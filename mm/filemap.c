@@ -20,6 +20,7 @@
 #include <linux/kernel_stat.h>
 #include <linux/gfp.h>
 #include <linux/mm.h>
+#include <linux/ppps.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
 #include <linux/syscalls.h>
@@ -3631,6 +3632,8 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 			     pgoff_t start_pgoff, pgoff_t end_pgoff)
 {
 	struct vm_area_struct *vma = vmf->vma;
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return 0;
 	struct file *file = vma->vm_file;
 	struct address_space *mapping = file->f_mapping;
 	pgoff_t file_end, last_pgoff = start_pgoff;
