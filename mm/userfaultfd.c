@@ -12,6 +12,7 @@
 #include <linux/swap.h>
 #include <linux/swapops.h>
 #include <linux/userfaultfd_k.h>
+#include <linux/ppps.h>
 #include <linux/mmu_notifier.h>
 #include <linux/hugetlb.h>
 #include <linux/shmem_fs.h>
@@ -168,7 +169,9 @@ static bool mfill_file_over_size(struct vm_area_struct *dst_vma,
 int mfill_atomic_install_pte(pmd_t *dst_pmd,
 			     struct vm_area_struct *dst_vma,
 			     unsigned long dst_addr, struct page *page,
-			     bool newly_allocated, uffd_flags_t flags)
+			     bool newly_allocated,
+			     unsigned int slice_idx,
+			     uffd_flags_t flags)
 {
 	int ret;
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
@@ -180,6 +183,9 @@ int mfill_atomic_install_pte(pmd_t *dst_pmd,
 	bool page_in_cache = folio_mapping(folio);
 
 	_dst_pte = mk_pte(page, dst_vma->vm_page_prot);
+	if (ppps_mm_is_compat(dst_mm))
+		_dst_pte = __pte(pte_val(_dst_pte) +
+				 (slice_idx << PAGE_SHIFT_COMPAT));
 	_dst_pte = pte_mkdirty(_dst_pte);
 	if (page_in_cache && !vm_shared)
 		writable = false;
@@ -241,6 +247,10 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 				 uffd_flags_t flags,
 				 struct folio **foliop)
 {
+	struct mm_struct *dst_mm = dst_vma->vm_mm;
+	unsigned long pgsize = MM_PAGE_SIZE(dst_mm);
+	unsigned int slice_idx = vma_address_to_slice(dst_vma, dst_addr);
+	unsigned long offset = slice_idx * pgsize;
 	void *kaddr;
 	int ret;
 	struct folio *folio;
@@ -253,6 +263,8 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 			goto out;
 
 		kaddr = kmap_local_folio(folio, 0);
+		memset(kaddr, 0, PAGE_SIZE);
+
 		/*
 		 * The read mmap_lock is held here.  Despite the
 		 * mmap_lock being read recursive a deadlock is still
@@ -269,8 +281,8 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 		 * and retry the copy outside the mmap_lock.
 		 */
 		pagefault_disable();
-		ret = copy_from_user(kaddr, (const void __user *) src_addr,
-				     PAGE_SIZE);
+		ret = copy_from_user(kaddr + offset,
+				     (const void __user *)src_addr, pgsize);
 		pagefault_enable();
 		kunmap_local(kaddr);
 
@@ -300,7 +312,7 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 		goto out_release;
 
 	ret = mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr,
-				       &folio->page, true, flags);
+				       &folio->page, true, slice_idx, flags);
 	if (ret)
 		goto out_release;
 out:
@@ -332,7 +344,9 @@ static int mfill_atomic_pte_zeroed_folio(pmd_t *dst_pmd,
 	__folio_mark_uptodate(folio);
 
 	ret = mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr,
-				       &folio->page, true, 0);
+				       &folio->page, true,
+				       vma_address_to_slice(dst_vma, dst_addr),
+				       0);
 	if (ret)
 		goto out_put;
 
@@ -406,7 +420,9 @@ static int mfill_atomic_pte_continue(pmd_t *dst_pmd,
 	}
 
 	ret = mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr,
-				       page, false, flags);
+				       page, false,
+				       vma_address_to_slice(dst_vma, dst_addr),
+				       flags);
 	if (ret)
 		goto out_release;
 
@@ -707,12 +723,13 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
 	unsigned long src_addr, dst_addr;
 	long copied;
 	struct folio *folio;
+	unsigned long page_size = MM_PAGE_SIZE(ctx->mm);
 
 	/*
 	 * Sanitize the command parameters:
 	 */
-	BUG_ON(dst_start & ~PAGE_MASK);
-	BUG_ON(len & ~PAGE_MASK);
+	VM_WARN_ON_ONCE(dst_start & ~MM_PAGE_MASK(ctx->mm));
+	VM_WARN_ON_ONCE(len & ~MM_PAGE_MASK(ctx->mm));
 
 	/* Does the address range wrap, or is the span zero-sized? */
 	BUG_ON(src_start + len <= src_start);
@@ -758,6 +775,12 @@ retry:
 	 */
 	if ((flags & MFILL_ATOMIC_WP) && !(dst_vma->vm_flags & VM_UFFD_WP))
 		goto out_unlock;
+
+	if (!ppps_vma_validate_uffd_alignment(dst_vma, dst_start,
+					      dst_start + len)) {
+		err = -EINVAL;
+		goto out_unlock;
+	}
 
 	/*
 	 * If this is a HUGETLB vma, pass off to appropriate routine
@@ -814,6 +837,8 @@ retry:
 		cond_resched();
 
 		if (unlikely(err == -ENOENT)) {
+			unsigned long offset =
+				vma_address_to_slice(dst_vma, dst_addr) * page_size;
 			void *kaddr;
 
 			up_read(&ctx->map_changing_lock);
@@ -821,9 +846,9 @@ retry:
 			BUG_ON(!folio);
 
 			kaddr = kmap_local_folio(folio, 0);
-			err = copy_from_user(kaddr,
+			err = copy_from_user(kaddr + offset,
 					     (const void __user *) src_addr,
-					     PAGE_SIZE);
+					     page_size);
 			kunmap_local(kaddr);
 			if (unlikely(err)) {
 				err = -EFAULT;
@@ -835,9 +860,9 @@ retry:
 			BUG_ON(folio);
 
 		if (!err) {
-			dst_addr += PAGE_SIZE;
-			src_addr += PAGE_SIZE;
-			copied += PAGE_SIZE;
+			dst_addr += page_size;
+			src_addr += page_size;
+			copied += page_size;
 
 			if (fatal_signal_pending(current))
 				err = -EINTR;
@@ -940,8 +965,8 @@ int mwriteprotect_range(struct userfaultfd_ctx *ctx, unsigned long start,
 	/*
 	 * Sanitize the command parameters:
 	 */
-	BUG_ON(start & ~PAGE_MASK);
-	BUG_ON(len & ~PAGE_MASK);
+	VM_WARN_ON_ONCE(start & ~MM_PAGE_MASK(dst_mm));
+	VM_WARN_ON_ONCE(len & ~MM_PAGE_MASK(dst_mm));
 
 	/* Does the address range wrap, or is the span zero-sized? */
 	BUG_ON(start + len <= start);
@@ -1110,7 +1135,7 @@ static long move_present_ptes(struct mm_struct *mm,
 		folio_move_anon_rmap(src_folio, dst_vma);
 		src_folio->index = linear_page_index(dst_vma, dst_addr);
 
-		orig_dst_pte = mk_pte(&src_folio->page, dst_vma->vm_page_prot);
+		orig_dst_pte = pte_modify(orig_src_pte, dst_vma->vm_page_prot);
 		/* Set soft dirty bit so userspace can notice the pte was moved */
 #ifdef CONFIG_MEM_SOFT_DIRTY
 		orig_dst_pte = pte_mksoft_dirty(orig_dst_pte);
@@ -1120,10 +1145,10 @@ static long move_present_ptes(struct mm_struct *mm,
 		orig_dst_pte = pte_mkwrite(orig_dst_pte, dst_vma);
 		set_pte_at(mm, dst_addr, dst_pte, orig_dst_pte);
 
-		src_addr += PAGE_SIZE;
+		src_addr += MM_PAGE_SIZE(mm);
 		if (src_addr == src_end)
 			break;
-		dst_addr += PAGE_SIZE;
+		dst_addr += MM_PAGE_SIZE(mm);
 		dst_pte++;
 		src_pte++;
 
@@ -1207,7 +1232,7 @@ static int move_swap_pte(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 	set_pte_at(mm, dst_addr, dst_pte, orig_src_pte);
 	double_pt_unlock(dst_ptl, src_ptl);
 
-	return PAGE_SIZE;
+	return MM_PAGE_SIZE(mm);
 }
 
 static int move_zeropage_pte(struct mm_struct *mm,
@@ -1234,7 +1259,7 @@ static int move_zeropage_pte(struct mm_struct *mm,
 	set_pte_at(mm, dst_addr, dst_pte, zero_pte);
 	double_pt_unlock(dst_ptl, src_ptl);
 
-	return PAGE_SIZE;
+	return MM_PAGE_SIZE(mm);
 }
 
 
@@ -1322,7 +1347,7 @@ retry:
 		if (!(mode & UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES))
 			ret = -ENOENT;
 		else /* nothing to do to move a hole */
-			ret = PAGE_SIZE;
+			ret = MM_PAGE_SIZE(mm);
 		goto out;
 	}
 
@@ -1776,9 +1801,9 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	ssize_t moved = 0;
 
 	/* Sanitize the command parameters. */
-	if (WARN_ON_ONCE(src_start & ~PAGE_MASK) ||
-	    WARN_ON_ONCE(dst_start & ~PAGE_MASK) ||
-	    WARN_ON_ONCE(len & ~PAGE_MASK))
+	if (WARN_ON_ONCE(src_start & ~MM_PAGE_MASK(mm)) ||
+	    WARN_ON_ONCE(dst_start & ~MM_PAGE_MASK(mm)) ||
+	    WARN_ON_ONCE(len & ~MM_PAGE_MASK(mm)))
 		goto out;
 
 	/* Does the address range wrap, or is the span zero-sized? */
