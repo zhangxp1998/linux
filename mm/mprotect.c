@@ -15,6 +15,7 @@
 #include <linux/mman.h>
 #include <linux/fs.h>
 #include <linux/highmem.h>
+#include <linux/ppps.h>
 #include <linux/security.h>
 #include <linux/mempolicy.h>
 #include <linux/page_size_compat.h>
@@ -98,7 +99,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
 	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
 
-	tlb_change_page_size(tlb, PAGE_SIZE);
+	tlb_change_page_size(tlb, page_size);
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (!pte)
 		return -EAGAIN;
@@ -197,7 +198,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 
 			ptep_modify_prot_commit(vma, addr, pte, oldpte, ptent);
 			if (pte_needs_flush(oldpte, ptent))
-				tlb_flush_pte_range(tlb, addr, PAGE_SIZE);
+				tlb_flush_pte_range(tlb, addr, page_size);
 			pages++;
 		} else if (is_swap_pte(oldpte)) {
 			swp_entry_t entry = pte_to_swp_entry(oldpte);
@@ -291,7 +292,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 				pages++;
 			}
 		}
-	} while (pte++, addr += PAGE_SIZE, addr != end);
+	} while (pte++, addr += page_size, addr != end);
 	arch_leave_lazy_mmu_mode();
 	pte_unmap_unlock(pte - 1, ptl);
 
@@ -611,7 +612,7 @@ mprotect_fixup(struct vma_iterator *vmi, struct mmu_gather *tlb,
 {
 	struct mm_struct *mm = vma->vm_mm;
 	unsigned long oldflags = vma->vm_flags;
-	long nrpages = (end - start) >> PAGE_SHIFT;
+	long nrpages = (end - start) >> MM_PAGE_SHIFT(mm);
 	unsigned int mm_cp_flags = 0;
 	unsigned long charged = 0;
 	int error;
@@ -729,11 +730,11 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 	if (grows == (PROT_GROWSDOWN|PROT_GROWSUP)) /* can't be both */
 		return -EINVAL;
 
-	if (!__PAGE_ALIGNED(start))
+	if (!MM_UAPI_PAGE_ALIGNED(current->mm, start))
 		return -EINVAL;
 	if (!len)
 		return 0;
-	len = __PAGE_ALIGN(len);
+	len = MM_UAPI_PAGE_ALIGN(current->mm, len);
 	end = start + len;
 	if (end <= start)
 		return -ENOMEM;
