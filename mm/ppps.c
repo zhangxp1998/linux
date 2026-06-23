@@ -1,2 +1,53 @@
 // SPDX-License-Identifier: GPL-2.0
+#include <linux/sched.h>
+#include <linux/personality.h>
+#include <linux/kernel.h>
+#include <linux/export.h>
+#include <linux/mm.h>
+#include <linux/binfmts.h>
+#include <linux/string.h>
 #include <linux/ppps.h>
+#include <linux/highmem.h>
+#include <asm/memory.h>
+#include "internal.h"
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+unsigned long mm_task_size64(void)
+{
+	struct mm_struct *mm = current->mm;
+
+	if (!mm)
+		return (1UL << vabits_actual);
+
+	if (mm->page_shift == PAGE_SHIFT_COMPAT)
+		return 1UL << VA_BITS_COMPAT;
+
+	return 1UL << vabits_actual;
+}
+EXPORT_SYMBOL(mm_task_size64);
+
+unsigned long mm_task_size64_of(struct mm_struct *mm)
+{
+	if (!mm)
+		return (1UL << vabits_actual);
+
+	if (mm->page_shift == PAGE_SHIFT_COMPAT)
+		return 1UL << VA_BITS_COMPAT;
+
+	return 1UL << vabits_actual;
+}
+EXPORT_SYMBOL(mm_task_size64_of);
+
+unsigned long mm_default_map_window64(void)
+{
+	return mm_default_map_window64_of(current->mm);
+}
+
+unsigned long mm_default_map_window64_of(struct mm_struct *mm)
+{
+	if (ppps_mm_is_compat(mm))
+		return 1UL << VA_BITS_COMPAT;
+
+	return 1UL << VA_BITS_MIN;
+}
+#endif
