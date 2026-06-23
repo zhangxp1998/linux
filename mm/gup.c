@@ -1476,7 +1476,7 @@ static long __get_user_pages(struct mm_struct *mm,
 			}
 			vma = gup_vma_lookup(mm, start);
 			if (!vma && in_gate_area(mm, start)) {
-				ret = get_gate_page(mm, start & PAGE_MASK,
+				ret = get_gate_page(mm, start & MM_PAGE_MASK(mm),
 						gup_flags, &vma,
 						pages ? &page : NULL);
 				if (ret)
@@ -1577,13 +1577,13 @@ next_page:
 			for (j = 0; j < page_increm; j++) {
 				subpage = nth_page(page, j);
 				pages[i + j] = subpage;
-				flush_anon_page(vma, subpage, start + j * PAGE_SIZE);
+				flush_anon_page(vma, subpage, start + j * MM_PAGE_SIZE(mm));
 				flush_dcache_page(subpage);
 			}
 		}
 
 		i += page_increm;
-		start += page_increm * PAGE_SIZE;
+		start += page_increm * MM_PAGE_SIZE(mm);
 		nr_pages -= page_increm;
 	} while (nr_pages);
 out:
@@ -1855,7 +1855,7 @@ retry:
 			break;
 		if (likely(pages))
 			pages++;
-		start += PAGE_SIZE;
+		start += MM_PAGE_SIZE(mm);
 	}
 	if (must_unlock && *locked) {
 		/*
@@ -1901,13 +1901,13 @@ long populate_vma_page_range(struct vm_area_struct *vma,
 		unsigned long start, unsigned long end, int *locked)
 {
 	struct mm_struct *mm = vma->vm_mm;
-	unsigned long nr_pages = (end - start) / PAGE_SIZE;
+	unsigned long nr_pages = MM_PHYS_PFN(mm, end - start);
 	int local_locked = 1;
 	int gup_flags;
 	long ret;
 
-	VM_BUG_ON(!PAGE_ALIGNED(start));
-	VM_BUG_ON(!PAGE_ALIGNED(end));
+	VM_BUG_ON(!MM_PAGE_ALIGNED(mm, start));
+	VM_BUG_ON(!MM_PAGE_ALIGNED(mm, end));
 	VM_BUG_ON_VMA(start < vma->vm_start, vma);
 	VM_BUG_ON_VMA(end   > vma->vm_end, vma);
 	mmap_assert_locked(mm);
@@ -1974,12 +1974,12 @@ long populate_vma_page_range(struct vm_area_struct *vma,
 long faultin_page_range(struct mm_struct *mm, unsigned long start,
 			unsigned long end, bool write, int *locked)
 {
-	unsigned long nr_pages = (end - start) / PAGE_SIZE;
+	unsigned long nr_pages = MM_PHYS_PFN(mm, end - start);
 	int gup_flags;
 	long ret;
 
-	VM_BUG_ON(!PAGE_ALIGNED(start));
-	VM_BUG_ON(!PAGE_ALIGNED(end));
+	VM_BUG_ON(!MM_PAGE_ALIGNED(mm, start));
+	VM_BUG_ON(!MM_PAGE_ALIGNED(mm, end));
 	mmap_assert_locked(mm);
 
 	/*
@@ -2055,7 +2055,7 @@ int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
 			}
 			break;
 		}
-		nend = nstart + ret * PAGE_SIZE;
+		nend = nstart + ((unsigned long)ret << MM_PAGE_SHIFT(mm));
 		ret = 0;
 	}
 	if (locked)
@@ -3023,7 +3023,7 @@ static int gup_fast_pte_range(struct mm_struct *mm, pmd_t pmd, pmd_t *pmdp,
 		folio_set_referenced(folio);
 		pages[*nr] = page;
 		(*nr)++;
-	} while (ptep++, addr += PAGE_SIZE, addr != end);
+	} while (ptep++, addr += MM_PAGE_SIZE(mm), addr != end);
 
 	ret = 1;
 
@@ -3472,8 +3472,8 @@ static int gup_fast_fallback(unsigned long start, unsigned long nr_pages,
 	if (!(gup_flags & FOLL_FAST_ONLY))
 		might_lock_read(&current->mm->mmap_lock);
 
-	start = untagged_addr(start) & PAGE_MASK;
-	len = nr_pages << PAGE_SHIFT;
+	start = untagged_addr(start) & MM_PAGE_MASK(current->mm);
+	len = (unsigned long)nr_pages << MM_PAGE_SHIFT(current->mm);
 	if (check_add_overflow(start, len, &end))
 		return -EOVERFLOW;
 	if (end > TASK_SIZE_MAX)
@@ -3486,7 +3486,7 @@ static int gup_fast_fallback(unsigned long start, unsigned long nr_pages,
 		return nr_pinned;
 
 	/* Slow path: try to get the remaining pages with get_user_pages */
-	start += nr_pinned << PAGE_SHIFT;
+	start += (unsigned long)nr_pinned << MM_PAGE_SHIFT(current->mm);
 	pages += nr_pinned;
 	ret = __gup_longterm_locked(current->mm, start, nr_pages - nr_pinned,
 				    pages, &locked,
