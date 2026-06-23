@@ -6,6 +6,7 @@
 #include <linux/mmu_context.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
+#include <linux/ppps.h>
 
 #include <asm/tlbflush.h>
 
@@ -37,8 +38,9 @@ static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
 		if (ops->install_pte && pte_none(ptep_get(pte))) {
 			pte_t new_pte;
 
-			err = ops->install_pte(addr, addr + PAGE_SIZE, &new_pte,
-					       walk);
+			err = ops->install_pte(addr,
+					       addr + MM_PAGE_SIZE(walk->mm),
+					       &new_pte, walk);
 			if (err)
 				break;
 
@@ -47,13 +49,15 @@ static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
 			if (!WARN_ON_ONCE(walk->no_vma))
 				update_mmu_cache(walk->vma, addr, pte);
 		} else {
-			err = ops->pte_entry(pte, addr, addr + PAGE_SIZE, walk);
+			err = ops->pte_entry(pte, addr,
+					     addr + MM_PAGE_SIZE(walk->mm),
+					     walk);
 			if (err)
 				break;
 		}
-		if (addr >= end - PAGE_SIZE)
+		if (addr >= end - MM_PAGE_SIZE(walk->mm))
 			break;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(walk->mm);
 		pte++;
 	}
 	return err;
@@ -939,7 +943,7 @@ pte_table:
 		goto not_found;
 	pte = ptep_get(ptep);
 
-	entry_size = PAGE_SIZE;
+	entry_size = MM_PAGE_SIZE(vma->vm_mm);
 	fw->level = FW_LEVEL_PTE;
 	fw->ptep = ptep;
 	fw->pte = pte;
