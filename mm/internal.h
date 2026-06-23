@@ -257,6 +257,48 @@ static inline int folio_pte_batch(struct folio *folio, unsigned long addr,
 	return min(nr, max_nr);
 }
 
+/* Process PTEs a fully mapped @folio spans in @vma; folio_nr_pages() natively. */
+static inline unsigned long folio_nr_ptes(struct folio *folio,
+					  const struct vm_area_struct *vma)
+{
+	return folio_size(folio) >> MM_PAGE_SHIFT(vma->vm_mm);
+}
+
+/*
+ * folio_pte_batch() for @vma's mm.  Compat PTEs map process-page slices of
+ * @folio, so consecutive PTEs advance by a slice rather than a PFN and are
+ * matched by the folio they map instead of by PFN arithmetic.  Natively this
+ * is folio_pte_batch(); @max_nr must be limited to the current page table.
+ */
+static inline int vma_folio_pte_batch(struct vm_area_struct *vma,
+		struct folio *folio, unsigned long addr, pte_t *start_ptep,
+		pte_t pte, int max_nr, fpb_t flags, bool *any_young,
+		bool *any_dirty)
+{
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
+	int nr;
+
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return folio_pte_batch(folio, addr, start_ptep, pte, max_nr,
+				       flags, NULL, any_young, any_dirty);
+
+	if (any_young)
+		*any_young = false;
+	if (any_dirty)
+		*any_dirty = false;
+	for (nr = 1; nr < max_nr; nr++) {
+		pte = ptep_get(start_ptep + nr);
+		if (!pte_present(pte) ||
+		    vm_normal_folio(vma, addr + nr * page_size, pte) != folio)
+			break;
+		if (any_young)
+			*any_young |= pte_young(pte);
+		if (any_dirty)
+			*any_dirty |= pte_dirty(pte);
+	}
+	return nr;
+}
+
 /**
  * pte_move_swp_offset - Move the swap entry offset field of a swap pte
  *	 forward or backward by delta
