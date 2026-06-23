@@ -20,4 +20,17 @@ config ARM64_RELOC_TEST
 	depends on m
 	tristate "Relocation testing module"
 
+config ARM64_PTE_KUNIT_TEST
+	tristate "KUnit tests for arm64 PTE helpers" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Build unit tests for arm64 PTE helpers, including physical-address
+	  advancement across native pages and, when configured, PPPS slices.
+
+	  For more information on KUnit and unit tests in general, refer to
+	  Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.
+
 source "drivers/hwtracing/coresight/Kconfig"
