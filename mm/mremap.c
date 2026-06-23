@@ -198,8 +198,9 @@ static int move_ptes(struct vm_area_struct *vma, pmd_t *old_pmd,
 	flush_tlb_batched_pending(vma->vm_mm);
 	arch_enter_lazy_mmu_mode();
 
-	for (; old_addr < old_end; old_pte++, old_addr += PAGE_SIZE,
-				   new_pte++, new_addr += PAGE_SIZE) {
+	for (; old_addr < old_end;
+	     old_pte++, old_addr += MM_PAGE_SIZE(mm),
+	     new_pte++, new_addr += MM_PAGE_SIZE(mm)) {
 		if (pte_none(ptep_get(old_pte)))
 			continue;
 
@@ -460,6 +461,7 @@ enum pgt_entry {
  * destination pgt_entry.
  */
 static __always_inline unsigned long get_extent(enum pgt_entry entry,
+			struct mm_struct *mm,
 			unsigned long old_addr, unsigned long old_end,
 			unsigned long new_addr)
 {
@@ -468,13 +470,13 @@ static __always_inline unsigned long get_extent(enum pgt_entry entry,
 	switch (entry) {
 	case HPAGE_PMD:
 	case NORMAL_PMD:
-		mask = PMD_MASK;
-		size = PMD_SIZE;
+		mask = MM_PMD_MASK(mm);
+		size = MM_PMD_SIZE(mm);
 		break;
 	case HPAGE_PUD:
 	case NORMAL_PUD:
-		mask = PUD_MASK;
-		size = PUD_SIZE;
+		mask = MM_PUD_MASK(mm);
+		size = MM_PUD_SIZE(mm);
 		break;
 	default:
 		BUILD_BUG();
@@ -627,7 +629,8 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 		 * If extent is PUD-sized try to speed up the move by moving at the
 		 * PUD level if possible.
 		 */
-		extent = get_extent(NORMAL_PUD, old_addr, old_end, new_addr);
+		extent = get_extent(NORMAL_PUD, vma->vm_mm, old_addr, old_end,
+				    new_addr);
 
 		old_pud = get_old_pud(vma->vm_mm, old_addr);
 		if (!old_pud)
@@ -649,7 +652,8 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 				continue;
 		}
 
-		extent = get_extent(NORMAL_PMD, old_addr, old_end, new_addr);
+		extent = get_extent(NORMAL_PMD, vma->vm_mm, old_addr, old_end,
+				    new_addr);
 		old_pmd = get_old_pmd(vma->vm_mm, old_addr);
 		if (!old_pmd)
 			continue;
@@ -747,7 +751,8 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 		return err;
 
 	if (vm_flags & VM_ACCOUNT) {
-		if (security_vm_enough_memory_mm(mm, to_account >> PAGE_SHIFT))
+		if (security_vm_enough_memory_mm(mm,
+						to_account >> MM_PAGE_SHIFT(mm)))
 			return -ENOMEM;
 	}
 
@@ -758,7 +763,7 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 			   new_slice_off, &need_rmap_locks);
 	if (!new_vma) {
 		if (vm_flags & VM_ACCOUNT)
-			vm_unacct_memory(to_account >> PAGE_SHIFT);
+			vm_unacct_memory(to_account >> MM_PAGE_SHIFT(mm));
 		return -ENOMEM;
 	}
 
@@ -809,7 +814,7 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	 * If this were a serious issue, we'd add a flag to do_munmap().
 	 */
 	hiwater_vm = mm->hiwater_vm;
-	vm_stat_account(mm, vma->vm_flags, new_len >> PAGE_SHIFT);
+	vm_stat_account(mm, vma->vm_flags, new_len >> MM_PAGE_SHIFT(mm));
 
 	/* Tell pfnmap has moved from this vma */
 	if (unlikely(vma->vm_flags & VM_PFNMAP))
@@ -835,12 +840,12 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	if (do_vmi_munmap(&vmi, mm, old_addr, old_len, uf_unmap, false) < 0) {
 		/* OOM: unable to split vma, just get accounts right */
 		if (vm_flags & VM_ACCOUNT && !(flags & MREMAP_DONTUNMAP))
-			vm_acct_memory(old_len >> PAGE_SHIFT);
+			vm_acct_memory(old_len >> MM_PAGE_SHIFT(mm));
 		account_start = account_end = false;
 	}
 
 	if (vm_flags & VM_LOCKED) {
-		mm->locked_vm += new_len >> PAGE_SHIFT;
+		mm->locked_vm += new_len >> MM_PAGE_SHIFT(mm);
 		*locked = true;
 	}
 
@@ -896,9 +901,8 @@ static struct vm_area_struct *vma_to_resize(unsigned long addr,
 		return vma;
 
 	/* Need to be careful about a growing mapping */
-	pgoff = (addr - vma->vm_start) >> PAGE_SHIFT;
-	pgoff += vma->vm_pgoff;
-	if (pgoff + (new_len >> PAGE_SHIFT) < pgoff)
+	pgoff = vma_pgoff_offset(vma, addr);
+	if (pgoff + (new_len >> MM_PAGE_SHIFT(mm)) < pgoff)
 		return ERR_PTR(-EINVAL);
 
 	if (vma->vm_flags & (VM_DONTEXPAND | VM_PFNMAP))
@@ -908,10 +912,34 @@ static struct vm_area_struct *vma_to_resize(unsigned long addr,
 		return ERR_PTR(-EAGAIN);
 
 	if (!may_expand_vm(mm, vma->vm_flags,
-				(new_len - old_len) >> PAGE_SHIFT))
+				(new_len - old_len) >> MM_PAGE_SHIFT(mm)))
 		return ERR_PTR(-ENOMEM);
 
 	return vma;
+}
+
+static unsigned long mremap_get_unmapped_area(struct file *file,
+		unsigned long addr, unsigned long len, unsigned long pgoff,
+		unsigned long map_flags, unsigned long old_addr,
+		unsigned long mremap_flags)
+{
+	if (ppps_mm_is_compat(current->mm) &&
+	    !(mremap_flags & MREMAP_FIXED)) {
+		unsigned int slice =
+			(old_addr >> PAGE_SHIFT_COMPAT) & PPPS_SLICE_MASK;
+
+		if (slice) {
+			unsigned long res;
+
+			res = get_unmapped_area(file, addr, len + PAGE_SIZE,
+						pgoff, map_flags);
+			if (!IS_ERR_VALUE(res))
+				res += slice << PAGE_SHIFT_COMPAT;
+			return res;
+		}
+	}
+
+	return get_unmapped_area(file, addr, len, pgoff, map_flags);
 }
 
 static unsigned long mremap_to(unsigned long addr, unsigned long old_len,
@@ -925,7 +953,7 @@ static unsigned long mremap_to(unsigned long addr, unsigned long old_len,
 	unsigned long ret = -EINVAL;
 	unsigned long map_flags = 0;
 
-	if (offset_in_page(new_addr))
+	if (mm_offset_in_page(mm, new_addr))
 		goto out;
 
 	if (new_len > TASK_SIZE || new_addr > TASK_SIZE - new_len)
@@ -978,7 +1006,8 @@ static unsigned long mremap_to(unsigned long addr, unsigned long old_len,
 
 	/* MREMAP_DONTUNMAP expands by old_len since old_len == new_len */
 	if (flags & MREMAP_DONTUNMAP &&
-		!may_expand_vm(mm, vma->vm_flags, old_len >> PAGE_SHIFT)) {
+		!may_expand_vm(mm, vma->vm_flags,
+			       old_len >> MM_PAGE_SHIFT(mm))) {
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -989,9 +1018,9 @@ static unsigned long mremap_to(unsigned long addr, unsigned long old_len,
 	if (vma->vm_flags & VM_MAYSHARE)
 		map_flags |= MAP_SHARED;
 
-	ret = get_unmapped_area(vma->vm_file, new_addr, new_len, vma->vm_pgoff +
-				((addr - vma->vm_start) >> PAGE_SHIFT),
-				map_flags);
+	ret = mremap_get_unmapped_area(vma->vm_file, new_addr, new_len,
+					vma_pgoff_offset(vma, addr), map_flags,
+					addr, flags);
 	if (IS_ERR_VALUE(ret))
 		goto out;
 
@@ -1015,7 +1044,7 @@ static int vma_expandable(struct vm_area_struct *vma, unsigned long delta)
 	if (find_vma_intersection(vma->vm_mm, vma->vm_end, end))
 		return 0;
 	if (get_unmapped_area(NULL, vma->vm_start, end - vma->vm_start,
-			      0, MAP_FIXED) & ~PAGE_MASK)
+			      0, MAP_FIXED) & ~MM_PAGE_MASK(vma->vm_mm))
 		return 0;
 	return 1;
 }
@@ -1067,11 +1096,19 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 		return ret;
 
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (mm_offset_in_page(mm, addr))
+		return ret;
+
+	old_len = MM_PAGE_ALIGN(mm, old_len);
+	new_len = MM_PAGE_ALIGN(mm, new_len);
+#else
 	if (__offset_in_page_log(addr))
 		return ret;
 
 	old_len = __PAGE_ALIGN(old_len);
 	new_len = __PAGE_ALIGN(new_len);
+#endif
 
 	/*
 	 * We allow a zero old-len as a special case
@@ -1161,7 +1198,7 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 
 		/* can we just expand the current mapping? */
 		if (vma_expandable(vma, delta)) {
-			long pages = delta >> PAGE_SHIFT;
+			long pages = delta >> MM_PAGE_SHIFT(mm);
 			VMA_ITERATOR(vmi, mm, vma->vm_end);
 			long charged = 0;
 
@@ -1210,10 +1247,9 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 		if (vma->vm_flags & VM_MAYSHARE)
 			map_flags |= MAP_SHARED;
 
-		new_addr = get_unmapped_area(vma->vm_file, 0, new_len,
-					vma->vm_pgoff +
-					((addr - vma->vm_start) >> PAGE_SHIFT),
-					map_flags);
+		new_addr = mremap_get_unmapped_area(vma->vm_file, 0, new_len,
+					vma_pgoff_offset(vma, addr), map_flags,
+					addr, flags);
 		if (IS_ERR_VALUE(new_addr)) {
 			ret = new_addr;
 			goto out;
@@ -1223,7 +1259,7 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			       &locked, flags, &uf, &uf_unmap);
 	}
 out:
-	if (offset_in_page(ret))
+	if (mm_offset_in_page(mm, ret))
 		locked = false;
 	mmap_write_unlock(current->mm);
 	if (locked && new_len > old_len)
