@@ -34,6 +34,7 @@
 #include <linux/string.h>
 #include <linux/thread_info.h>
 #include <linux/android_vendor.h>
+#include <linux/ppps.h>
 
 #include <vdso/processor.h>
 
@@ -53,8 +54,20 @@
  * TASK_UNMAPPED_BASE - the lower boundary of the mmap VM area.
  */
 
-#define DEFAULT_MAP_WINDOW_64	(UL(1) << VA_BITS_MIN)
+#if VA_BITS_COMPAT < VA_BITS_MIN
+#define MIN_DEFAULT_MAP_WINDOW_64	(UL(1) << VA_BITS_COMPAT)
+#else
+#define MIN_DEFAULT_MAP_WINDOW_64	(UL(1) << VA_BITS_MIN)
+#endif
+#define DEFAULT_MAP_WINDOW_64	mm_default_map_window64()
+#define DEFAULT_MAP_WINDOW_64_OF(mm)	mm_default_map_window64_of(mm)
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#define TASK_SIZE_64		mm_task_size64()
+#define TASK_SIZE_64_OF(tsk)	mm_task_size64_of((tsk)->mm)
+#else
 #define TASK_SIZE_64		(UL(1) << vabits_actual)
+#define TASK_SIZE_64_OF(tsk)	((void)(tsk), TASK_SIZE_64)
+#endif
 #define TASK_SIZE_MAX		(UL(1) << VA_BITS)
 
 #ifdef CONFIG_COMPAT
@@ -70,19 +83,22 @@
 #define TASK_SIZE		(test_thread_flag(TIF_32BIT) ? \
 				TASK_SIZE_32 : TASK_SIZE_64)
 #define TASK_SIZE_OF(tsk)	(test_tsk_thread_flag(tsk, TIF_32BIT) ? \
-				TASK_SIZE_32 : TASK_SIZE_64)
+				TASK_SIZE_32 : TASK_SIZE_64_OF(tsk))
 #define DEFAULT_MAP_WINDOW	(test_thread_flag(TIF_32BIT) ? \
 				TASK_SIZE_32 : DEFAULT_MAP_WINDOW_64)
 #else
 #define TASK_SIZE		TASK_SIZE_64
+#define TASK_SIZE_OF(tsk)	TASK_SIZE_64_OF(tsk)
 #define DEFAULT_MAP_WINDOW	DEFAULT_MAP_WINDOW_64
 #endif /* CONFIG_COMPAT */
 
 #ifdef CONFIG_ARM64_FORCE_52BIT
 #define STACK_TOP_MAX		TASK_SIZE_64
+#define STACK_TOP_MAX_OF(mm)	mm_task_size64_of(mm)
 #define TASK_UNMAPPED_BASE	(PAGE_ALIGN(TASK_SIZE / 4))
 #else
 #define STACK_TOP_MAX		DEFAULT_MAP_WINDOW_64
+#define STACK_TOP_MAX_OF(mm)	DEFAULT_MAP_WINDOW_64_OF(mm)
 #define TASK_UNMAPPED_BASE	(PAGE_ALIGN(DEFAULT_MAP_WINDOW / 4))
 #endif /* CONFIG_ARM64_FORCE_52BIT */
 
