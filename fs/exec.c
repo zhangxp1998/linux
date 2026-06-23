@@ -81,6 +81,11 @@
 #include <trace/events/sched.h>
 #include <trace/hooks/sched.h>
 
+/* Architectures may size the temporary stack from the target exec mm. */
+#ifndef STACK_TOP_MAX_OF
+#define STACK_TOP_MAX_OF(mm) ((void)(mm), STACK_TOP_MAX)
+#endif
+
 static int bprm_creds_from_file(struct linux_binprm *bprm);
 
 int suid_dumpable = 0;
@@ -281,10 +286,11 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	 * Place the stack at the largest stack address the architecture
 	 * supports. Later, we'll move this to an appropriate place. We don't
 	 * use STACK_TOP because that can depend on attributes which aren't
-	 * configured yet.
+	 * configured yet. Use the target mm because current->mm can describe
+	 * the old layout, or can be NULL for the first userspace process.
 	 */
 	BUILD_BUG_ON(VM_STACK_FLAGS & VM_STACK_INCOMPLETE_SETUP);
-	vma->vm_end = STACK_TOP_MAX;
+	vma->vm_end = STACK_TOP_MAX_OF(mm);
 	vma->vm_start = vma->vm_end - __PAGE_SIZE;
 	vm_flags_init(vma, VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP);
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
