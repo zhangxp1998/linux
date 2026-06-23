@@ -217,10 +217,11 @@ static void show_pte(unsigned long addr)
 int __ptep_set_access_flags_anysz(struct vm_area_struct *vma,
 				  unsigned long address, pte_t *ptep,
 				  pte_t entry, int dirty,
-				  unsigned long __always_unused pgsize)
+				  unsigned long pgsize)
 {
 	pteval_t old_pteval, pteval;
 	pte_t pte = __ptep_get(ptep);
+	int level;
 
 	if (pte_same(pte, entry))
 		return 0;
@@ -244,9 +245,27 @@ int __ptep_set_access_flags_anysz(struct vm_area_struct *vma,
 		pteval = cmpxchg_relaxed(&pte_val(*ptep), old_pteval, pteval);
 	} while (pteval != old_pteval);
 
-	/* Invalidate a stale read-only entry */
-	if (dirty)
-		flush_tlb_page(vma, address);
+	/*
+	 * Invalidate the local stale read-only entry.  Remote stale entries
+	 * may still cause page faults and be invalidated via
+	 * flush_tlb_fix_spurious_fault().
+	 */
+	if (dirty) {
+		if (pgsize == PAGE_SIZE || pgsize == PAGE_SIZE_COMPAT)
+			level = 3;
+		else if (pgsize == PMD_SIZE || pgsize == PMD_SIZE_COMPAT)
+			level = 2;
+#ifndef __PAGETABLE_PMD_FOLDED
+		else if (pgsize == PUD_SIZE)
+			level = 1;
+#endif
+		else {
+			level = TLBI_TTL_UNKNOWN;
+			WARN_ON(1);
+		}
+
+		__flush_tlb_range(vma, address, address + pgsize, pgsize, true, level);
+	}
 	return 1;
 }
 
