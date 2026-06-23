@@ -11,6 +11,7 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/ppps.h>
 
 #include <asm/cpufeature.h>
 #include <asm/mmu_context.h>
@@ -346,6 +347,27 @@ asmlinkage void post_ttbr_update_workaround(void)
 			ARM64_WORKAROUND_CAVIUM_27456));
 }
 
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+static void mm_switch_tcr(struct mm_struct *mm)
+{
+	unsigned long tcr;
+
+	if (mm == &init_mm)
+		return;
+
+	tcr = read_sysreg(tcr_el1);
+	tcr &= ~(TCR_TG0_MASK | TCR_T0SZ_MASK);
+	if (mm->page_shift == PAGE_SHIFT_COMPAT)
+		tcr |= TCR_TG0_4K | TCR_T0SZ(VA_BITS_COMPAT);
+	else
+		tcr |= TCR_TG0_16K | TCR_T0SZ(vabits_actual);
+	write_sysreg(tcr, tcr_el1);
+}
+#else
+static inline void mm_switch_tcr(struct mm_struct *mm) { }
+#endif
+
 void cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm)
 {
 	unsigned long ttbr1 = read_sysreg(ttbr1_el1);
@@ -363,6 +385,8 @@ void cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm)
 	/* Set ASID in TTBR1 since TCR.A1 is set */
 	ttbr1 &= ~TTBR_ASID_MASK;
 	ttbr1 |= FIELD_PREP(TTBR_ASID_MASK, asid);
+
+	mm_switch_tcr(mm);
 
 	cpu_set_reserved_ttbr0_nosync();
 	write_sysreg(ttbr1, ttbr1_el1);
