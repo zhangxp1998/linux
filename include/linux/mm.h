@@ -28,6 +28,7 @@
 #include <linux/sizes.h>
 #include <linux/sched.h>
 #include <linux/pgtable.h>
+#include <linux/ppps.h>
 #include <linux/kasan.h>
 #include <linux/memremap.h>
 #include <linux/slab.h>
@@ -3476,9 +3477,21 @@ static inline unsigned long vm_end_gap(struct vm_area_struct *vma)
 
 static inline unsigned long vma_pages(struct vm_area_struct *vma)
 {
-	return (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+	return (vma->vm_end - vma->vm_start) >> MM_PAGE_SHIFT(vma->vm_mm);
 }
 
+static inline unsigned long vma_last_pgoff(struct vm_area_struct *vma)
+{
+	/*
+	 * For file-backed VMAs, vm_pgoff is always expressed in native PAGE_SIZE
+	 * units (matching the page cache indexing). For anonymous VMAs, it is
+	 * scaled to the process's page size.
+	 */
+	if (!vma_is_anonymous(vma))
+		return vma->vm_pgoff + DIV_ROUND_UP(vma->vm_end - vma->vm_start, PAGE_SIZE) - 1;
+
+	return vma->vm_pgoff + vma_pages(vma) - 1;
+}
 /* Look up the first VMA which exactly match the interval vm_start ... vm_end */
 static inline struct vm_area_struct *find_exact_vma(struct mm_struct *mm,
 				unsigned long vm_start, unsigned long vm_end)
