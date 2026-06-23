@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/mm.h>
+#include <linux/ppps.h>
 #include <linux/rmap.h>
 #include <linux/hugetlb.h>
 #include <linux/swap.h>
@@ -224,17 +225,17 @@ restart:
 	do {
 		pgd = pgd_offset(mm, pvmw->address);
 		if (!pgd_present(*pgd)) {
-			step_forward(pvmw, PGDIR_SIZE);
+			step_forward(pvmw, MM_PGDIR_SIZE(mm));
 			continue;
 		}
 		p4d = p4d_offset_mm(mm, pgd, pvmw->address);
 		if (!p4d_present(*p4d)) {
-			step_forward(pvmw, P4D_SIZE);
+			step_forward(pvmw, MM_P4D_SIZE(mm));
 			continue;
 		}
 		pud = pud_offset_mm(mm, p4d, pvmw->address);
 		if (!pud_present(*pud)) {
-			step_forward(pvmw, PUD_SIZE);
+			step_forward(pvmw, MM_PUD_SIZE(mm));
 			continue;
 		}
 
@@ -285,7 +286,7 @@ restart:
 
 				spin_unlock(ptl);
 			}
-			step_forward(pvmw, PMD_SIZE);
+			step_forward(pvmw, MM_PMD_SIZE(mm));
 			continue;
 		}
 		if (!map_pte(pvmw, &pmde, &ptl)) {
@@ -298,11 +299,11 @@ this_pte:
 			return true;
 next_pte:
 		do {
-			pvmw->address += PAGE_SIZE;
+			pvmw->address += MM_PAGE_SIZE(mm);
 			if (pvmw->address >= end)
 				return not_found(pvmw);
 			/* Did we cross page table boundary? */
-			if ((pvmw->address & (PMD_SIZE - PAGE_SIZE)) == 0) {
+			if ((pvmw->address & (MM_PMD_SIZE(mm) - MM_PAGE_SIZE(mm))) == 0) {
 				if (pvmw->ptl) {
 					spin_unlock(pvmw->ptl);
 					pvmw->ptl = NULL;
