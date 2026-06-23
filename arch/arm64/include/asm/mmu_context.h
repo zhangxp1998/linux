@@ -52,6 +52,7 @@ static inline void cpu_set_reserved_ttbr0(void)
 	isb();
 }
 
+
 void cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm);
 
 static inline void cpu_switch_mm(pgd_t *pgd, struct mm_struct *mm)
