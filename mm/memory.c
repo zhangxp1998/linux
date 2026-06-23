@@ -3774,10 +3774,16 @@ static inline void unmap_mapping_range_tree(struct rb_root_cached *root,
 		zba = max(first_index, vba);
 		zea = min(last_index, vea);
 
-		unmap_mapping_range_vma(vma,
-			((zba - vba) << PAGE_SHIFT) + vma->vm_start,
-			((zea - vba + 1) << PAGE_SHIFT) + vma->vm_start,
-				details);
+		unsigned long start = ((zba - vba) << PAGE_SHIFT) + vma->vm_start;
+		unsigned long end = ((zea - vba + 1) << PAGE_SHIFT) + vma->vm_start;
+
+		if (end > vma->vm_end)
+			end = vma->vm_end;
+		if (start < vma->vm_start)
+			start = vma->vm_start;
+
+		if (start < end)
+			unmap_mapping_range_vma(vma, start, end, details);
 	}
 }
 
