@@ -294,6 +294,13 @@
 #define TCR_TG0_4K		(UL(0) << TCR_TG0_SHIFT)
 #define TCR_TG0_64K		(UL(1) << TCR_TG0_SHIFT)
 #define TCR_TG0_16K		(UL(2) << TCR_TG0_SHIFT)
+#ifdef CONFIG_ARM64_64K_PAGES
+#define TCR_TG0_NATIVE		TCR_TG0_64K
+#elif defined(CONFIG_ARM64_16K_PAGES)
+#define TCR_TG0_NATIVE		TCR_TG0_16K
+#else
+#define TCR_TG0_NATIVE		TCR_TG0_4K
+#endif
 
 #define TCR_TG1_SHIFT		30
 #define TCR_TG1_MASK		(UL(3) << TCR_TG1_SHIFT)
