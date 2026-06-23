@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/mm.h>
+#include <linux/ppps.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/compiler.h>
@@ -571,7 +572,7 @@ unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
 	unsigned long len, unsigned long prot,
 	unsigned long flag, unsigned long pgoff)
 {
-	loff_t off = (loff_t)pgoff << PAGE_SHIFT;
+	loff_t off = (loff_t)pgoff << MM_PAGE_SHIFT(current->mm);
 	unsigned long ret;
 	struct mm_struct *mm = current->mm;
 	unsigned long populate;
@@ -615,12 +616,13 @@ unsigned long vm_mmap(struct file *file, unsigned long addr,
 	unsigned long len, unsigned long prot,
 	unsigned long flag, unsigned long offset)
 {
-	if (unlikely(offset + PAGE_ALIGN(len) < offset))
+	if (unlikely(offset + MM_PAGE_ALIGN(current->mm, len) < offset))
 		return -EINVAL;
-	if (unlikely(offset_in_page(offset)))
+	if (unlikely(!MM_PAGE_ALIGNED(current->mm, offset)))
 		return -EINVAL;
 
-	return vm_mmap_pgoff(file, addr, len, prot, flag, offset >> PAGE_SHIFT);
+	return vm_mmap_pgoff(file, addr, len, prot, flag,
+			    offset >> MM_PAGE_SHIFT(current->mm));
 }
 EXPORT_SYMBOL(vm_mmap);
 
