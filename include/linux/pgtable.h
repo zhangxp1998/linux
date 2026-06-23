@@ -394,6 +394,14 @@ static inline pte_t pte_advance_pfn(pte_t pte, unsigned long nr)
 
 #define pte_next_pfn(pte) pte_advance_pfn(pte, 1)
 
+/* Architectures with sub-native PTEs override the byte-wise advance. */
+#ifndef pte_advance_phys
+static inline pte_t pte_advance_phys(pte_t pte, unsigned long bytes)
+{
+	return pte_advance_pfn(pte, bytes >> PAGE_SHIFT);
+}
+#endif
+
 #ifndef set_ptes
 /**
  * set_ptes - Map consecutive pages to a contiguous range of addresses.

@@ -505,6 +505,7 @@ static inline pte_t pte_advance_pfn(pte_t pte, unsigned long nr)
 	return pfn_pte(pte_pfn(pte) + nr, pte_pgprot(pte));
 }
 
+#define pte_advance_phys pte_advance_phys
 static inline pte_t pte_advance_phys(pte_t pte, unsigned long bytes)
 {
 	phys_addr_t phys = __pte_to_phys(pte);
