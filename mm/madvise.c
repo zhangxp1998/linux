@@ -20,6 +20,7 @@
 #include <linux/fadvise.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
+#include <linux/ppps.h>
 #include <linux/mm_inline.h>
 #include <linux/string.h>
 #include <linux/uio.h>
@@ -178,7 +179,7 @@ static int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
 	spinlock_t *ptl;
 	unsigned long addr;
 
-	for (addr = start; addr < end; addr += PAGE_SIZE) {
+	for (addr = start; addr < end; addr += MM_PAGE_SIZE(vma->vm_mm)) {
 		pte_t pte;
 		swp_entry_t entry;
 		struct folio *folio;
@@ -323,13 +324,14 @@ static inline bool can_do_file_pageout(struct vm_area_struct *vma)
 	       file_permission(vma->vm_file, MAY_WRITE) == 0;
 }
 
-static inline int madvise_folio_pte_batch(unsigned long addr, unsigned long end,
+static inline int madvise_folio_pte_batch(struct mm_struct *mm,
+					  unsigned long addr, unsigned long end,
 					  struct folio *folio, pte_t *ptep,
 					  pte_t pte, bool *any_young,
 					  bool *any_dirty)
 {
 	const fpb_t fpb_flags = FPB_IGNORE_DIRTY | FPB_IGNORE_SOFT_DIRTY;
-	int max_nr = (end - addr) / PAGE_SIZE;
+	int max_nr = (end - addr) / MM_PAGE_SIZE(mm);
 
 	return folio_pte_batch(folio, addr, ptep, pte, max_nr, fpb_flags, NULL,
 			       any_young, any_dirty);
@@ -438,14 +440,14 @@ huge_unlock:
 
 regular_folio:
 #endif
-	tlb_change_page_size(tlb, PAGE_SIZE);
+	tlb_change_page_size(tlb, MM_PAGE_SIZE(mm));
 restart:
 	start_pte = pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (!start_pte)
 		return 0;
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
-	for (; addr < end; pte += nr, addr += nr * PAGE_SIZE) {
+	for (; addr < end; pte += nr, addr += nr * MM_PAGE_SIZE(mm)) {
 		bool need_skip = false;
 		nr = 1;
 		ptent = ptep_get(pte);
@@ -486,7 +488,7 @@ restart:
 		if (folio_test_large(folio)) {
 			bool any_young;
 
-			nr = madvise_folio_pte_batch(addr, end, folio, pte,
+			nr = madvise_folio_pte_batch(mm, addr, end, folio, pte,
 						     ptent, &any_young, NULL);
 
 			if (any_young)
@@ -697,13 +699,13 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		if (madvise_free_huge_pmd(tlb, vma, pmd, addr, next))
 			return 0;
 
-	tlb_change_page_size(tlb, PAGE_SIZE);
+	tlb_change_page_size(tlb, MM_PAGE_SIZE(mm));
 	start_pte = pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
 	if (!start_pte)
 		return 0;
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
-	for (; addr != end; pte += nr, addr += PAGE_SIZE * nr) {
+	for (; addr != end; pte += nr, addr += MM_PAGE_SIZE(mm) * nr) {
 		nr = 1;
 		ptent = ptep_get(pte);
 
@@ -719,7 +721,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 
 			entry = pte_to_swp_entry(ptent);
 			if (!non_swap_entry(entry)) {
-				max_nr = (end - addr) / PAGE_SIZE;
+				max_nr = (end - addr) / MM_PAGE_SIZE(mm);
 				nr = swap_pte_batch(pte, max_nr, ptent);
 				nr_swap -= nr;
 				free_swap_and_cache_nr(entry, nr);
@@ -745,7 +747,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		if (folio_test_large(folio)) {
 			bool any_young, any_dirty;
 
-			nr = madvise_folio_pte_batch(addr, end, folio, pte,
+			nr = madvise_folio_pte_batch(mm, addr, end, folio, pte,
 						     ptent, &any_young, &any_dirty);
 
 			if (nr < folio_nr_pages(folio)) {
@@ -1019,7 +1021,7 @@ static long madvise_populate(struct mm_struct *mm, unsigned long start,
 				return -ENOMEM;
 			}
 		}
-		start += pages * PAGE_SIZE;
+		start += pages * MM_PAGE_SIZE(mm);
 	}
 	return 0;
 }
@@ -1193,7 +1195,8 @@ static long madvise_guard_install(struct vm_area_struct *vma,
 			return err;
 
 		if (err == 0) {
-			unsigned long nr_expected_pages = PHYS_PFN(end - start);
+			unsigned long nr_expected_pages =
+				MM_PHYS_PFN(vma->vm_mm, end - start);
 
 			VM_WARN_ON(nr_pages != nr_expected_pages);
 			return 0;
@@ -1849,9 +1852,15 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	if (!madvise_behavior_valid(behavior))
 		return -EINVAL;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (!MM_PAGE_ALIGNED(mm, start))
+		return -EINVAL;
+	len = MM_PAGE_ALIGN(mm, len_in);
+#else
 	if (!__PAGE_ALIGNED(start))
 		return -EINVAL;
 	len = __PAGE_ALIGN(len_in);
+#endif
 
 	/* Check to see whether len was rounded up from small -ve to zero */
 	if (len_in && !len)
