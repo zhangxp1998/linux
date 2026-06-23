@@ -43,6 +43,7 @@
 #include <linux/unicode.h>
 #include <linux/mm_inline.h>
 #include <linux/page_size_compat.h>
+#include <linux/ppps.h>
 #include "swap.h"
 
 #undef CREATE_TRACE_POINTS
@@ -3328,7 +3329,9 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 		goto out_release;
 
 	ret = mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr,
-				       &folio->page, true, flags);
+				       &folio->page, true,
+				       vma_address_to_slice(dst_vma, dst_addr),
+				       flags);
 	if (ret)
 		goto out_delete_from_cache;
 
