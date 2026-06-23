@@ -53,6 +53,7 @@
  */
 
 #include <linux/mm.h>
+#include <linux/ppps.h>
 #include <linux/sched/mm.h>
 #include <linux/sched/task.h>
 #include <linux/pagemap.h>
@@ -1570,7 +1571,7 @@ void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
 	}
 
 	VM_WARN_ON_ONCE(address < vma->vm_start ||
-			address + (nr << PAGE_SHIFT) > vma->vm_end);
+			address + (nr << MM_PAGE_SHIFT(vma->vm_mm)) > vma->vm_end);
 
 	__folio_mod_stat(folio, nr, nr_pmdmapped);
 	mod_mthp_stat(folio_order(folio), MTHP_STAT_NR_ANON, 1);
