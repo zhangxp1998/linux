@@ -10,6 +10,11 @@
 
 #include <linux/page_size_compat.h>
 
+/* Architectures may size the temporary stack from the target exec mm. */
+#ifndef STACK_TOP_MAX_OF
+#define STACK_TOP_MAX_OF(mm) ((void)(mm), STACK_TOP_MAX)
+#endif
+
 /*
  * Relocate a VMA downwards by shift bytes. There cannot be any VMAs between
  * this VMA and its relocated range, which will now reside at [vma->vm_start -
@@ -134,10 +139,11 @@ int create_init_stack_vma(struct mm_struct *mm, struct vm_area_struct **vmap,
 	 * Place the stack at the largest stack address the architecture
 	 * supports. Later, we'll move this to an appropriate place. We don't
 	 * use STACK_TOP because that can depend on attributes which aren't
-	 * configured yet.
+	 * configured yet. Use the target mm because current->mm can describe
+	 * the old layout, or can be NULL for the first userspace process.
 	 */
 	BUILD_BUG_ON(VM_STACK_FLAGS & VM_STACK_INCOMPLETE_SETUP);
-	vma->vm_end = STACK_TOP_MAX;
+	vma->vm_end = STACK_TOP_MAX_OF(mm);
 	vma->vm_start = vma->vm_end - __PAGE_SIZE;
 	vm_flags_init(vma, VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP);
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);

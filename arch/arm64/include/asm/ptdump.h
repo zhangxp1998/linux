@@ -69,7 +69,7 @@ void note_page_p4d(struct ptdump_state *st, unsigned long addr, p4d_t p4d);
 void note_page_pgd(struct ptdump_state *st, unsigned long addr, pgd_t pgd);
 void note_page_flush(struct ptdump_state *st);
 #ifdef CONFIG_PTDUMP_DEBUGFS
-#define EFI_RUNTIME_MAP_END	DEFAULT_MAP_WINDOW_64
+#define EFI_RUNTIME_MAP_END	(UL(1) << VA_BITS_MIN)
 void __init ptdump_debugfs_register(struct ptdump_info *info, const char *name);
 #else
 static inline void ptdump_debugfs_register(struct ptdump_info *info,

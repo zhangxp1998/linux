@@ -73,13 +73,13 @@ static int walk_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 		 * fit its pmd_bad() check (_PAGE_NX set and _PAGE_RW clear),
 		 * and CONFIG_EFI_PGT_DUMP efi_mm goes so far as to walk them.
 		 */
-		if (walk->mm == &init_mm || addr >= TASK_SIZE)
+		if (walk->mm == &init_mm || addr >= TASK_SIZE_MAX)
 			pte = pte_offset_kernel_mm(walk->mm, pmd, addr);
 		else
 			pte = pte_offset_map_mm(walk->mm, pmd, addr);
 		if (pte) {
 			err = walk_pte_range_inner(pte, addr, end, walk);
-			if (walk->mm != &init_mm && addr < TASK_SIZE)
+			if (walk->mm != &init_mm && addr < TASK_SIZE_MAX)
 				pte_unmap(pte);
 		}
 	} else {
