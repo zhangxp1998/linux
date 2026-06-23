@@ -12,6 +12,10 @@
 #include <linux/scatterlist.h>
 #include <linux/instrumented.h>
 #include <linux/iov_iter.h>
+#include <linux/ppps.h>
+
+#define ITER_PAGE_SIZE(i) \
+	(user_backed_iter(i) ? MM_PAGE_SIZE(current->mm) : PAGE_SIZE)
 
 static __always_inline
 size_t copy_to_user_iter(void __user *iter_to, size_t progress,
@@ -1241,14 +1245,15 @@ static int iov_npages(const struct iov_iter *i, int maxpages)
 	size_t skip = i->iov_offset, size = i->count;
 	const struct iovec *p;
 	int npages = 0;
+	size_t page_size = ITER_PAGE_SIZE(i);
 
 	for (p = iter_iov(i); size; skip = 0, p++) {
-		unsigned offs = offset_in_page(p->iov_base + skip);
+		unsigned int offs = (unsigned long)(p->iov_base + skip) % page_size;
 		size_t len = min(p->iov_len - skip, size);
 
 		if (len) {
 			size -= len;
-			npages += DIV_ROUND_UP(offs + len, PAGE_SIZE);
+			npages += DIV_ROUND_UP(offs + len, page_size);
 			if (unlikely(npages > maxpages))
 				return maxpages;
 		}
@@ -1279,8 +1284,9 @@ int iov_iter_npages(const struct iov_iter *i, int maxpages)
 	if (unlikely(!i->count))
 		return 0;
 	if (likely(iter_is_ubuf(i))) {
-		unsigned offs = offset_in_page(i->ubuf + i->iov_offset);
-		int npages = DIV_ROUND_UP(offs + i->count, PAGE_SIZE);
+		size_t page_size = ITER_PAGE_SIZE(i);
+		unsigned int offs = (unsigned long)(i->ubuf + i->iov_offset) % page_size;
+		int npages = DIV_ROUND_UP(offs + i->count, page_size);
 		return min(npages, maxpages);
 	}
 	/* iovec and kvec have identical layouts */
@@ -1813,9 +1819,9 @@ static ssize_t iov_iter_extract_user_pages(struct iov_iter *i,
 		gup_flags |= FOLL_NOFAULT;
 
 	addr = first_iovec_segment(i, &maxsize);
-	*offset0 = offset = addr % PAGE_SIZE;
-	addr &= PAGE_MASK;
-	maxpages = want_pages_array(pages, maxsize, offset, maxpages);
+	offset = addr % pgsize;
+	addr &= pgmask;
+	maxpages = want_pages_array_mmsz(pages, maxsize, offset, maxpages, pgsize);
 	if (!maxpages)
 		return -ENOMEM;
 	res = pin_user_pages_fast(addr, maxpages, gup_flags, *pages);
