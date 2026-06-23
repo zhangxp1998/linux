@@ -57,6 +57,9 @@ static inline void tlb_flush(struct mmu_gather *tlb)
 	unsigned long stride = tlb_get_unmap_size(tlb);
 	int tlb_level = tlb_get_level(tlb);
 
+	if (tlb->mm && stride == PAGE_SIZE)
+		stride = MM_PAGE_SIZE(tlb->mm);
+
 	/*
 	 * If we're tearing down the address space then we only care about
 	 * invalidating the walk-cache, since the ASID allocator won't
