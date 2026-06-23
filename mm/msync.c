@@ -15,6 +15,7 @@
 #include <linux/syscalls.h>
 #include <linux/sched.h>
 #include <linux/page_size_compat.h>
+#include <linux/ppps.h>
 
 /*
  * MS_SYNC syncs the entire file - including mappings.
@@ -42,12 +43,20 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 
 	if (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC))
 		goto out;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (mm_offset_in_page(current->mm, start))
+#else
 	if (__offset_in_page_log(start))
+#endif
 		goto out;
 	if ((flags & MS_ASYNC) && (flags & MS_SYNC))
 		goto out;
 	error = -ENOMEM;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	len = MM_PAGE_ALIGN(current->mm, len);
+#else
 	len = (len + ~__PAGE_MASK) & __PAGE_MASK;
+#endif
 	end = start + len;
 	if (end < start)
 		goto out;
