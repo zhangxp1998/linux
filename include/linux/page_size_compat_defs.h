@@ -53,6 +53,33 @@ static __always_inline unsigned int __page_shift(void)
 #define __PAGE_ALIGN(addr)		ALIGN(addr, __PAGE_SIZE)
 #define __PAGE_ALIGN_DOWN(addr)	ALIGN_DOWN(addr, __PAGE_SIZE)
 
+/*
+ * User-ABI page geometry of an mm: the PPPS per-process page size when
+ * CONFIG_ARM64_PER_PROCESS_PAGE_SIZE is enabled, otherwise the (possibly
+ * emulated) __PAGE_* geometry.  Lets call sites drop
+ * "#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE ... #else ... __PAGE_*"
+ * pairs where the two branches are otherwise identical.
+ */
+#include <linux/ppps.h>
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#define MM_UAPI_PAGE_SHIFT(mm)		MM_PAGE_SHIFT(mm)
+#define MM_UAPI_PAGE_SIZE(mm)		MM_PAGE_SIZE(mm)
+#define MM_UAPI_PAGE_MASK(mm)		MM_PAGE_MASK(mm)
+#define MM_UAPI_PAGE_ALIGN(mm, addr)	MM_PAGE_ALIGN(mm, addr)
+#define MM_UAPI_PAGE_ALIGNED(mm, addr)	MM_PAGE_ALIGNED(mm, addr)
+#define mm_uapi_offset_in_page(mm, p)	mm_offset_in_page(mm, p)
+#define mm_uapi_offset_in_page_log(mm, p) mm_offset_in_page(mm, p)
+#else
+#define MM_UAPI_PAGE_SHIFT(mm)		((void)(mm), __PAGE_SHIFT)
+#define MM_UAPI_PAGE_SIZE(mm)		((void)(mm), __PAGE_SIZE)
+#define MM_UAPI_PAGE_MASK(mm)		((void)(mm), __PAGE_MASK)
+#define MM_UAPI_PAGE_ALIGN(mm, addr)	((void)(mm), __PAGE_ALIGN(addr))
+#define MM_UAPI_PAGE_ALIGNED(mm, addr)	((void)(mm), __PAGE_ALIGNED(addr))
+#define mm_uapi_offset_in_page(mm, p)	((void)(mm), (unsigned long)(p) & ~__PAGE_MASK)
+#define mm_uapi_offset_in_page_log(mm, p) ((void)(mm), __offset_in_page_log(p))
+#endif
+
 #define __offset_in_page(p)		((unsigned long)(p) & ~__PAGE_MASK)
 
 /*
