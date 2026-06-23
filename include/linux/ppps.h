@@ -68,6 +68,8 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 #define mm_inherit_pagesize(mm) \
 	((mm)->page_shift = current->mm ? current->mm->page_shift : PAGE_SHIFT)
 
+#define vma_set_slice_off(vma, val)	((vma)->vm_slice_off = (val))
+#define vma_slice_off(vma)		((vma)->vm_slice_off)
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
 #define VA_BITS_COMPAT		VA_BITS
@@ -82,7 +84,13 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 
 static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm) {}
 #define mm_inherit_pagesize(mm) ((void)(mm))
+#define vma_set_slice_off(vma, val)	((void)(vma), (void)(val))
+#define vma_slice_off(vma)		((void)(vma), 0)
 #endif
+
+#define PPPS_SLICE_SHIFT	(PAGE_SHIFT - PAGE_SHIFT_COMPAT)
+#define PPPS_SLICES_PER_PAGE	(1UL << PPPS_SLICE_SHIFT)
+#define PPPS_SLICE_MASK		(PPPS_SLICES_PER_PAGE - 1)
 
 #define MM_PAGE_SHIFT(...) \
 	_MM_PAGE_SHIFT_DISPATCH(__VA_ARGS__ __VA_OPT__(, /* */) PGTABLE_MM())

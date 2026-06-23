@@ -782,6 +782,9 @@ struct vm_area_struct {
 	/* Information about our backing store: */
 	unsigned long vm_pgoff;		/* Offset (within vm_file) in PAGE_SIZE
 					   units */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	unsigned int vm_slice_off;
+#endif
 	struct file * vm_file;		/* File we map to (can be NULL). */
 	void * vm_private_data;		/* was vm_pte (shared mem) */
 

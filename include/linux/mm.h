@@ -29,6 +29,7 @@
 #include <linux/sched.h>
 #include <linux/pgtable.h>
 #include <linux/pgsize_migration_inline.h>
+#include <linux/ppps.h>
 #include <linux/kasan.h>
 #include <linux/page_pinner.h>
 #include <linux/memremap.h>
@@ -1031,6 +1032,71 @@ static inline bool vma_is_anonymous(struct vm_area_struct *vma)
 	return !vma->vm_ops;
 }
 
+/* Compat file/shared VMAs are the only ones whose PTEs carry vm_slice_off. */
+static inline bool ppps_vma_has_slices(const struct vm_area_struct *vma)
+{
+	return ppps_mm_is_compat(vma->vm_mm) && vma->vm_ops;
+}
+
+/* Which process-page slice of its native page does @address map?  0 natively. */
+static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma,
+						unsigned long address)
+{
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return 0;
+	if (!vma->vm_ops)	/* anonymous: sliced by address alone */
+		return (address >> PAGE_SHIFT_COMPAT) & PPPS_SLICE_MASK;
+	return (((address - vma->vm_start) >> PAGE_SHIFT_COMPAT) +
+		vma_slice_off(vma)) & PPPS_SLICE_MASK;
+}
+
+/* Byte offset within the native page for the process page at @addr. */
+static inline unsigned long vma_page_slice_offset(struct vm_area_struct *vma,
+						  struct page *page,
+						  unsigned long addr)
+{
+	return (unsigned long)vma_address_to_slice(vma, addr) <<
+		PAGE_SHIFT_COMPAT;
+}
+
+/* Native page-cache index (file) or process-page index (anon) of @address. */
+static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
+					    unsigned long address)
+{
+	unsigned long off = (address - vma->vm_start) >> MM_PAGE_SHIFT(vma->vm_mm);
+
+	if (ppps_vma_has_slices(vma))
+		off = (off + vma_slice_off(vma)) >> PPPS_SLICE_SHIFT;
+	return vma->vm_pgoff + off;
+}
+
+/*
+ * Byte offset into the file/object at which a file-backed @vma starts.  Valid
+ * for native and compat VMAs; use instead of "vm_pgoff << PAGE_SHIFT", which
+ * loses the compat slice.
+ */
+static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
+{
+	return ((loff_t)vma->vm_pgoff << PAGE_SHIFT) +
+	       ((loff_t)vma_slice_off(vma) << PAGE_SHIFT_COMPAT);
+}
+
+/* Byte offset into the file/object of user address @addr inside @vma. */
+static inline loff_t vma_addr_file_offset(const struct vm_area_struct *vma,
+					  unsigned long addr)
+{
+	return vma_file_offset(vma) + (addr - vma->vm_start);
+}
+
+/* Slice of the native page that byte offset @off of a file/object falls in. */
+static inline unsigned int vma_offset_to_slice(const struct vm_area_struct *vma,
+					       loff_t off)
+{
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return 0;
+	return (off & ~PAGE_MASK) >> PAGE_SHIFT_COMPAT;
+}
+
 /*
  * Indicate if the VMA is a heap for the given task; for
  * /proc/PID/maps that is the heap of the main task.
@@ -2016,6 +2082,14 @@ static inline struct folio *pfn_folio(unsigned long pfn)
 	return page_folio(pfn_to_page(pfn));
 }
 
+#ifdef CONFIG_MMU
+static inline pte_t vma_pte_mkslice(const struct vm_area_struct *vma, pte_t pte,
+				    unsigned long addr)
+{
+	return pte_mkslice(pte, vma_address_to_slice(vma, addr));
+}
+#endif
+
 /**
  * folio_maybe_dma_pinned - Report if a folio may be pinned for DMA.
  * @folio: The folio.
@@ -2831,6 +2905,12 @@ static inline int mm_counter(struct folio *folio)
 	if (folio_test_anon(folio))
 		return MM_ANONPAGES;
 	return mm_counter_file(folio);
+}
+
+static inline unsigned long mm_native_to_process_pages(struct mm_struct *mm,
+						       unsigned long pages)
+{
+	return pages << (PAGE_SHIFT - MM_PAGE_SHIFT(mm));
 }
 
 static inline unsigned long get_mm_rss(struct mm_struct *mm)
@@ -3676,22 +3756,54 @@ static inline unsigned long vm_end_gap(struct vm_area_struct *vma)
 	return vm_end;
 }
 
-/**
- * vma_file_offset - byte offset at the start of a file-backed VMA
- * @vma: file-backed mapping
- *
- * Return: the VMA's page offset expressed in bytes.
- */
-static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
-{
-	return (loff_t)vma->vm_pgoff << PAGE_SHIFT;
-}
-
 static inline unsigned long vma_pages(struct vm_area_struct *vma)
 {
-	return (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+	return (vma->vm_end - vma->vm_start) >> MM_PAGE_SHIFT(vma->vm_mm);
 }
 
+/*
+ * vm_pgoff of the last page @vma maps: a native page-cache index for file
+ * VMAs (the first vm_slice_off slices of the first page are not mapped), a
+ * process-page index for anonymous VMAs.
+ */
+static inline unsigned long vma_last_pgoff(struct vm_area_struct *vma)
+{
+	unsigned long size = vma->vm_end - vma->vm_start;
+
+	/*
+	 * For file-backed VMAs, vm_pgoff is always expressed in native PAGE_SIZE
+	 * units (matching the page cache indexing). For anonymous VMAs, it is
+	 * scaled to the process's page size.
+	 */
+	if (!vma_is_anonymous(vma)) {
+		size += (unsigned long)vma_slice_off(vma) <<
+			MM_PAGE_SHIFT(vma->vm_mm);
+		return vma->vm_pgoff + DIV_ROUND_UP(size, PAGE_SIZE) - 1;
+	}
+
+	return vma->vm_pgoff + vma_pages(vma) - 1;
+}
+
+/* log2 of the unit vm_pgoff counts in: process pages for anonymous VMAs. */
+static inline unsigned int vma_pgoff_shift(const struct vm_area_struct *vma)
+{
+	return vma->vm_ops ? PAGE_SHIFT : MM_PAGE_SHIFT(vma->vm_mm);
+}
+
+/*
+ * User address at which @vma maps @pgoff.  Not clamped: a compat file VMA
+ * that starts mid-page maps the first vm_slice_off slices of its first page
+ * nowhere, so the result may lie before vm_start (or beyond vm_end).
+ */
+static inline unsigned long vma_pgoff_to_address(const struct vm_area_struct *vma,
+						 pgoff_t pgoff)
+{
+	unsigned long address = vma->vm_start;
+
+	if (ppps_vma_has_slices(vma))
+		address -= (unsigned long)vma_slice_off(vma) << PAGE_SHIFT_COMPAT;
+	return address + ((pgoff - vma->vm_pgoff) << vma_pgoff_shift(vma));
+}
 /* Look up the first VMA which exactly match the interval vm_start ... vm_end */
 static inline struct vm_area_struct *find_exact_vma(struct mm_struct *mm,
 				unsigned long vm_start, unsigned long vm_end)
