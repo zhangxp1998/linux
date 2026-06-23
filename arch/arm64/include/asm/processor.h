@@ -31,6 +31,7 @@
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/thread_info.h>
+#include <linux/ppps.h>
 
 #include <vdso/processor.h>
 
@@ -50,8 +51,9 @@
  * TASK_UNMAPPED_BASE - the lower boundary of the mmap VM area.
  */
 
-#define DEFAULT_MAP_WINDOW_64	(UL(1) << VA_BITS_MIN)
-#define TASK_SIZE_64		(UL(1) << vabits_actual)
+#define DEFAULT_MAP_WINDOW_64	mm_default_map_window64()
+#define TASK_SIZE_64		mm_task_size64()
+#define TASK_SIZE_64_OF(tsk)	mm_task_size64_of((tsk)->pgtable_mm ? (tsk)->pgtable_mm : (tsk)->mm)
 #define TASK_SIZE_MAX		(UL(1) << VA_BITS)
 
 #ifdef CONFIG_COMPAT
@@ -67,11 +69,12 @@
 #define TASK_SIZE		(test_thread_flag(TIF_32BIT) ? \
 				TASK_SIZE_32 : TASK_SIZE_64)
 #define TASK_SIZE_OF(tsk)	(test_tsk_thread_flag(tsk, TIF_32BIT) ? \
-				TASK_SIZE_32 : TASK_SIZE_64)
+				TASK_SIZE_32 : TASK_SIZE_64_OF(tsk))
 #define DEFAULT_MAP_WINDOW	(test_thread_flag(TIF_32BIT) ? \
 				TASK_SIZE_32 : DEFAULT_MAP_WINDOW_64)
 #else
 #define TASK_SIZE		TASK_SIZE_64
+#define TASK_SIZE_OF(tsk)	TASK_SIZE_64_OF(tsk)
 #define DEFAULT_MAP_WINDOW	DEFAULT_MAP_WINDOW_64
 #endif /* CONFIG_COMPAT */
 
