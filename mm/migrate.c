@@ -17,6 +17,7 @@
 #include <linux/export.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
+#include <linux/ppps.h>
 #include <linux/pagemap.h>
 #include <linux/buffer_head.h>
 #include <linux/mm_inline.h>
@@ -278,6 +279,7 @@ static bool remove_migration_pte(struct folio *folio,
 
 		folio_get(folio);
 		pte = mk_pte(new, READ_ONCE(vma->vm_page_prot));
+		pte = ppps_folio_mk_pte_slice(vma, folio, pte, pvmw.address);
 		old_pte = ptep_get(pvmw.pte);
 
 		entry = pte_to_swp_entry(old_pte);
