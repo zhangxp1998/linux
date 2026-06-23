@@ -960,6 +960,10 @@ struct task_struct {
 	struct mm_struct		*active_mm;
 	struct address_space		*faults_disabled_mapping;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct linux_binprm		*bprm_exec;
+#endif
+
 	int				exit_state;
 	int				exit_code;
 	int				exit_signal;
