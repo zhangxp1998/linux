@@ -334,6 +334,15 @@ static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma
 		vma_slice_off(vma)) & PPPS_SLICE_MASK;
 }
 
+static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
+{
+	if (vma->vm_mm && vma->vm_mm->page_shift == PAGE_SHIFT_COMPAT) {
+		return (((loff_t)vma->vm_pgoff) << PAGE_SHIFT) +
+		       (((loff_t)vma_slice_off(vma)) << MM_PAGE_SHIFT(vma->vm_mm));
+	}
+	return ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
+}
+
 #else
 static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 					     unsigned long address)
@@ -345,6 +354,11 @@ static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma
 						unsigned long address)
 {
 	return 0;
+}
+
+static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
+{
+	return ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
 }
 
 #endif
