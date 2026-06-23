@@ -328,18 +328,25 @@ static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 	return vma->vm_pgoff + (temp >> PPPS_SLICE_SHIFT);
 }
 
+static inline unsigned int address_to_slice(struct mm_struct *mm,
+					    unsigned long address,
+					    unsigned long vm_start,
+					    unsigned int vm_slice_off)
+{
+	if (!ppps_mm_is_compat(mm))
+		return 0;
+
+	return (((address - vm_start) >> PAGE_SHIFT_COMPAT) + vm_slice_off) & PPPS_SLICE_MASK;
+}
+
 static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma,
 						unsigned long address)
 {
-	if (!ppps_mm_is_compat(vma->vm_mm))
-		return 0;
-
 	/* Anonymous VMAs have no subpage slices */
 	if (!vma->vm_ops)
 		return 0;
 
-	return (((address - vma->vm_start) >> PAGE_SHIFT_COMPAT) +
-		vma_slice_off(vma)) & PPPS_SLICE_MASK;
+	return address_to_slice(vma->vm_mm, address, vma->vm_start, vma_slice_off(vma));
 }
 
 static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
@@ -351,6 +358,15 @@ static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
 	return ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
 }
 
+static inline bool ppps_vma_validate_uffd_alignment(const struct vm_area_struct *vma,
+						    unsigned long start, unsigned long end)
+{
+	if (vma->vm_mm && vma->vm_mm->page_shift == PAGE_SHIFT_COMPAT) {
+		return IS_ALIGNED(start, PAGE_SIZE_COMPAT) &&
+		       IS_ALIGNED(end, PAGE_SIZE_COMPAT);
+	}
+	return true;
+}
 #else
 static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 					     unsigned long address)
@@ -364,11 +380,24 @@ static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma
 	return 0;
 }
 
+static inline unsigned int address_to_slice(struct mm_struct *mm,
+					    unsigned long address,
+					    unsigned long vm_start,
+					    unsigned int vm_slice_off)
+{
+	return 0;
+}
+
 static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
 {
 	return ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
 }
 
+static inline bool ppps_vma_validate_uffd_alignment(const struct vm_area_struct *vma,
+						    unsigned long start, unsigned long end)
+{
+	return true;
+}
 #endif
 #endif /* __ASSEMBLY__ */
 #endif /* _LINUX_MMAP_LOCK_H && !_LINUX_PPPS_VMA_INDEX_H */
