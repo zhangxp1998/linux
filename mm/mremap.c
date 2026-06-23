@@ -260,12 +260,13 @@ static int move_ptes(struct pagetable_move_control *pmc,
 	flush_tlb_batched_pending(vma->vm_mm);
 	arch_enter_lazy_mmu_mode();
 
-	for (; old_addr < old_end; old_ptep += nr_ptes, old_addr += nr_ptes * PAGE_SIZE,
-		new_ptep += nr_ptes, new_addr += nr_ptes * PAGE_SIZE) {
+	for (; old_addr < old_end;
+	     old_ptep += nr_ptes, old_addr += nr_ptes * MM_PAGE_SIZE(mm),
+	     new_ptep += nr_ptes, new_addr += nr_ptes * MM_PAGE_SIZE(mm)) {
 		VM_WARN_ON_ONCE(!pte_none(*new_ptep));
 
 		nr_ptes = 1;
-		max_nr_ptes = (old_end - old_addr) >> PAGE_SHIFT;
+		max_nr_ptes = (old_end - old_addr) >> MM_PAGE_SHIFT(mm);
 		old_pte = ptep_get(old_ptep);
 		if (pte_none(old_pte))
 			continue;
@@ -282,8 +283,10 @@ static int move_ptes(struct pagetable_move_control *pmc,
 		 * flushed.
 		 */
 		if (pte_present(old_pte)) {
-			nr_ptes = mremap_folio_pte_batch(vma, old_addr, old_ptep,
-							 old_pte, max_nr_ptes);
+			if (!ppps_mm_is_compat(mm))
+				nr_ptes = mremap_folio_pte_batch(vma, old_addr,
+								 old_ptep, old_pte,
+								 max_nr_ptes);
 			force_flush = true;
 		}
 		pte = get_and_clear_ptes(mm, old_addr, old_ptep, nr_ptes);
@@ -405,7 +408,8 @@ static bool move_normal_pmd(struct pagetable_move_control *pmc,
 	VM_BUG_ON(!pmd_none(*new_pmd));
 
 	pmd_populate(mm, new_pmd, pmd_pgtable(pmd));
-	flush_tlb_range(vma, pmc->old_addr, pmc->old_addr + PMD_SIZE);
+	flush_tlb_range(vma, pmc->old_addr,
+			pmc->old_addr + MM_PMD_SIZE(mm));
 out_unlock:
 	if (new_ptl != old_ptl)
 		spin_unlock(new_ptl);
@@ -457,7 +461,8 @@ static bool move_normal_pud(struct pagetable_move_control *pmc,
 	VM_BUG_ON(!pud_none(*new_pud));
 
 	pud_populate(mm, new_pud, pud_pgtable(pud));
-	flush_tlb_range(vma, pmc->old_addr, pmc->old_addr + PUD_SIZE);
+	flush_tlb_range(vma, pmc->old_addr,
+			pmc->old_addr + MM_PUD_SIZE(mm));
 	if (new_ptl != old_ptl)
 		spin_unlock(new_ptl);
 	spin_unlock(old_ptl);
@@ -540,6 +545,7 @@ static __always_inline unsigned long get_extent(enum pgt_entry entry,
 						struct pagetable_move_control *pmc)
 {
 	unsigned long next, extent, mask, size;
+	struct mm_struct *mm = pmc->old->vm_mm;
 	unsigned long old_addr = pmc->old_addr;
 	unsigned long old_end = pmc->old_end;
 	unsigned long new_addr = pmc->new_addr;
@@ -547,13 +553,13 @@ static __always_inline unsigned long get_extent(enum pgt_entry entry,
 	switch (entry) {
 	case HPAGE_PMD:
 	case NORMAL_PMD:
-		mask = PMD_MASK;
-		size = PMD_SIZE;
+		mask = MM_PMD_MASK(mm);
+		size = MM_PMD_SIZE(mm);
 		break;
 	case HPAGE_PUD:
 	case NORMAL_PUD:
-		mask = PUD_MASK;
-		size = PUD_SIZE;
+		mask = MM_PUD_MASK(mm);
+		size = MM_PUD_SIZE(mm);
 		break;
 	default:
 		BUILD_BUG();
@@ -809,7 +815,7 @@ unsigned long move_page_tables(struct pagetable_move_control *pmc)
 	 * If possible, realign addresses to PMD boundary for faster copy.
 	 * Only realign if the mremap copying hits a PMD boundary.
 	 */
-	try_realign_addr(pmc, PMD_MASK);
+	try_realign_addr(pmc, MM_PMD_MASK(mm));
 
 	flush_cache_range(pmc->old, pmc->old_addr, pmc->old_end);
 	mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, mm,
@@ -836,7 +842,8 @@ unsigned long move_page_tables(struct pagetable_move_control *pmc)
 				/* We ignore and continue on error? */
 				continue;
 			}
-		} else if (IS_ENABLED(CONFIG_HAVE_MOVE_PUD) && extent == PUD_SIZE) {
+		} else if (IS_ENABLED(CONFIG_HAVE_MOVE_PUD) &&
+			   extent == MM_PUD_SIZE(mm)) {
 			if (move_pgt_entry(pmc, NORMAL_PUD, old_pud, new_pud))
 				continue;
 		}
@@ -855,7 +862,7 @@ again:
 				continue;
 			split_huge_pmd(pmc->old, old_pmd, pmc->old_addr);
 		} else if (IS_ENABLED(CONFIG_HAVE_MOVE_PMD) &&
-			   extent == PMD_SIZE) {
+			   extent == MM_PMD_SIZE(mm)) {
 			/*
 			 * If the extent is PMD-sized, try to speed the move by
 			 * moving at the PMD level if possible.
@@ -941,6 +948,30 @@ static bool vrm_implies_new_addr(struct vma_remap_struct *vrm)
  * Returns 0 on success (with vrm->new_addr updated), or an error code upon
  * failure.
  */
+static unsigned long mremap_get_unmapped_area(struct file *file,
+		unsigned long addr, unsigned long len, unsigned long pgoff,
+		unsigned long map_flags, unsigned long old_addr,
+		unsigned long mremap_flags)
+{
+	if (ppps_mm_is_compat(current->mm) &&
+	    !(mremap_flags & MREMAP_FIXED)) {
+		unsigned int slice =
+			(old_addr >> PAGE_SHIFT_COMPAT) & PPPS_SLICE_MASK;
+
+		if (slice) {
+			unsigned long res;
+
+			res = get_unmapped_area(file, addr, len + PAGE_SIZE,
+						pgoff, map_flags);
+			if (!IS_ERR_VALUE(res))
+				res += slice << PAGE_SHIFT_COMPAT;
+			return res;
+		}
+	}
+
+	return get_unmapped_area(file, addr, len, pgoff, map_flags);
+}
+
 static unsigned long vrm_set_new_addr(struct vma_remap_struct *vrm)
 {
 	struct vm_area_struct *vma = vrm->vma;
@@ -954,8 +985,8 @@ static unsigned long vrm_set_new_addr(struct vma_remap_struct *vrm)
 	if (vma->vm_flags & VM_MAYSHARE)
 		map_flags |= MAP_SHARED;
 
-	res = get_unmapped_area(vma->vm_file, new_addr, vrm->new_len, pgoff,
-				map_flags);
+	res = mremap_get_unmapped_area(vma->vm_file, new_addr, vrm->new_len,
+				       pgoff, map_flags, vrm->addr, vrm->flags);
 	if (IS_ERR_VALUE(res))
 		return res;
 
@@ -981,9 +1012,9 @@ static bool vrm_calc_charge(struct vma_remap_struct *vrm)
 	 * the length of the new one. Otherwise it's just the delta in size.
 	 */
 	if (vrm->flags & MREMAP_DONTUNMAP)
-		charged = vrm->new_len >> PAGE_SHIFT;
+		charged = vrm->new_len >> MM_PAGE_SHIFT(current->mm);
 	else
-		charged = vrm->delta >> PAGE_SHIFT;
+		charged = vrm->delta >> MM_PAGE_SHIFT(current->mm);
 
 
 	/* This accounts 'charged' pages of memory. */
@@ -1015,7 +1046,7 @@ static void vrm_uncharge(struct vma_remap_struct *vrm)
 static void vrm_stat_account(struct vma_remap_struct *vrm,
 			     unsigned long bytes)
 {
-	unsigned long pages = bytes >> PAGE_SHIFT;
+	unsigned long pages = bytes >> MM_PAGE_SHIFT(current->mm);
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma = vrm->vma;
 
@@ -1124,7 +1155,7 @@ static void unmap_source_vma(struct vma_remap_struct *vrm)
 	vrm->vmi_needs_invalidate = true;
 	if (err) {
 		/* OOM: unable to split vma, just get accounts right */
-		vm_acct_memory(len >> PAGE_SHIFT);
+		vm_acct_memory(len >> MM_PAGE_SHIFT(mm));
 		return;
 	}
 
@@ -1398,7 +1429,7 @@ static unsigned long mremap_to(struct vma_remap_struct *vrm)
 	/* MREMAP_DONTUNMAP expands by old_len since old_len == new_len */
 	if (vrm->flags & MREMAP_DONTUNMAP) {
 		vm_flags_t vm_flags = vrm->vma->vm_flags;
-		unsigned long pages = vrm->old_len >> PAGE_SHIFT;
+		unsigned long pages = vrm->old_len >> MM_PAGE_SHIFT(mm);
 
 		if (!may_expand_vm(mm, vm_flags, pages))
 			return -ENOMEM;
@@ -1420,7 +1451,7 @@ static int vma_expandable(struct vm_area_struct *vma, unsigned long delta)
 	if (find_vma_intersection(vma->vm_mm, vma->vm_end, end))
 		return 0;
 	if (get_unmapped_area(NULL, vma->vm_start, end - vma->vm_start,
-			      0, MAP_FIXED) & ~PAGE_MASK)
+			      0, MAP_FIXED) & ~MM_PAGE_MASK(vma->vm_mm))
 		return 0;
 	return 1;
 }
@@ -1727,9 +1758,8 @@ static int check_prep_vma(struct vma_remap_struct *vrm)
 		vrm->populate_expand = true;
 
 	/* Need to be careful about a growing mapping */
-	pgoff = (addr - vma->vm_start) >> PAGE_SHIFT;
-	pgoff += vma->vm_pgoff;
-	if (pgoff + (new_len >> PAGE_SHIFT) < pgoff)
+	pgoff = vma_pgoff_offset(vma, addr);
+	if (pgoff + (new_len >> MM_PAGE_SHIFT(mm)) < pgoff)
 		return -EINVAL;
 
 	if (vma->vm_flags & (VM_DONTEXPAND | VM_PFNMAP))
@@ -1738,7 +1768,8 @@ static int check_prep_vma(struct vma_remap_struct *vrm)
 	if (!mlock_future_ok(mm, vma->vm_flags, vrm->delta))
 		return -EAGAIN;
 
-	if (!may_expand_vm(mm, vma->vm_flags, vrm->delta >> PAGE_SHIFT))
+	if (!may_expand_vm(mm, vma->vm_flags,
+			   vrm->delta >> MM_PAGE_SHIFT(mm)))
 		return -ENOMEM;
 
 	return 0;
@@ -1759,7 +1790,7 @@ static unsigned long check_mremap_params(struct vma_remap_struct *vrm)
 		return -EINVAL;
 
 	/* Start address must be page-aligned. */
-	if (__offset_in_page_log(addr))
+	if (!MM_UAPI_PAGE_ALIGNED(current->mm, addr))
 		return -EINVAL;
 
 	/*
@@ -1783,7 +1814,7 @@ static unsigned long check_mremap_params(struct vma_remap_struct *vrm)
 		return -EINVAL;
 
 	/* The new address must be page-aligned. */
-	if (__offset_in_page(vrm->new_addr))
+	if (!MM_UAPI_PAGE_ALIGNED(current->mm, vrm->new_addr))
 		return -EINVAL;
 
 	/* A fixed address implies a move. */
@@ -1913,8 +1944,8 @@ static unsigned long do_mremap(struct vma_remap_struct *vrm)
 	unsigned long res;
 	bool failed;
 
-	vrm->old_len = __PAGE_ALIGN(vrm->old_len);
-	vrm->new_len = __PAGE_ALIGN(vrm->new_len);
+	vrm->old_len = MM_UAPI_PAGE_ALIGN(mm, vrm->old_len);
+	vrm->new_len = MM_UAPI_PAGE_ALIGN(mm, vrm->new_len);
 
 	res = check_mremap_params(vrm);
 	if (res)
