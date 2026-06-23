@@ -87,6 +87,7 @@ struct anon_vma_chain *
 anon_vma_interval_tree_iter_first(struct rb_root_cached *root,
 				  unsigned long first, unsigned long last)
 {
+	/* Both use process-page pgoff units for PPPS anonymous mappings. */
 	return __anon_vma_interval_tree_iter_first(root, first, last);
 }
 
