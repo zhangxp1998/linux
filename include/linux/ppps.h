@@ -26,6 +26,9 @@ unsigned long mm_default_map_window64(void);
 unsigned long mm_default_map_window64_of(struct mm_struct *mm);
 
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
+/* Preserve the geometry of the page tables copied by fork. */
+#define mm_inherit_pagesize(mm) \
+	((mm)->page_shift = current->mm ? current->mm->page_shift : PAGE_SHIFT)
 
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
@@ -42,6 +45,7 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 #define mm_default_map_window64_of(mm)	((void)(mm), (1UL << VA_BITS_MIN))
 
 static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm) {}
+#define mm_inherit_pagesize(mm) ((void)(mm))
 #endif
 
 #define MM_PAGE_SHIFT(...) \
