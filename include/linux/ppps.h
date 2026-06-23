@@ -28,6 +28,8 @@ void mm_init_pagesize(struct mm_struct *mm, struct linux_binprm *bprm);
 #define mm_set_bprm_exec(bprm)		(current->bprm_exec = (bprm))
 #define mm_clear_bprm_exec()		(current->bprm_exec = NULL)
 #define mm_get_bprm_exec()		(current->bprm_exec)
+#define vma_set_slice_off(vma, val)	((vma)->vm_slice_off = (val))
+#define vma_slice_off(vma)		((vma)->vm_slice_off)
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
 #define VA_BITS_COMPAT		VA_BITS
@@ -46,6 +48,8 @@ static inline void mm_init_pagesize(struct mm_struct *mm, struct linux_binprm *b
 #define mm_set_bprm_exec(bprm)		((void)(bprm))
 #define mm_clear_bprm_exec()		do { } while (0)
 #define mm_get_bprm_exec()		(NULL)
+#define vma_set_slice_off(vma, val)	((void)(vma), (void)(val))
+#define vma_slice_off(vma)		((void)(vma), 0)
 #endif
 
 #define MM_PAGE_SHIFT(...) \
