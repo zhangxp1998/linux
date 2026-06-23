@@ -134,6 +134,10 @@ SYM_FUNC_START(cpu_do_resume)
 	/* Don't change t0sz here, mask those bits when restoring */
 	mrs	x7, tcr_el1
 	bfi	x8, x7, TCR_T0SZ_OFFSET, TCR_TxSZ_WIDTH
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	/* TTBR0 still contains the native-granule idmap. */
+	bfi	x8, x7, #14, #2
+#endif
 
 	msr	tcr_el1, x8
 	msr	vbar_el1, x9

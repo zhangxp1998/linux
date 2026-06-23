@@ -217,7 +217,7 @@ static void show_pte(unsigned long addr)
 int __ptep_set_access_flags_anysz(struct vm_area_struct *vma,
 				  unsigned long address, pte_t *ptep,
 				  pte_t entry, int dirty,
-				  unsigned long __always_unused pgsize)
+				  unsigned long pgsize)
 {
 	pteval_t old_pteval, pteval;
 	pte_t pte = __ptep_get(ptep);
@@ -244,7 +244,12 @@ int __ptep_set_access_flags_anysz(struct vm_area_struct *vma,
 		pteval = cmpxchg_relaxed(&pte_val(*ptep), old_pteval, pteval);
 	} while (pteval != old_pteval);
 
-	/* Invalidate a stale read-only entry */
+	/*
+	 * Invalidate the local stale read-only entry.  Remote stale entries
+	 * may still cause page faults and be invalidated via
+	 * flush_tlb_fix_spurious_fault().
+	 */
+	/* This helper also updates block entries: do not guess their level. */
 	if (dirty)
 		flush_tlb_page(vma, address);
 	return 1;

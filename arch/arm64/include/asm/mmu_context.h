@@ -52,6 +52,12 @@ static inline void cpu_set_reserved_ttbr0(void)
 	isb();
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+void mm_switch_tcr(struct mm_struct *mm);
+#else
+static inline void mm_switch_tcr(struct mm_struct *mm) { }
+#endif
+
 void cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm);
 
 static inline void cpu_switch_mm(pgd_t *pgd, struct mm_struct *mm)
@@ -66,23 +72,35 @@ static inline void cpu_switch_mm(pgd_t *pgd, struct mm_struct *mm)
 #define idmap_t0sz	TCR_T0SZ(IDMAP_VA_BITS)
 
 /*
- * Ensure TCR.T0SZ is set to the provided value.
+ * Temporary TTBR0 page tables, including the idmap and the hibernate/kexec
+ * page tables, use the kernel's native translation granule. Under PPPS, TG0
+ * may still describe a 4K userspace page table, so update it together with
+ * T0SZ before installing one of these page tables.
  */
-static inline void __cpu_set_tcr_t0sz(unsigned long t0sz)
+static inline void __cpu_set_native_tcr_t0sz(unsigned long t0sz)
 {
+	unsigned long mask = TCR_T0SZ_MASK;
+	unsigned long val = t0sz;
 	unsigned long tcr = read_sysreg(tcr_el1);
 
-	if ((tcr & TCR_T0SZ_MASK) == t0sz)
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	mask |= TCR_TG0_MASK;
+	val |= TCR_TG0_NATIVE;
+#endif
+
+	if ((tcr & mask) == val)
 		return;
 
-	tcr &= ~TCR_T0SZ_MASK;
-	tcr |= t0sz;
+	tcr &= ~mask;
+	tcr |= val;
 	write_sysreg(tcr, tcr_el1);
 	isb();
 }
 
-#define cpu_set_default_tcr_t0sz()	__cpu_set_tcr_t0sz(TCR_T0SZ(vabits_actual))
-#define cpu_set_idmap_tcr_t0sz()	__cpu_set_tcr_t0sz(idmap_t0sz)
+#define cpu_set_default_tcr_t0sz() \
+	__cpu_set_native_tcr_t0sz(TCR_T0SZ(vabits_actual))
+#define cpu_set_idmap_tcr_t0sz() \
+	__cpu_set_native_tcr_t0sz(idmap_t0sz)
 
 /*
  * Remove the idmap from TTBR0_EL1 and install the pgd of the active mm.
@@ -104,8 +122,13 @@ static inline void cpu_uninstall_idmap(void)
 	local_flush_tlb_all();
 	cpu_set_default_tcr_t0sz();
 
-	if (mm != &init_mm && !system_uses_ttbr0_pan())
-		cpu_switch_mm(mm->pgd, mm);
+	if (mm != &init_mm) {
+		/* SW PAN defers TTBR0 restoration, but not its TCR geometry. */
+		if (system_uses_ttbr0_pan())
+			mm_switch_tcr(mm);
+		else
+			cpu_switch_mm(mm->pgd, mm);
+	}
 }
 
 static inline void cpu_install_idmap(void)
@@ -127,14 +150,14 @@ static inline void cpu_install_idmap(void)
  * services), while for a userspace-driven test_resume cycle it points to
  * userspace page tables (and we must point it at a zero page ourselves).
  *
- * We change T0SZ as part of installing the idmap. This is undone by
- * cpu_uninstall_idmap() in __cpu_suspend_exit().
+ * We change the TTBR0 translation geometry as part of installing the
+ * idmap. This is undone by cpu_uninstall_idmap() in __cpu_suspend_exit().
  */
 static inline void cpu_install_ttbr0(phys_addr_t ttbr0, unsigned long t0sz)
 {
 	cpu_set_reserved_ttbr0();
 	local_flush_tlb_all();
-	__cpu_set_tcr_t0sz(t0sz);
+	__cpu_set_native_tcr_t0sz(t0sz);
 
 	/* avoid cpu_switch_mm() and its SW-PAN and CNP interactions */
 	write_sysreg(ttbr0, ttbr0_el1);
