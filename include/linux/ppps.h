@@ -45,6 +45,7 @@
 #include <asm/current.h>
 
 struct mm_struct;
+struct linux_binprm;
 
 unsigned long mm_task_size64(void);
 unsigned long mm_task_size64_of(struct mm_struct *mm);
@@ -62,6 +63,8 @@ unsigned long mm_task_size64_of(struct mm_struct *mm);
 unsigned long mm_default_map_window64(void);
 unsigned long mm_default_map_window64_of(struct mm_struct *mm);
 
+void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
+
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
 #define VA_BITS_COMPAT		VA_BITS
@@ -74,6 +77,7 @@ unsigned long mm_default_map_window64_of(struct mm_struct *mm);
 #define mm_default_map_window64()	(1UL << VA_BITS_MIN)
 #define mm_default_map_window64_of(mm)	((void)(mm), (1UL << VA_BITS_MIN))
 
+static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm) {}
 #endif
 
 #define MM_PAGE_SHIFT(...) \
