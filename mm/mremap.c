@@ -32,6 +32,7 @@
 #include <asm/pgalloc.h>
 
 #include "internal.h"
+#include "ppps.h"
 
 /* Classify the kind of remap operation being performed. */
 enum mremap_type {
@@ -944,9 +945,7 @@ static unsigned long vrm_set_new_addr(struct vma_remap_struct *vrm)
 {
 	struct vm_area_struct *vma = vrm->vma;
 	unsigned long map_flags = 0;
-	/* Page Offset _into_ the VMA. */
-	pgoff_t internal_pgoff = (vrm->addr - vma->vm_start) >> PAGE_SHIFT;
-	pgoff_t pgoff = vma->vm_pgoff + internal_pgoff;
+	pgoff_t pgoff = vma_pgoff_offset(vma, vrm->addr);
 	unsigned long new_addr = vrm_implies_new_addr(vrm) ? vrm->new_addr : 0;
 	unsigned long res;
 
@@ -1182,9 +1181,8 @@ static void unmap_source_vma(struct vma_remap_struct *vrm)
 static int copy_vma_and_data(struct vma_remap_struct *vrm,
 			     struct vm_area_struct **new_vma_ptr)
 {
-	unsigned long internal_offset = vrm->addr - vrm->vma->vm_start;
-	unsigned long internal_pgoff = internal_offset >> PAGE_SHIFT;
-	unsigned long new_pgoff = vrm->vma->vm_pgoff + internal_pgoff;
+	pgoff_t new_pgoff = vma_pgoff_offset(vrm->vma, vrm->addr);
+	unsigned int new_slice_off = vma_slice_offset(vrm->vma, vrm->addr);
 	unsigned long moved_len;
 	struct vm_area_struct *vma = vrm->vma;
 	struct vm_area_struct *new_vma;
@@ -1192,7 +1190,7 @@ static int copy_vma_and_data(struct vma_remap_struct *vrm,
 	PAGETABLE_MOVE(pmc, NULL, NULL, vrm->addr, vrm->new_addr, vrm->old_len);
 
 	new_vma = copy_vma(&vma, vrm->new_addr, vrm->new_len, new_pgoff,
-			   &pmc.need_rmap_locks);
+			   new_slice_off, &pmc.need_rmap_locks);
 	if (!new_vma) {
 		vrm_uncharge(vrm);
 		*new_vma_ptr = NULL;
