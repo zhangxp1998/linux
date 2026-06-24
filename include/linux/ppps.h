@@ -122,6 +122,28 @@ static inline void mm_clear_pgtable_mm(void) {}
 
 #define MM_LEVEL_SHIFT(...)	(MM_PAGE_SHIFT(__VA_ARGS__) - 3)
 
+#define _MM_PAGE_ALIGN_1(addr)		ALIGN(addr, MM_PAGE_SIZE(PGTABLE_MM()))
+#define _MM_PAGE_ALIGN_2(mm, addr)	ALIGN(addr, MM_PAGE_SIZE(mm))
+#define _MM_PAGE_ALIGN_DISPATCH_VAL(a, b, NAME, ...) NAME
+#define MM_PAGE_ALIGN(...) \
+	_MM_PAGE_ALIGN_DISPATCH_VAL(__VA_ARGS__, \
+				    _MM_PAGE_ALIGN_2, \
+				    _MM_PAGE_ALIGN_1)(__VA_ARGS__)
+
+#define _MM_PAGE_ALIGNED_1(addr)	(!((addr) & ~MM_PAGE_MASK(PGTABLE_MM())))
+#define _MM_PAGE_ALIGNED_2(mm, addr)	(!((addr) & ~MM_PAGE_MASK(mm)))
+#define MM_PAGE_ALIGNED(...) \
+	_MM_PAGE_ALIGN_DISPATCH_VAL(__VA_ARGS__, \
+				    _MM_PAGE_ALIGNED_2, \
+				    _MM_PAGE_ALIGNED_1)(__VA_ARGS__)
+
+#define _mm_offset_in_page_1(p)		((unsigned long)(p) & ~MM_PAGE_MASK(PGTABLE_MM()))
+#define _mm_offset_in_page_2(mm, p)	((unsigned long)(p) & ~MM_PAGE_MASK(mm))
+#define mm_offset_in_page(...) \
+	_MM_PAGE_ALIGN_DISPATCH_VAL(__VA_ARGS__, \
+				    _mm_offset_in_page_2, \
+				    _mm_offset_in_page_1)(__VA_ARGS__)
+
 #define MM_PMD_SHIFT(...)	(MM_PAGE_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
 #define MM_PUD_SHIFT(...)	(MM_PMD_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
 #define MM_P4D_SHIFT(...)	(MM_PUD_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
