@@ -38,6 +38,8 @@
 #include <linux/sched/signal.h>
 #include <linux/sched/numa_balancing.h>
 #include <linux/sched/task.h>
+#include <linux/page_size_compat.h>
+#include <linux/ppps.h>
 #include <linux/pagemap.h>
 #include <linux/perf_event.h>
 #include <linux/highmem.h>
@@ -258,10 +260,16 @@ static int bprm_mm_init(struct linux_binprm *bprm)
 	int err;
 	struct mm_struct *mm = NULL;
 
+	mm_set_bprm_exec(bprm);
 	bprm->mm = mm = mm_alloc();
+	mm_clear_bprm_exec();
+
 	err = -ENOMEM;
 	if (!mm)
 		goto err;
+
+	mm_init_pagesize(mm, bprm);
+	mm_set_pgtable_mm(mm);
 
 	/* Save current stack limit for all calculations made during exec. */
 	task_lock(current->group_leader);
@@ -279,6 +287,7 @@ static int bprm_mm_init(struct linux_binprm *bprm)
 	return 0;
 
 err:
+	mm_clear_pgtable_mm();
 	if (mm) {
 		bprm->mm = NULL;
 		mmdrop(mm);
@@ -1153,6 +1162,7 @@ int begin_new_exec(struct linux_binprm * bprm)
 	 * Release all of the old mmap stuff
 	 */
 	acct_arg_size(bprm, 0);
+	mm_clear_pgtable_mm();
 	retval = exec_mmap(bprm->mm);
 	if (retval)
 		goto out;
@@ -1295,6 +1305,7 @@ out_unlock:
 		mutex_unlock(&me->signal->cred_guard_mutex);
 
 out:
+	mm_clear_pgtable_mm();
 	return retval;
 }
 EXPORT_SYMBOL(begin_new_exec);
