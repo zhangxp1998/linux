@@ -24,6 +24,14 @@ unsigned long mm_task_size64(void);
 unsigned long mm_task_size64_of(struct mm_struct *mm);
 unsigned long mm_default_map_window64(void);
 
+struct linux_binprm;
+void mm_init_pagesize(struct mm_struct *mm, struct linux_binprm *bprm);
+
+#define mm_set_pgtable_mm(mm)		(current->pgtable_mm = (mm))
+#define mm_clear_pgtable_mm()		(current->pgtable_mm = NULL)
+#define mm_set_bprm_exec(bprm)		(current->bprm_exec = (bprm))
+#define mm_clear_bprm_exec()		(current->bprm_exec = NULL)
+#define mm_get_bprm_exec()		(current->bprm_exec)
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
 #define VA_BITS_COMPAT		VA_BITS
@@ -37,6 +45,12 @@ unsigned long mm_default_map_window64(void);
 #define mm_task_size64_of(mm)		((void)(mm), (1UL << vabits_actual))
 #define mm_default_map_window64()	(1UL << VA_BITS_MIN)
 
+static inline void mm_init_pagesize(struct mm_struct *mm, struct linux_binprm *bprm) {}
+static inline void mm_set_pgtable_mm(struct mm_struct *mm) {}
+static inline void mm_clear_pgtable_mm(void) {}
+#define mm_set_bprm_exec(bprm)		((void)(bprm))
+#define mm_clear_bprm_exec()		do { } while (0)
+#define mm_get_bprm_exec()		(NULL)
 #endif
 
 #define MM_PAGE_SHIFT(...) \
