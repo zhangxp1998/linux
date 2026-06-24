@@ -50,4 +50,12 @@ unsigned long mm_default_map_window64_of(struct mm_struct *mm)
 
 	return 1UL << VA_BITS_MIN;
 }
+void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm)
+{
+	if (current->personality & ADDR_4KB_COMPAT_PAGE_SIZE)
+		mm->page_shift = PAGE_SHIFT_COMPAT;
+	else
+		mm->page_shift = PAGE_SHIFT;
+}
 #endif
+
