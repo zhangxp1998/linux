@@ -31,6 +31,7 @@
 #include <asm/pgalloc.h>
 
 #include "internal.h"
+#include "ppps.h"
 
 static pud_t *get_old_pud(struct mm_struct *mm, unsigned long addr)
 {
@@ -664,7 +665,8 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_area_struct *new_vma;
 	unsigned long vm_flags = vma->vm_flags;
-	unsigned long new_pgoff;
+	pgoff_t new_pgoff;
+	unsigned int new_slice_off;
 	unsigned long moved_len;
 	unsigned long account_start = 0;
 	unsigned long account_end = 0;
@@ -710,9 +712,10 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	}
 
 	vma_start_write(vma);
-	new_pgoff = vma->vm_pgoff + ((old_addr - vma->vm_start) >> PAGE_SHIFT);
+	new_pgoff = vma_pgoff_offset(vma, old_addr);
+	new_slice_off = vma_slice_offset(vma, old_addr);
 	new_vma = copy_vma(&vma, new_addr, new_len, new_pgoff,
-			   &need_rmap_locks);
+			   new_slice_off, &need_rmap_locks);
 	if (!new_vma) {
 		if (vm_flags & VM_ACCOUNT)
 			vm_unacct_memory(to_account >> PAGE_SHIFT);
