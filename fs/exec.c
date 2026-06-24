@@ -39,6 +39,7 @@
 #include <linux/sched/numa_balancing.h>
 #include <linux/sched/task.h>
 #include <linux/page_size_compat.h>
+#include <linux/ppps.h>
 #include <linux/pagemap.h>
 #include <linux/perf_event.h>
 #include <linux/highmem.h>
@@ -389,10 +390,15 @@ static int bprm_mm_init(struct linux_binprm *bprm)
 	int err;
 	struct mm_struct *mm = NULL;
 
+	mm_set_bprm_exec(bprm);
 	bprm->mm = mm = mm_alloc();
+	mm_clear_bprm_exec();
+
 	err = -ENOMEM;
 	if (!mm)
 		goto err;
+
+	mm_init_pagesize(mm, bprm);
 
 	/* Save current stack limit for all calculations made during exec. */
 	task_lock(current->group_leader);
