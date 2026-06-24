@@ -31,6 +31,7 @@
 #include <asm/pgalloc.h>
 
 #include "internal.h"
+#include "ppps.h"
 
 /* Classify the kind of remap operation being performed. */
 enum mremap_type {
@@ -1181,17 +1182,15 @@ static void unmap_source_vma(struct vma_remap_struct *vrm)
 static int copy_vma_and_data(struct vma_remap_struct *vrm,
 			     struct vm_area_struct **new_vma_ptr)
 {
-	unsigned long internal_offset = vrm->addr - vrm->vma->vm_start;
-	unsigned long internal_pgoff = internal_offset >> PAGE_SHIFT;
-	unsigned long new_pgoff = vrm->vma->vm_pgoff + internal_pgoff;
-	unsigned long moved_len;
 	struct vm_area_struct *vma = vrm->vma;
+	pgoff_t new_pgoff = vma_pgoff_offset(vma, vrm->addr);
+	unsigned int new_slice_off = vma_slice_offset(vma, vrm->addr);
+	unsigned long moved_len;
 	struct vm_area_struct *new_vma;
 	int err = 0;
 	PAGETABLE_MOVE(pmc, NULL, NULL, vrm->addr, vrm->new_addr, vrm->old_len);
-
 	new_vma = copy_vma(&vma, vrm->new_addr, vrm->new_len, new_pgoff,
-			   &pmc.need_rmap_locks);
+			   new_slice_off, &pmc.need_rmap_locks);
 	if (!new_vma) {
 		vrm_uncharge(vrm);
 		*new_vma_ptr = NULL;

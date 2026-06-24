@@ -1794,7 +1794,7 @@ int vma_link(struct mm_struct *mm, struct vm_area_struct *vma)
  */
 struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	unsigned long addr, unsigned long len, pgoff_t pgoff,
-	bool *need_rmap_locks)
+	unsigned int slice_off, bool *need_rmap_locks)
 {
 	struct vm_area_struct *vma = *vmap;
 	unsigned long vma_start = vma->vm_start;
@@ -1810,6 +1810,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	 */
 	if (unlikely(vma_is_anonymous(vma) && !vma->anon_vma)) {
 		pgoff = addr >> MM_PAGE_SHIFT(mm);
+		slice_off = 0;
 		faulted_in_anon_vma = false;
 	}
 
@@ -1827,6 +1828,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 
 	vmg.middle = NULL; /* New VMA range. */
 	vmg.pgoff = pgoff;
+	vmg.slice_off = slice_off;
 	vmg.next = vma_iter_next_rewind(&vmi, NULL);
 	new_vma = vma_merge_new_range(&vmg);
 
@@ -1857,6 +1859,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 		if (!new_vma)
 			goto out;
 		vma_set_range(new_vma, addr, addr + len, pgoff);
+		vma_set_slice_off(new_vma, slice_off);
 		if (vma_dup_policy(vma, new_vma))
 			goto out_free_vma;
 		if (anon_vma_clone(new_vma, vma))
