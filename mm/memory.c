@@ -950,6 +950,7 @@ copy_present_page(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 
 	/* All done, just insert the new page copy in the child */
 	pte = mk_pte(&new_folio->page, dst_vma->vm_page_prot);
+	pte = vma_pte_mkslice(dst_vma, pte, addr);
 	pte = maybe_mkwrite(pte_mkdirty(pte), dst_vma);
 	if (userfaultfd_pte_wp(dst_vma, ptep_get(src_pte)))
 		/* Uffd-wp needs to be delivered to dest pte as well */
@@ -3509,6 +3510,8 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		}
 		flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
 		entry = mk_pte(&new_folio->page, vma->vm_page_prot);
+		entry = vma_pte_mkslice(vma, entry,
+					       vmf->address);
 		entry = pte_sw_mkyoung(entry);
 		if (unlikely(unshare)) {
 			if (pte_soft_dirty(vmf->orig_pte))
@@ -4656,6 +4659,7 @@ check_folio:
 	add_mm_counter(vma->vm_mm, MM_ANONPAGES, nr_pages);
 	add_mm_counter(vma->vm_mm, MM_SWAPENTS, -nr_pages);
 	pte = mk_pte(page, vma->vm_page_prot);
+	pte = vma_pte_mkslice(vma, pte, address);
 	if (pte_swp_soft_dirty(vmf->orig_pte))
 		pte = pte_mksoft_dirty(pte);
 	if (pte_swp_uffd_wp(vmf->orig_pte))
@@ -4864,6 +4868,38 @@ next:
 fallback:
 #endif
 	return folio_prealloc(vma->vm_mm, vma, vmf->address, true);
+}
+
+static void map_anon_folio_pte_nopf(struct folio *folio, pte_t *pte,
+		struct vm_area_struct *vma, unsigned long addr,
+		bool uffd_wp)
+{
+	const unsigned int nr_pages = folio_nr_pages(folio);
+	pte_t entry = mk_pte(&folio->page, vma->vm_page_prot);
+
+	entry = ppps_folio_mk_pte_slice(vma, folio, entry, addr);
+	entry = pte_sw_mkyoung(entry);
+
+	if (vma->vm_flags & VM_WRITE)
+		entry = pte_mkwrite(pte_mkdirty(entry), vma);
+	if (uffd_wp)
+		entry = pte_mkuffd_wp(entry);
+
+	folio_ref_add(folio, nr_pages - 1);
+	folio_add_new_anon_rmap(folio, vma, addr, RMAP_EXCLUSIVE);
+	folio_add_lru_vma(folio, vma);
+	set_ptes(vma->vm_mm, addr, pte, entry, nr_pages);
+	update_mmu_cache_range(NULL, vma, addr, pte, nr_pages);
+}
+
+static __maybe_unused void map_anon_folio_pte_pf(struct folio *folio, pte_t *pte,
+		struct vm_area_struct *vma, unsigned long addr, bool uffd_wp)
+{
+	const unsigned int order = folio_order(folio);
+
+	map_anon_folio_pte_nopf(folio, pte, vma, addr, uffd_wp);
+	add_mm_counter(vma->vm_mm, MM_ANONPAGES, 1L << order);
+	count_mthp_stat(order, MTHP_STAT_ANON_FAULT_ALLOC);
 }
 
 /*
@@ -5160,11 +5196,13 @@ void set_pte_range(struct vm_fault *vmf, struct folio *folio,
 {
 	struct vm_area_struct *vma = vmf->vma;
 	bool write = vmf->flags & FAULT_FLAG_WRITE;
-	bool prefault = !in_range(vmf->address, addr, nr * PAGE_SIZE);
+	bool prefault = !in_range(vmf->address, addr,
+				  nr * MM_PAGE_SIZE(vma->vm_mm));
 	pte_t entry;
 
 	flush_icache_pages(vma, page, nr);
 	entry = mk_pte(page, vma->vm_page_prot);
+	entry = vma_pte_mkslice(vma, entry, addr);
 
 	if (prefault && arch_wants_old_prefaulted_pte())
 		entry = pte_mkold(entry);
@@ -6999,10 +7037,14 @@ static int __access_remote_vm(struct mm_struct *mm, unsigned long addr,
 			if (bytes <= 0)
 				break;
 		} else {
+			unsigned int pg_size = MM_PAGE_SIZE(mm);
+			unsigned int slice_idx = vma_address_to_slice(vma, addr);
+			unsigned int page_offset = mm_offset_in_page(mm, addr);
+
 			bytes = len;
-			offset = addr & (PAGE_SIZE-1);
-			if (bytes > PAGE_SIZE-offset)
-				bytes = PAGE_SIZE-offset;
+			offset = slice_idx * pg_size + page_offset;
+			if (bytes > pg_size - page_offset)
+				bytes = pg_size - page_offset;
 
 			maddr = kmap_local_page(page);
 			if (write) {
