@@ -5071,6 +5071,10 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
 	pmd_t entry;
 	vm_fault_t ret = VM_FAULT_FALLBACK;
 
+	/* A native PMD-order folio is not a compat PMD-sized mapping. */
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return ret;
+
 	/*
 	 * It is too late to allocate a small folio, we already have a large
 	 * folio in the pagecache: especially s390 KVM cannot tolerate any
@@ -5274,7 +5278,8 @@ fallback:
 	nr_pages = folio_nr_pages(folio);
 
 	/* Using per-page fault to maintain the uffd semantics */
-	if (unlikely(userfaultfd_armed(vma)) || unlikely(needs_fallback)) {
+	if (unlikely(userfaultfd_armed(vma)) || unlikely(needs_fallback) ||
+	    ppps_mm_is_compat(vma->vm_mm)) {
 		nr_pages = 1;
 	} else if (nr_pages > 1) {
 		pgoff_t idx = folio_page_idx(folio, page);
@@ -5432,6 +5437,9 @@ static vm_fault_t do_fault_around(struct vm_fault *vmf)
 static inline bool should_fault_around(struct vm_fault *vmf)
 {
 	bool should_around = true;
+
+	if (ppps_mm_is_compat(vmf->vma->vm_mm))
+		return false;
 	/* No ->map_pages?  No way to fault around... */
 	if (!vmf->vma->vm_ops->map_pages)
 		return false;
