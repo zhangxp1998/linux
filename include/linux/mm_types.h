@@ -1945,12 +1945,34 @@ static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 	temp += vma_slice_off(vma);
 	return vma->vm_pgoff + (temp >> PPPS_SLICE_SHIFT);
 }
+
+static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma,
+						unsigned long address)
+{
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return 0;
+
+	/* Anonymous VMAs have no subpage slices */
+	if (!vma->vm_ops)
+		return 0;
+
+	return (((address - vma->vm_start) >> PAGE_SHIFT_COMPAT) +
+		vma_slice_off(vma)) & PPPS_SLICE_MASK;
+}
+
 #else
 static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 					     unsigned long address)
 {
 	return vma->vm_pgoff + ((address - vma->vm_start) >> PAGE_SHIFT);
 }
+
+static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma,
+						unsigned long address)
+{
+	return 0;
+}
+
 #endif
 #endif /* __ASSEMBLY__ */
 #endif /* _LINUX_PPPS_VMA_INDEX_H */
