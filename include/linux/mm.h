@@ -2082,6 +2082,35 @@ static inline struct folio *pfn_folio(unsigned long pfn)
 	return page_folio(pfn_to_page(pfn));
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * Construct a PTE that points at one compat-page slice of a host folio.
+ */
+static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
+				       unsigned int slice_idx)
+{
+	return pte_mkslice(pte, slice_idx);
+}
+
+static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
+					    struct folio *folio, pte_t pte,
+					    unsigned long addr)
+{
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return folio_mk_pte_slice(folio, pte,
+					  vma_address_to_slice(vma, addr));
+
+	return pte;
+}
+#else
+static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
+					    struct folio *folio, pte_t pte,
+					    unsigned long addr)
+{
+	return pte;
+}
+#endif
+
 #ifdef CONFIG_MMU
 static inline pte_t vma_pte_mkslice(const struct vm_area_struct *vma, pte_t pte,
 				    unsigned long addr)
