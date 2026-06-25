@@ -41,6 +41,15 @@ void mm_init_pagesize(struct mm_struct *mm, struct linux_binprm *bprm);
 #define vma_slice_shift(vma) \
 	(ppps_mm_is_compat((vma)->vm_mm) ? \
 	 PPPS_SLICE_SHIFT : 0)
+/*
+ * clear_pte_slice_offset - Clear any existing subpage offset bits in the PTE
+ *
+ * In a host page, the address bits between PAGE_SIZE_COMPAT and PAGE_SIZE
+ * track the subpage slice offset. Clear these bits from the physical address
+ * field of the PTE before applying a new subpage slice offset.
+ */
+#define clear_pte_slice_offset(pte)					\
+	__pte(pte_val(pte) & ~((PAGE_SIZE - 1) & ~(PAGE_SIZE_COMPAT - 1)))
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
 #define VA_BITS_COMPAT		VA_BITS
@@ -310,12 +319,34 @@ static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 	temp += vma_slice_off(vma);
 	return vma->vm_pgoff + (temp >> PPPS_SLICE_SHIFT);
 }
+
+static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma,
+						unsigned long address)
+{
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return 0;
+
+	/* Anonymous VMAs have no subpage slices */
+	if (!vma->vm_ops)
+		return 0;
+
+	return (((address - vma->vm_start) >> PAGE_SHIFT_COMPAT) +
+		vma_slice_off(vma)) & PPPS_SLICE_MASK;
+}
+
 #else
 static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 					     unsigned long address)
 {
 	return vma->vm_pgoff + ((address - vma->vm_start) >> PAGE_SHIFT);
 }
+
+static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma,
+						unsigned long address)
+{
+	return 0;
+}
+
 #endif
 #endif /* __ASSEMBLY__ */
 #endif /* _LINUX_MMAP_LOCK_H && !_LINUX_PPPS_VMA_INDEX_H */

@@ -1906,6 +1906,40 @@ static inline struct folio *pfn_folio(unsigned long pfn)
 	return page_folio(pfn_to_page(pfn));
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * Construct a PTE that points at one compat-page slice of a host folio.
+ */
+static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
+				       unsigned int slice_idx)
+{
+	phys_addr_t folio_phys = page_to_phys(&folio->page);
+	phys_addr_t target_phys = folio_phys + slice_idx * PAGE_SIZE_COMPAT;
+	pte_t clean_pte = clear_pte_slice_offset(pte);
+
+	return __pte(__phys_to_pte_val(target_phys) |
+		     pgprot_val(pte_pgprot(clean_pte)));
+}
+
+static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
+					    struct folio *folio, pte_t pte,
+					    unsigned long addr)
+{
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return folio_mk_pte_slice(folio, pte,
+					  vma_address_to_slice(vma, addr));
+
+	return pte;
+}
+#else
+static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
+					    struct folio *folio, pte_t pte,
+					    unsigned long addr)
+{
+	return pte;
+}
+#endif
+
 /**
  * folio_maybe_dma_pinned - Report if a folio may be pinned for DMA.
  * @folio: The folio.
