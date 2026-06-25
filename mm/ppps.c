@@ -57,5 +57,6 @@ void mm_init_pagesize(struct mm_struct *mm, struct linux_binprm *bprm)
 	else
 		mm->page_shift = PAGE_SHIFT;
 }
+
 #endif
 

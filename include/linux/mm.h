@@ -1882,6 +1882,57 @@ static inline pte_t folio_mk_pte(const struct folio *folio, pgprot_t pgprot)
 	return pfn_pte(folio_pfn(folio), pgprot);
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * folio_mk_pte_slice - Construct a PTE pointing to a specific subpage slice
+ * @folio: the backing folio
+ * @pte: the base PTE (aligned to host page)
+ * @slice_idx: the index of the subpage slice within the host page
+ *
+ * Adjusts the physical address in the base PTE to point to the target
+ * subpage slice at (folio_phys + slice_idx * PAGE_SIZE_COMPAT).
+ */
+static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
+				       unsigned int slice_idx)
+{
+	phys_addr_t folio_phys = page_to_phys(&folio->page);
+	phys_addr_t target_phys = folio_phys + (slice_idx * PAGE_SIZE_COMPAT);
+	pte_t clean_pte = clear_pte_slice_offset(pte);
+
+	return __pte(__phys_to_pte_val(target_phys) | pgprot_val(pte_pgprot(clean_pte)));
+}
+
+/*
+ * ppps_folio_mk_pte_slice - Apply subpage slice alignment to a faulting PTE
+ * @vma: the target VMA
+ * @folio: the backing folio
+ * @pte: the base PTE aligned to the host page
+ * @addr: the faulting virtual address
+ *
+ * If the process is a compat process, computes the target subpage slice index
+ * for the faulting virtual address and aligns the PTE's physical address to it.
+ * For native processes, returns the base PTE unchanged.
+ */
+static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
+					    struct folio *folio, pte_t pte,
+					    unsigned long addr)
+{
+	if (vma->vm_mm && vma->vm_mm->page_shift == PAGE_SHIFT_COMPAT) {
+		unsigned int slice_idx = vma_address_to_slice(vma, addr);
+
+		return folio_mk_pte_slice(folio, pte, slice_idx);
+	}
+	return pte;
+}
+#else
+static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
+					    struct folio *folio, pte_t pte,
+					    unsigned long addr)
+{
+	return pte;
+}
+#endif
+
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 /**
  * folio_mk_pmd - Create a PMD for this folio
