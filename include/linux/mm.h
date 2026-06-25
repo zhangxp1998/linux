@@ -1898,6 +1898,40 @@ static inline pte_t folio_mk_pte(const struct folio *folio, pgprot_t pgprot)
 	return pfn_pte(folio_pfn(folio), pgprot);
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/* Construct a PTE that points at one compat-page slice of a host folio. */
+static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
+				       unsigned int slice_idx)
+{
+	phys_addr_t page_phys = __pte_to_phys(pte) & PAGE_MASK;
+	phys_addr_t target_phys = page_phys + (slice_idx * PAGE_SIZE_COMPAT);
+	pte_t clean_pte = clear_pte_slice_offset(pte);
+
+	(void)folio;
+
+	return __pte(__phys_to_pte_val(target_phys) |
+		     pgprot_val(pte_pgprot(clean_pte)));
+}
+
+static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
+					    struct folio *folio, pte_t pte,
+					    unsigned long addr)
+{
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return folio_mk_pte_slice(folio, pte,
+					  vma_address_to_slice(vma, addr));
+
+	return pte;
+}
+#else
+static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
+					    struct folio *folio, pte_t pte,
+					    unsigned long addr)
+{
+	return pte;
+}
+#endif
+
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 /**
  * folio_mk_pmd - Create a PMD for this folio
