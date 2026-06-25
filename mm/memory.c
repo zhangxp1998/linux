@@ -1079,6 +1079,7 @@ copy_present_page(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 
 	/* All done, just insert the new page copy in the child */
 	pte = folio_mk_pte(new_folio, dst_vma->vm_page_prot);
+	pte = ppps_folio_mk_pte_slice(dst_vma, new_folio, pte, addr);
 	pte = maybe_mkwrite(pte_mkdirty(pte), dst_vma);
 	if (userfaultfd_pte_wp(dst_vma, ptep_get(src_pte)))
 		/* Uffd-wp needs to be delivered to dest pte as well */
@@ -3737,6 +3738,8 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		}
 		flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
 		entry = folio_mk_pte(new_folio, vma->vm_page_prot);
+		entry = ppps_folio_mk_pte_slice(vma, new_folio, entry,
+					       vmf->address);
 		entry = pte_sw_mkyoung(entry);
 		if (unlikely(unshare)) {
 			if (pte_soft_dirty(vmf->orig_pte))
@@ -4950,6 +4953,7 @@ check_folio:
 	add_mm_counter(vma->vm_mm, MM_ANONPAGES, nr_pages);
 	add_mm_counter(vma->vm_mm, MM_SWAPENTS, -nr_pages);
 	pte = mk_pte(page, vma->vm_page_prot);
+	pte = ppps_folio_mk_pte_slice(vma, folio, pte, address);
 	if (pte_swp_soft_dirty(vmf->orig_pte))
 		pte = pte_mksoft_dirty(pte);
 	if (pte_swp_uffd_wp(vmf->orig_pte))
@@ -5241,6 +5245,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 
 	trace_android_vh_do_anonymous_page(vma, folio);
 	entry = folio_mk_pte(folio, vma->vm_page_prot);
+	entry = ppps_folio_mk_pte_slice(vma, folio, entry, addr);
 	entry = pte_sw_mkyoung(entry);
 	if (vma->vm_flags & VM_WRITE)
 		entry = pte_mkwrite(pte_mkdirty(entry), vma);
@@ -5464,11 +5469,13 @@ void set_pte_range(struct vm_fault *vmf, struct folio *folio,
 {
 	struct vm_area_struct *vma = vmf->vma;
 	bool write = vmf->flags & FAULT_FLAG_WRITE;
-	bool prefault = !in_range(vmf->address, addr, nr * PAGE_SIZE);
+	bool prefault = !in_range(vmf->address, addr,
+				  nr * MM_PAGE_SIZE(vma->vm_mm));
 	pte_t entry;
 
 	flush_icache_pages(vma, page, nr);
 	entry = mk_pte(page, vma->vm_page_prot);
+	entry = ppps_folio_mk_pte_slice(vma, folio, entry, addr);
 
 	if (prefault && arch_wants_old_prefaulted_pte())
 		entry = pte_mkold(entry);
@@ -6963,11 +6970,15 @@ static int __access_remote_vm(struct mm_struct *mm, unsigned long addr,
 			if (bytes <= 0)
 				break;
 		} else {
+			unsigned int pg_size = MM_PAGE_SIZE(mm);
+			unsigned int slice_idx = vma_address_to_slice(vma, addr);
+			unsigned int page_offset = mm_offset_in_page(mm, addr);
+
 			folio = page_folio(page);
 			bytes = len;
-			offset = addr & (PAGE_SIZE-1);
-			if (bytes > PAGE_SIZE-offset)
-				bytes = PAGE_SIZE-offset;
+			offset = slice_idx * pg_size + page_offset;
+			if (bytes > pg_size - page_offset)
+				bytes = pg_size - page_offset;
 
 			maddr = kmap_local_folio(folio, folio_page_idx(folio, page) * PAGE_SIZE);
 			if (write) {
