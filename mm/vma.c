@@ -12,6 +12,7 @@
 #include <linux/page_size_compat.h>
 
 #include "vma.h"
+#include "ppps.h"
 #undef CREATE_TRACE_POINTS
 #include <trace/hooks/mm.h>
 

@@ -90,6 +90,7 @@
 
 #include "pgalloc-track.h"
 #include "internal.h"
+#include "ppps.h"
 #include "swap.h"
 
 #if defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS) && !defined(CONFIG_COMPILE_TEST)
