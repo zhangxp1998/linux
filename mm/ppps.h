@@ -9,16 +9,11 @@
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 
-static inline unsigned long vma_nr_slices(const struct vm_area_struct *vma)
-{
-	return (vma->vm_end - vma->vm_start) >> MM_PAGE_SHIFT(vma->vm_mm);
-}
-
 static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
 {
 	bool is_compat = ppps_mm_is_compat(vma->vm_mm);
 	bool is_anon = !vma->vm_ops;
-	unsigned long nr_slices = vma_nr_slices(vma);
+	unsigned long nr_slices = vma_pages(vma);
 
 	if (!is_compat || is_anon) {
 		/*
@@ -53,7 +48,7 @@ static inline unsigned int vma_slice_offset(struct vm_area_struct *vma,
 	return total_slices & PPPS_SLICE_MASK;
 }
 
-static inline unsigned long vmg_nr_slices(const struct vma_merge_struct *vmg)
+static inline unsigned long vmg_pages(const struct vma_merge_struct *vmg)
 {
 	return (vmg->end - vmg->start) >> MM_PAGE_SHIFT(vmg->mm);
 }
@@ -62,7 +57,7 @@ static inline pgoff_t vmg_native_pages(const struct vma_merge_struct *vmg)
 {
 	bool is_compat = ppps_mm_is_compat(vmg->mm);
 	bool is_anon = !vmg->file;
-	unsigned long nr_slices = vmg_nr_slices(vmg);
+	unsigned long nr_slices = vmg_pages(vmg);
 
 	if (!is_compat || is_anon)
 		return nr_slices;
@@ -89,7 +84,7 @@ static inline bool vmg_can_merge_offsets(const struct vma_merge_struct *vmg,
 
 		/* Verify compat subpage slice alignment */
 		return vma_slice_off(vmg->next) ==
-		       ((vmg->slice_off + vmg_nr_slices(vmg)) & PPPS_SLICE_MASK);
+		       ((vmg->slice_off + vmg_pages(vmg)) & PPPS_SLICE_MASK);
 	} else {
 		pgoff_t pglen = vma_native_pages(vmg->prev);
 
@@ -103,7 +98,7 @@ static inline bool vmg_can_merge_offsets(const struct vma_merge_struct *vmg,
 
 		/* Verify compat subpage slice alignment */
 		return vmg->slice_off ==
-		       ((vma_slice_off(vmg->prev) + vma_nr_slices(vmg->prev)) & PPPS_SLICE_MASK);
+		       ((vma_slice_off(vmg->prev) + vma_pages(vmg->prev)) & PPPS_SLICE_MASK);
 	}
 }
 
@@ -147,11 +142,6 @@ static inline unsigned int mmap_slice_offset(struct mm_struct *mm,
 
 #else /* !CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
 
-static inline unsigned long vma_nr_slices(const struct vm_area_struct *vma)
-{
-	return vma_pages(vma);
-}
-
 static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
 {
 	return (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
@@ -163,14 +153,14 @@ static inline unsigned int vma_slice_offset(struct vm_area_struct *vma,
 	return 0;
 }
 
-static inline unsigned long vmg_nr_slices(const struct vma_merge_struct *vmg)
+static inline unsigned long vmg_pages(const struct vma_merge_struct *vmg)
 {
 	return (vmg->end - vmg->start) >> PAGE_SHIFT;
 }
 
 static inline pgoff_t vmg_native_pages(const struct vma_merge_struct *vmg)
 {
-	return vmg_nr_slices(vmg);
+	return vmg_pages(vmg);
 }
 
 static inline bool vmg_can_merge_offsets(const struct vma_merge_struct *vmg,
