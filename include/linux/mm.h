@@ -3761,6 +3761,11 @@ static inline void vma_set_page_prot(struct vm_area_struct *vma)
 }
 #endif
 
+static inline pgprot_t vma_get_page_prot(vma_flags_t vma_flags)
+{
+	return vm_get_page_prot(vma_flags);
+}
+
 void vma_set_file(struct vm_area_struct *vma, struct file *file);
 
 #ifdef CONFIG_NUMA_BALANCING

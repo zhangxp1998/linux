@@ -664,6 +664,7 @@ static inline void *folio_get_private(const struct folio *folio)
 }
 
 typedef unsigned long vm_flags_t;
+typedef vm_flags_t vma_flags_t;
 
 /*
  * freeptr_t represents a SLUB freelist pointer, which might be encoded
