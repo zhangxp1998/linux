@@ -3766,10 +3766,8 @@ static inline unsigned long vma_pages(struct vm_area_struct *vma)
  * VMAs (the first vm_slice_off slices of the first page are not mapped), a
  * process-page index for anonymous VMAs.
  */
-static inline unsigned long vma_last_pgoff(struct vm_area_struct *vma)
+static inline unsigned long vma_last_pgoff(const struct vm_area_struct *vma)
 {
-	unsigned long size = vma->vm_end - vma->vm_start;
-
 	/*
 	 * For file-backed VMAs, vm_pgoff is always expressed in native PAGE_SIZE
 	 * units (matching the page cache indexing). For anonymous VMAs, it is
@@ -3781,7 +3779,10 @@ static inline unsigned long vma_last_pgoff(struct vm_area_struct *vma)
 		return vma->vm_pgoff + DIV_ROUND_UP(size, PAGE_SIZE) - 1;
 	}
 
-	return vma->vm_pgoff + vma_pages(vma) - 1;
+/* Number of native pages @vma touches (a partial first or last page counts). */
+static inline unsigned long vma_native_pages(const struct vm_area_struct *vma)
+{
+	return vma_last_pgoff(vma) - vma->vm_pgoff + 1;
 }
 
 /* log2 of the unit vm_pgoff counts in: process pages for anonymous VMAs. */
@@ -3835,6 +3836,11 @@ static inline void vma_set_page_prot(struct vm_area_struct *vma)
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 }
 #endif
+
+static inline pgprot_t vma_get_page_prot(vm_flags_t vma_flags)
+{
+	return vm_get_page_prot(vma_flags);
+}
 
 void vma_set_file(struct vm_area_struct *vma, struct file *file);
 
