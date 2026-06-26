@@ -137,6 +137,13 @@ static inline void mm_clear_pgtable_mm(void) {}
 				    _MM_PAGE_ALIGNED_2, \
 				    _MM_PAGE_ALIGNED_1)(__VA_ARGS__)
 
+#define _MM_PHYS_PFN_1(x)		((x) >> MM_PAGE_SHIFT(PGTABLE_MM()))
+#define _MM_PHYS_PFN_2(mm, x)		((x) >> MM_PAGE_SHIFT(mm))
+#define MM_PHYS_PFN(...) \
+	_MM_PAGE_ALIGN_DISPATCH_VAL(__VA_ARGS__, \
+				    _MM_PHYS_PFN_2, \
+				    _MM_PHYS_PFN_1)(__VA_ARGS__)
+
 #define _mm_offset_in_page_1(p)		((unsigned long)(p) & ~MM_PAGE_MASK(PGTABLE_MM()))
 #define _mm_offset_in_page_2(mm, p)	((unsigned long)(p) & ~MM_PAGE_MASK(mm))
 #define mm_offset_in_page(...) \
