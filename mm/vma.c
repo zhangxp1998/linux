@@ -9,6 +9,7 @@
 
 #include "vma_internal.h"
 #include "vma.h"
+#include "ppps.h"
 
 static inline bool is_mergeable_vma(struct vma_merge_struct *vmg, bool merge_next)
 {
