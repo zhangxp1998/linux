@@ -79,6 +79,7 @@ struct vma_merge_struct {
 	struct vm_area_struct *vma; /* Either a new VMA or the one being modified. */
 	unsigned long start;
 	unsigned long end;
+	unsigned int slice_off;
 	unsigned long flags;
 	struct file *file;
 	struct anon_vma *anon_vma;
