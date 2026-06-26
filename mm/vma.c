@@ -6,6 +6,9 @@
 
 #include "vma_internal.h"
 #include "vma.h"
+#undef CREATE_TRACE_POINTS
+#include <trace/hooks/mm.h>
+#include "ppps.h"
 
 #define MMAP_STATE(name, mm_, vmi_, addr_, len_, pgoff_, vma_flags_, file_) \
 	struct mmap_state name = {					\
