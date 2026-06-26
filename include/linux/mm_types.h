@@ -558,6 +558,7 @@ struct page_frag_cache {
 };
 
 typedef unsigned long vm_flags_t;
+typedef vm_flags_t vma_flags_t;
 
 /*
  * A region containing a mapping of a non-memory backed file under NOMMU
