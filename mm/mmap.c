@@ -2024,7 +2024,7 @@ destroy:
  */
 int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
 {
-	unsigned long charged = vma_nr_slices(vma);
+	unsigned long charged = vma_pages(vma);
 
 
 	if (find_vma_intersection(mm, vma->vm_start, vma->vm_end))
