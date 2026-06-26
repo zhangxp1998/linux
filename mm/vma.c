@@ -23,6 +23,7 @@ struct mmap_state {
 	unsigned long addr;
 	unsigned long end;
 	pgoff_t pgoff;
+	unsigned int slice_off;
 	unsigned long pglen;
 	vm_flags_t vm_flags;
 	struct file *file;
@@ -52,8 +53,9 @@ struct mmap_state {
 		.vmi = vmi_,						\
 		.addr = addr_,						\
 		.end = (addr_) + (len_),				\
-		.pgoff = pgoff_,					\
-		.pglen = PHYS_PFN(len_),				\
+		.pgoff = mmap_pgoff_offset(mm_, pgoff_, vm_flags_, file_), \
+		.slice_off = mmap_slice_offset(mm_, pgoff_, vm_flags_, file_), \
+		.pglen = MM_PHYS_PFN(mm_, len_),			\
 		.vm_flags = vm_flags_,					\
 		.file = file_,						\
 		.page_prot = vm_get_page_prot(vm_flags_),		\
@@ -67,6 +69,7 @@ struct mmap_state {
 		.end = (map_)->end,					\
 		.vm_flags = (map_)->vm_flags,				\
 		.pgoff = (map_)->pgoff,					\
+		.slice_off = (map_)->slice_off,				\
 		.file = (map_)->file,					\
 		.prev = (map_)->prev,					\
 		.middle = vma_,						\
@@ -1885,7 +1888,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	 * to match new location, to increase its chance of merging.
 	 */
 	if (unlikely(vma_is_anonymous(vma) && !vma->anon_vma)) {
-		pgoff = addr >> PAGE_SHIFT;
+		pgoff = addr >> MM_PAGE_SHIFT(mm);
 		faulted_in_anon_vma = false;
 	}
 
@@ -1995,7 +1998,8 @@ static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *
 		mpol_equal(vma_policy(a), vma_policy(b)) &&
 		a->vm_file == b->vm_file &&
 		!((a->vm_flags ^ b->vm_flags) & ~(VM_ACCESS_FLAGS | VM_SOFTDIRTY)) &&
-		b->vm_pgoff == a->vm_pgoff + ((b->vm_start - a->vm_start) >> PAGE_SHIFT);
+		b->vm_pgoff == a->vm_pgoff +
+			((b->vm_start - a->vm_start) >> MM_PAGE_SHIFT(a->vm_mm));
 }
 
 /*
@@ -2541,6 +2545,7 @@ static int __mmap_new_vma(struct mmap_state *map, struct vm_area_struct **vmap)
 
 	vma_iter_config(vmi, map->addr, map->end);
 	vma_set_range(vma, map->addr, map->end, map->pgoff);
+	vma_set_slice_off(vma, map->slice_off);
 	vm_flags_init(vma, map->vm_flags);
 	vma->vm_page_prot = map->page_prot;
 
