@@ -1239,7 +1239,7 @@ int vms_gather_munmap_vmas(struct vma_munmap_struct *vms,
 			goto munmap_gather_failed;
 
 		vma_mark_detached(next, true);
-		nrpages = vma_nr_slices(next);
+		nrpages = vma_pages(next);
 
 		vms->nr_pages += nrpages;
 		if (next->vm_flags & VM_LOCKED)
