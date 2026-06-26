@@ -280,11 +280,38 @@ static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 	/*
 	 * For file-backed VMAs in compat processes, the VMA offset starts at a
 	 * host page boundary (vm_pgoff) but may be offset internally by a
-	 * number of 4KB slices (vm_slice_off).
+	 * number of subpage slices (vm_slice_off).
 	 *
 	 * Convert the virtual address offset to compat slices, add the starting
 	 * slice offset, and scale the result back to native host pages to align
 	 * with page cache indexing.
+	 *
+	 * Translation of virtual address to page cache index (vm_pgoff) with PPPS_SLICE_SHIFT = 2:
+	 *
+	 * Original VMA (starts at vm_pgoff = 10, vm_slice_off = 1):
+	 *
+	 *              Native Page 10                 Native Page 11
+	 *        +----+----+----+----+          +----+----+----+----+
+	 *        | -  | S0 | S1 | S2 |          | S3 | S4 | S5 | -  |
+	 *        +----+----+----+----+          +----+----+----+----+
+	 *               ^
+	 *               |
+	 *               +-- vma->vm_start (starts at slice 1 of Page 10)
+	 *
+	 * Address translation (address at +3 slices, pointing to S3):
+	 *
+	 *              Native Page 10                 Native Page 11
+	 *        +----+----+----+----+          +----+----+----+----+
+	 *        | -  | S0 | S1 | S2 |          | S3 | S4 | S5 | -  |
+	 *        +----+----+----+----+          +----+----+----+----+
+	 *                                         ^
+	 *                                         |
+	 *                                         +-- Address (slice 3 of Page 10
+	 *                                             relative to start)
+	 *
+	 * Resulting indices:
+	 * - slice_offset = (1 + 3) & 3 = 0 (slice 0 of Page 11)
+	 * - page_cache_index (pgoff) = 10 + ((1 + 3) >> 2) = 11
 	 */
 	pgoff_t temp = (address - vma->vm_start) >> PAGE_SHIFT_COMPAT;
 
