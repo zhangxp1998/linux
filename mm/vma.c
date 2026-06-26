@@ -1239,7 +1239,7 @@ int vms_gather_munmap_vmas(struct vma_munmap_struct *vms,
 			goto munmap_gather_failed;
 
 		vma_mark_detached(next, true);
-		nrpages = vma_pages(next);
+		nrpages = vma_nr_slices(next);
 
 		vms->nr_pages += nrpages;
 		if (next->vm_flags & VM_LOCKED)
@@ -1384,10 +1384,10 @@ int do_vmi_munmap(struct vma_iterator *vmi, struct mm_struct *mm,
 	unsigned long end;
 	struct vm_area_struct *vma;
 
-	if ((offset_in_page(start)) || start > TASK_SIZE || len > TASK_SIZE-start)
+	if (mm_offset_in_page(mm, start) || start > TASK_SIZE || len > TASK_SIZE-start)
 		return -EINVAL;
 
-	end = start + PAGE_ALIGN(len);
+	end = start + MM_PAGE_ALIGN(mm, len);
 	if (end == start)
 		return -EINVAL;
 
