@@ -1369,7 +1369,9 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma = NULL;
-	pgoff_t pglen = PHYS_PFN(len);
+	pgoff_t pglen = MM_PHYS_PFN(mm, len);
+	pgoff_t mmap_pgoff = mmap_pgoff_offset(mm, pgoff, vm_flags, file);
+	unsigned int slice_off = mmap_slice_offset(mm, pgoff, vm_flags, file);
 	unsigned long charged = 0;
 	struct vma_munmap_struct vms;
 	struct ma_state mas_detach;
@@ -1377,9 +1379,10 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
 	unsigned long end = addr + len;
 	int error;
 	VMA_ITERATOR(vmi, mm, addr);
-	VMG_STATE(vmg, mm, &vmi, addr, end, vm_flags, pgoff);
+	VMG_STATE(vmg, mm, &vmi, addr, end, vm_flags, mmap_pgoff);
 
 	vmg.file = file;
+	vmg.slice_off = slice_off;
 	/* Find the first overlapping VMA */
 	vma = vma_find(&vmi, end);
 	init_vma_munmap(&vms, &vmi, vma, addr, end, uf, /* unlock = */ false);
@@ -1444,7 +1447,8 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
 	}
 
 	vma_iter_config(&vmi, addr, end);
-	vma_set_range(vma, addr, end, pgoff);
+	vma_set_range(vma, addr, end, mmap_pgoff);
+	vma_set_slice_off(vma, slice_off);
 	vm_flags_init(vma, vm_flags);
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
 

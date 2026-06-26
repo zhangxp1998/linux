@@ -1627,7 +1627,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	 * to match new location, to increase its chance of merging.
 	 */
 	if (unlikely(vma_is_anonymous(vma) && !vma->anon_vma)) {
-		pgoff = addr >> PAGE_SHIFT;
+		pgoff = addr >> MM_PAGE_SHIFT(mm);
 		faulted_in_anon_vma = false;
 	}
 
@@ -1715,7 +1715,8 @@ static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *
 		mpol_equal(vma_policy(a), vma_policy(b)) &&
 		a->vm_file == b->vm_file &&
 		!((a->vm_flags ^ b->vm_flags) & ~(VM_ACCESS_FLAGS | VM_SOFTDIRTY)) &&
-		b->vm_pgoff == a->vm_pgoff + ((b->vm_start - a->vm_start) >> PAGE_SHIFT);
+		b->vm_pgoff == a->vm_pgoff +
+			((b->vm_start - a->vm_start) >> MM_PAGE_SHIFT(a->vm_mm));
 }
 
 /*
