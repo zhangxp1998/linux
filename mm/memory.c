@@ -2358,7 +2358,7 @@ EXPORT_SYMBOL(vm_insert_page);
 static int __vm_map_pages(struct vm_area_struct *vma, struct page **pages,
 				unsigned long num, unsigned long offset)
 {
-	unsigned long count = vma_pages(vma);
+	unsigned long count = vma_native_pages(vma);
 	unsigned long uaddr = vma->vm_start;
 
 	/* Fail if the user requested offset is beyond the end of the object */
