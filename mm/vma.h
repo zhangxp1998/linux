@@ -60,6 +60,41 @@ enum vma_merge_state {
 	VMA_MERGE_SUCCESS,
 };
 
+struct mmap_state {
+	struct mm_struct *mm;
+	struct vma_iterator *vmi;
+
+	unsigned long addr;
+	unsigned long end;
+	pgoff_t pgoff;
+	unsigned long pglen;
+	union {
+		vm_flags_t vm_flags;
+		vma_flags_t vma_flags;
+	};
+	struct file *file;
+	pgprot_t page_prot;
+
+	/* User-defined fields, perhaps updated by .mmap_prepare(). */
+	const struct vm_operations_struct *vm_ops;
+	void *vm_private_data;
+
+	unsigned long charged;
+
+	struct vm_area_struct *prev;
+	struct vm_area_struct *next;
+
+	/* Unmapping state. */
+	struct vma_munmap_struct vms;
+	struct ma_state mas_detach;
+	struct maple_tree mt_detach;
+
+	/* Determine if we can check KSM flags early in mmap() logic. */
+	bool check_ksm_early :1;
+	/* If .mmap_prepare changed the file, we don't need to pin. */
+	bool file_doesnt_need_get :1;
+};
+
 /*
  * Describes a VMA merge operation and is threaded throughout it.
  *
