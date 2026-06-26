@@ -1839,13 +1839,13 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	 * Note: This happens *after* clearing old mappings in some code paths.
 	 */
 	flags |= VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;
-	if (!may_expand_vm(mm, flags, len >> PAGE_SHIFT))
+	if (!may_expand_vm(mm, flags, len >> MM_PAGE_SHIFT(mm)))
 		return -ENOMEM;
 
 	if (mm->map_count > sysctl_max_map_count)
 		return -ENOMEM;
 
-	if (security_vm_enough_memory_mm(mm, len >> PAGE_SHIFT))
+	if (security_vm_enough_memory_mm(mm, len >> MM_PAGE_SHIFT(mm)))
 		return -ENOMEM;
 
 	/*
@@ -1853,7 +1853,8 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	 * occur after forking, so the expand will only happen on new VMAs.
 	 */
 	if (vma && vma->vm_end == addr) {
-		VMG_STATE(vmg, mm, vmi, addr, addr + len, flags, PHYS_PFN(addr));
+		VMG_STATE(vmg, mm, vmi, addr, addr + len, flags,
+			  MM_PHYS_PFN(mm, addr));
 
 		vmg.prev = vma;
 		/* vmi is positioned at prev, which this mode expects. */
@@ -1873,7 +1874,8 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		goto unacct_fail;
 
 	vma_set_anonymous(vma);
-	vma_set_range(vma, addr, addr + len, addr >> PAGE_SHIFT);
+	vma_set_range(vma, addr, addr + len, addr >> MM_PAGE_SHIFT(mm));
+	vma_set_slice_off(vma, 0);
 	vm_flags_init(vma, flags);
 	vma->vm_page_prot = vm_get_page_prot(flags);
 	vma_start_write(vma);
@@ -1885,17 +1887,17 @@ static int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	ksm_add_vma(vma);
 out:
 	perf_event_mmap(vma);
-	mm->total_vm += len >> PAGE_SHIFT;
-	mm->data_vm += len >> PAGE_SHIFT;
+	mm->total_vm += len >> MM_PAGE_SHIFT(mm);
+	mm->data_vm += len >> MM_PAGE_SHIFT(mm);
 	if (flags & VM_LOCKED)
-		mm->locked_vm += (len >> PAGE_SHIFT);
+		mm->locked_vm += (len >> MM_PAGE_SHIFT(mm));
 	vm_flags_set(vma, VM_SOFTDIRTY);
 	return 0;
 
 mas_store_fail:
 	vm_area_free(vma);
 unacct_fail:
-	vm_unacct_memory(len >> PAGE_SHIFT);
+	vm_unacct_memory(len >> MM_PAGE_SHIFT(mm));
 	return -ENOMEM;
 }
 
