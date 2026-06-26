@@ -58,6 +58,7 @@
 #include <trace/events/mmap.h>
 
 #include "internal.h"
+#include "ppps.h"
 
 #ifndef arch_mmap_check
 #define arch_mmap_check(addr, len, flags)	(0)
@@ -1017,7 +1018,8 @@ static int acct_stack_growth(struct vm_area_struct *vma,
 		return -ENOMEM;
 
 	/* mlock limit tests */
-	if (!mlock_future_ok(mm, vma->vm_flags, grow << PAGE_SHIFT))
+	if (!mlock_future_ok(mm, vma->vm_flags,
+			     grow << MM_PAGE_SHIFT(mm)))
 		return -ENOMEM;
 
 	/* Check to ensure the stack will not grow into a hugetlb-only region */
@@ -1053,10 +1055,10 @@ static int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 		return -EFAULT;
 
 	/* Guard against exceeding limits of the address space. */
-	address &= PAGE_MASK;
-	if (address >= (TASK_SIZE & PAGE_MASK))
+	address &= MM_PAGE_MASK(mm);
+	if (address >= (TASK_SIZE & MM_PAGE_MASK(mm)))
 		return -ENOMEM;
-	address += PAGE_SIZE;
+	address += MM_PAGE_SIZE(mm);
 
 	/* Enforce stack_guard_gap */
 	gap_addr = address + stack_guard_gap;
@@ -1099,10 +1101,11 @@ static int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 		unsigned long size, grow;
 
 		size = address - vma->vm_start;
-		grow = (address - vma->vm_end) >> PAGE_SHIFT;
+		grow = (address - vma->vm_end) >> MM_PAGE_SHIFT(mm);
 
 		error = -ENOMEM;
-		if (vma->vm_pgoff + (size >> PAGE_SHIFT) >= vma->vm_pgoff) {
+		if (vma->vm_pgoff + (size >> MM_PAGE_SHIFT(mm)) >=
+		    vma->vm_pgoff) {
 			error = acct_stack_growth(vma, size, grow);
 			if (!error) {
 				/*
@@ -1150,7 +1153,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 	if (!(vma->vm_flags & VM_GROWSDOWN))
 		return -EFAULT;
 
-	address &= PAGE_MASK;
+	address &= MM_PAGE_MASK(mm);
 	if (address < mmap_min_addr || address < FIRST_USER_ADDRESS)
 		return -EPERM;
 
@@ -1191,7 +1194,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 		unsigned long size, grow;
 
 		size = vma->vm_end - address;
-		grow = (vma->vm_start - address) >> PAGE_SHIFT;
+		grow = (vma->vm_start - address) >> MM_PAGE_SHIFT(mm);
 
 		error = -ENOMEM;
 		if (grow <= vma->vm_pgoff) {
@@ -1213,6 +1216,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 				anon_vma_interval_tree_pre_update_vma(vma);
 				vma->vm_start = address;
 				vma->vm_pgoff -= grow;
+				vma_set_slice_off(vma, 0);
 				/* Overwrite old entry in mtree. */
 				vma_iter_store(&vmi, vma);
 				anon_vma_interval_tree_post_update_vma(vma);
@@ -1968,7 +1972,7 @@ destroy:
  */
 int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
 {
-	unsigned long charged = vma_pages(vma);
+	unsigned long charged = vma_nr_slices(vma);
 
 
 	if (find_vma_intersection(mm, vma->vm_start, vma->vm_end))
@@ -1992,7 +1996,7 @@ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
 	 */
 	if (vma_is_anonymous(vma)) {
 		BUG_ON(vma->anon_vma);
-		vma->vm_pgoff = vma->vm_start >> PAGE_SHIFT;
+		vma->vm_pgoff = vma->vm_start >> MM_PAGE_SHIFT(mm);
 	}
 
 	if (vma_link(mm, vma)) {
