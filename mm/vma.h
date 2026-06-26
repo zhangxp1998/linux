@@ -97,6 +97,7 @@ struct vma_merge_struct {
 	unsigned long start;
 	unsigned long end;
 	pgoff_t pgoff;
+	unsigned int slice_off;
 
 	vm_flags_t vm_flags;
 	struct file *file;
