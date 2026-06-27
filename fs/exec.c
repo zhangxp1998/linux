@@ -1349,6 +1349,9 @@ int begin_new_exec(struct linux_binprm * bprm)
 					PF_NOFREEZE | PF_NO_SETAFFINITY);
 	flush_thread();
 	me->personality &= ~bprm->per_clear;
+	/* Commit the selected mode only after replacing the old address space. */
+	if (ppps_mm_is_compat(me->mm))
+		me->personality |= ADDR_4KB_COMPAT_PAGE_SIZE;
 
 	clear_syscall_work_syscall_user_dispatch(me);
 
