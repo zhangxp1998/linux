@@ -5,6 +5,8 @@
 #include <linux/export.h>
 #include <linux/mm.h>
 #include <linux/binfmts.h>
+#include <linux/dcache.h>
+#include <linux/fs.h>
 #include <linux/string.h>
 #include <linux/ppps.h>
 #include <linux/highmem.h>
@@ -61,15 +63,27 @@ unsigned long mm_default_map_window64_of(struct mm_struct *mm)
 
 	return 1UL << VA_BITS_MIN;
 }
+/* Testing only: select Android app runtimes, not init or its other services. */
+static bool ppps_test_app_runtime(const struct linux_binprm *bprm)
+{
+	struct name_snapshot snapshot;
+	bool match;
+
+	take_dentry_name_snapshot(&snapshot, bprm->file->f_path.dentry);
+	match = !strcmp(snapshot.name.name, "app_process") ||
+		!strcmp(snapshot.name.name, "app_process32") ||
+		!strcmp(snapshot.name.name, "app_process64") ||
+		!strcmp(snapshot.name.name, "zygote") ||
+		!strcmp(snapshot.name.name, "zygote32") ||
+		!strcmp(snapshot.name.name, "zygote64");
+	release_dentry_name_snapshot(&snapshot);
+	return match;
+}
+
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm)
 {
-	/* fork() must preserve the geometry of the page tables it copies. */
-	if (!bprm && current->mm) {
-		mm->page_shift = current->mm->page_shift;
-		return;
-	}
-
-	if (current->personality & ADDR_4KB_COMPAT_PAGE_SIZE)
+	if ((current->personality & ADDR_4KB_COMPAT_PAGE_SIZE) ||
+	    ppps_test_app_runtime(bprm))
 		mm->page_shift = PAGE_SHIFT_COMPAT;
 	else
 		mm->page_shift = PAGE_SHIFT;
