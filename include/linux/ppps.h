@@ -35,11 +35,11 @@ void mm_init_pagesize(struct mm_struct *mm, struct linux_binprm *bprm);
 #define vma_set_slice_off(vma, val)	((vma)->vm_slice_off = (val))
 #define vma_slice_off(vma)		((vma)->vm_slice_off)
 #define vma_page_shift(vma) \
-	(ppps_mm_is_compat((vma)->vm_mm) ? \
+	((ppps_mm_is_compat((vma)->vm_mm) && !(vma)->vm_ops) ? \
 	 PAGE_SHIFT_COMPAT : PAGE_SHIFT)
 
 #define vma_slice_shift(vma) \
-	(ppps_mm_is_compat((vma)->vm_mm) ? \
+	((ppps_mm_is_compat((vma)->vm_mm) && !(vma)->vm_ops) ? \
 	 PPPS_SLICE_SHIFT : 0)
 /*
  * clear_pte_slice_offset - Clear any existing subpage offset bits in the PTE

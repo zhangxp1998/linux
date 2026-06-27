@@ -966,12 +966,6 @@ static inline unsigned long vma_address(struct vm_area_struct *vma,
 	unsigned int shift = vma_page_shift(vma);
 	unsigned int scale_shift = vma_slice_shift(vma);
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	if (vma->vm_mm && vma->vm_mm->page_shift == PAGE_SHIFT_COMPAT &&
-	    vma_is_anonymous((struct vm_area_struct *)vma)) {
-		pgoff = pgoff << (PAGE_SHIFT - vma->vm_mm->page_shift);
-	}
-#endif
 
 	if (pgoff >= vma->vm_pgoff) {
 		address = vma->vm_start +
