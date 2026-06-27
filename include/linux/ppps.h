@@ -79,7 +79,8 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 #endif
 #define ppps_mm_is_compat(mm)		((void)(mm), false)
 
-static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm) {}
+static inline void mm_init_pagesize(struct mm_struct *mm,
+				    const struct linux_binprm *bprm) {}
 #define mm_inherit_pagesize(mm, oldmm)	((void)(mm), (void)(oldmm))
 #define vma_set_slice_off(vma, val)	((void)(vma), (void)(val))
 #define vma_slice_off(vma)		((void)(vma), 0)
