@@ -97,11 +97,9 @@ static void init_multi_vma_prep(struct vma_prepare *vp,
  */
 static bool can_vma_merge_before(struct vma_merge_struct *vmg)
 {
-	pgoff_t pglen = PHYS_PFN(vmg->end - vmg->start);
-
 	if (is_mergeable_vma(vmg, /* merge_next = */ true) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->next->anon_vma, vmg->next)) {
-		if (vmg->next->vm_pgoff == vmg->pgoff + pglen)
+		if (vmg_can_merge_offsets(vmg, /* merge_next = */ true))
 			return true;
 	}
 
@@ -121,7 +119,7 @@ static bool can_vma_merge_after(struct vma_merge_struct *vmg)
 {
 	if (is_mergeable_vma(vmg, /* merge_next = */ false) &&
 	    is_mergeable_anon_vma(vmg->anon_vma, vmg->prev->anon_vma, vmg->prev)) {
-		if (vmg->prev->vm_pgoff + vma_pages(vmg->prev) == vmg->pgoff)
+		if (vmg_can_merge_offsets(vmg, /* merge_next = */ false))
 			return true;
 	}
 	return false;
@@ -389,7 +387,8 @@ static int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		new->vm_end = addr;
 	} else {
 		new->vm_start = addr;
-		new->vm_pgoff += ((addr - vma->vm_start) >> PAGE_SHIFT);
+		new->vm_pgoff = vma_pgoff_offset(vma, addr);
+		vma_set_slice_off(new, vma_slice_offset(vma, addr));
 	}
 
 	err = -ENOMEM;
@@ -421,7 +420,8 @@ static int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 
 	if (new_below) {
 		vma->vm_start = addr;
-		vma->vm_pgoff += (addr - new->vm_start) >> PAGE_SHIFT;
+		vma->vm_pgoff = vma_pgoff_offset(new, addr);
+		vma_set_slice_off(vma, vma_slice_offset(new, addr));
 	} else {
 		vma->vm_end = addr;
 	}
@@ -584,6 +584,9 @@ static int commit_merge(struct vma_merge_struct *vmg,
 			bool expanded)
 {
 	struct vma_prepare vp;
+	unsigned long adjust_start;
+	pgoff_t adjust_pgoff;
+	unsigned int adjust_slice_off;
 
 	init_multi_vma_prep(&vp, vmg->vma, adjust, remove, remove2);
 
@@ -604,13 +607,25 @@ static int commit_merge(struct vma_merge_struct *vmg,
 	vma_prepare(&vp);
 	vma_adjust_trans_huge(vmg->vma, vmg->start, vmg->end, adj_start);
 	vma_set_range(vmg->vma, vmg->start, vmg->end, vmg->pgoff);
+	vma_set_slice_off(vmg->vma, vmg->slice_off);
 
 	if (expanded)
 		vma_iter_store(vmg->vmi, vmg->vma);
 
 	if (adj_start) {
-		adjust->vm_start += adj_start;
-		adjust->vm_pgoff += PHYS_PFN(adj_start);
+		adjust_start = adjust->vm_start + adj_start;
+		if (adj_start < 0) {
+			adjust_pgoff = vma_pgoff_offset(vmg->vma, adjust_start);
+			adjust_slice_off =
+				vma_slice_offset(vmg->vma, adjust_start);
+		} else {
+			adjust_pgoff = vma_pgoff_offset(adjust, adjust_start);
+			adjust_slice_off =
+				vma_slice_offset(adjust, adjust_start);
+		}
+		vma_set_range(adjust, adjust_start, adjust->vm_end,
+			      adjust_pgoff);
+		vma_set_slice_off(adjust, adjust_slice_off);
 		if (adj_start < 0) {
 			WARN_ON(expanded);
 			vma_iter_store(vmg->vmi, adjust);
@@ -766,6 +781,7 @@ static struct vm_area_struct *vma_merge_existing_range(struct vma_merge_struct *
 		vmg->start = prev->vm_start;
 		vmg->end = next->vm_end;
 		vmg->pgoff = prev->vm_pgoff;
+		vmg->slice_off = vma_slice_off(prev);
 
 		/*
 		 * We already ensured anon_vma compatibility above, so now it's
@@ -785,6 +801,7 @@ static struct vm_area_struct *vma_merge_existing_range(struct vma_merge_struct *
 		vmg->vma = prev;
 		vmg->start = prev->vm_start;
 		vmg->pgoff = prev->vm_pgoff;
+		vmg->slice_off = vma_slice_off(prev);
 
 		if (!merge_will_delete_vma) {
 			adjust = vma;
@@ -801,8 +818,6 @@ static struct vm_area_struct *vma_merge_existing_range(struct vma_merge_struct *
 		 * shrink/delete extend
 		 */
 
-		pgoff_t pglen = PHYS_PFN(vmg->end - vmg->start);
-
 		VM_WARN_ON(!merge_right);
 		/* If we are offset into a VMA, then prev must be vma. */
 		VM_WARN_ON(vmg->start > vma->vm_start && prev && vma != prev);
@@ -810,7 +825,8 @@ static struct vm_area_struct *vma_merge_existing_range(struct vma_merge_struct *
 		if (merge_will_delete_vma) {
 			vmg->vma = next;
 			vmg->end = next->vm_end;
-			vmg->pgoff = next->vm_pgoff - pglen;
+			vmg->pgoff = vma->vm_pgoff;
+			vmg->slice_off = vma_slice_off(vma);
 		} else {
 			/*
 			 * We shrink vma and expand next.
@@ -822,6 +838,7 @@ static struct vm_area_struct *vma_merge_existing_range(struct vma_merge_struct *
 			vmg->start = vma->vm_start;
 			vmg->end = start;
 			vmg->pgoff = vma->vm_pgoff;
+			vmg->slice_off = vma_slice_off(vma);
 
 			adjust = next;
 			adj_start = -(vma->vm_end - start);
@@ -915,7 +932,7 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 	unsigned long start = vmg->start;
 	unsigned long end = vmg->end;
 	pgoff_t pgoff = vmg->pgoff;
-	pgoff_t pglen = PHYS_PFN(end - start);
+	unsigned int slice_off = vmg->slice_off;
 	bool can_merge_left, can_merge_right;
 	bool just_expand = vmg->merge_flags & VMG_FLAG_JUST_EXPAND;
 
@@ -937,7 +954,6 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 	if (can_merge_right) {
 		vmg->end = next->vm_end;
 		vmg->vma = next;
-		vmg->pgoff = next->vm_pgoff - pglen;
 	}
 
 	/* If we can merge with the previous VMA, adjust vmg accordingly. */
@@ -945,6 +961,7 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 		vmg->start = prev->vm_start;
 		vmg->vma = prev;
 		vmg->pgoff = prev->vm_pgoff;
+		vmg->slice_off = vma_slice_off(prev);
 
 		/*
 		 * If this merge would result in removal of the next VMA but we
@@ -977,6 +994,7 @@ struct vm_area_struct *vma_merge_new_range(struct vma_merge_struct *vmg)
 		vmg->start = start;
 		vmg->end = end;
 		vmg->pgoff = pgoff;
+		vmg->slice_off = slice_off;
 		if (vmg->vma == prev)
 			vma_iter_set(vmg->vmi, start);
 	}
