@@ -68,7 +68,8 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 #define mm_default_map_window64()	(1UL << VA_BITS_MIN)
 #define mm_default_map_window64_of(mm)	((void)(mm), (1UL << VA_BITS_MIN))
 
-static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm) {}
+static inline void mm_init_pagesize(struct mm_struct *mm,
+				    const struct linux_binprm *bprm) {}
 #define mm_inherit_pagesize(mm)		((void)(mm))
 #define vma_set_slice_off(vma, val)	((void)(vma), (void)(val))
 #define vma_slice_off(vma)		((void)(vma), 0)
