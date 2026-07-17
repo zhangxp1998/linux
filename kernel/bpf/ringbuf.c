@@ -258,19 +258,97 @@ static int ringbuf_map_get_next_key(struct bpf_map *map, void *key,
 	return -ENOTSUPP;
 }
 
+static unsigned long ringbuf_map_mmap_offset(struct vm_area_struct *vma)
+{
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return vma_file_offset(vma);
+	return vma->vm_pgoff << PAGE_SHIFT;
+}
+
+static int ringbuf_map_insert_ppps_range(struct vm_area_struct *vma,
+					   unsigned long uaddr, void *kaddr,
+					   unsigned long size)
+{
+	while (size) {
+		unsigned int slice_idx = offset_in_page(kaddr) >> PAGE_SHIFT_COMPAT;
+		struct page *page = vmalloc_to_page(kaddr);
+		int err;
+
+		if (!page)
+			return -EFAULT;
+		err = vm_insert_page_slice(vma, uaddr, page, slice_idx);
+		if (err)
+			return err;
+		uaddr += PAGE_SIZE_COMPAT;
+		kaddr += PAGE_SIZE_COMPAT;
+		size -= PAGE_SIZE_COMPAT;
+	}
+	return 0;
+}
+
+static int ringbuf_map_mmap_ppps(struct bpf_ringbuf *rb,
+				   struct vm_area_struct *vma)
+{
+	unsigned long offset = ringbuf_map_mmap_offset(vma);
+	unsigned long uaddr = vma->vm_start;
+	unsigned long size = vma->vm_end - vma->vm_start;
+	unsigned long data_size = rb->mask + 1;
+	unsigned long logical_size = 2 * PAGE_SIZE_COMPAT + 2 * data_size;
+	int err;
+
+	if (!IS_ALIGNED(offset, PAGE_SIZE_COMPAT) ||
+	    !IS_ALIGNED(size, PAGE_SIZE_COMPAT) ||
+	    offset > logical_size || size > logical_size - offset)
+		return -EINVAL;
+
+	while (size) {
+		unsigned long chunk;
+		void *kaddr;
+
+		if (offset < PAGE_SIZE_COMPAT) {
+			chunk = min(size, PAGE_SIZE_COMPAT - offset);
+			kaddr = (void *)&rb->consumer_pos + offset;
+		} else if (offset < 2 * PAGE_SIZE_COMPAT) {
+			unsigned long pos_off = offset - PAGE_SIZE_COMPAT;
+
+			chunk = min(size, PAGE_SIZE_COMPAT - pos_off);
+			kaddr = (void *)&rb->producer_pos + pos_off;
+		} else {
+			unsigned long data_off = offset - 2 * PAGE_SIZE_COMPAT;
+
+			chunk = size;
+			kaddr = (void *)rb->data + data_off;
+		}
+
+		err = ringbuf_map_insert_ppps_range(vma, uaddr, kaddr, chunk);
+		if (err)
+			return err;
+		offset += chunk;
+		uaddr += chunk;
+		size -= chunk;
+	}
+
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+	return 0;
+}
+
 static int ringbuf_map_mmap_kern(struct bpf_map *map, struct vm_area_struct *vma)
 {
 	struct bpf_ringbuf_map *rb_map;
+	unsigned long mmap_offset = ringbuf_map_mmap_offset(vma);
 
 	rb_map = container_of(map, struct bpf_ringbuf_map, map);
 
 	if (vma->vm_flags & VM_WRITE) {
 		/* allow writable mapping for the consumer_pos only */
-		if (vma->vm_pgoff != 0 || vma->vm_end - vma->vm_start != PAGE_SIZE)
+		if (mmap_offset != 0 ||
+		    vma->vm_end - vma->vm_start != MM_PAGE_SIZE(vma->vm_mm))
 			return -EPERM;
 	} else {
 		vm_flags_clear(vma, VM_MAYWRITE);
 	}
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return ringbuf_map_mmap_ppps(rb_map->rb, vma);
 	/* remap_vmalloc_range() checks size and offset constraints */
 	return remap_vmalloc_range(vma, rb_map->rb,
 				   vma->vm_pgoff + RINGBUF_PGOFF);
@@ -279,11 +357,12 @@ static int ringbuf_map_mmap_kern(struct bpf_map *map, struct vm_area_struct *vma
 static int ringbuf_map_mmap_user(struct bpf_map *map, struct vm_area_struct *vma)
 {
 	struct bpf_ringbuf_map *rb_map;
+	unsigned long mmap_offset = ringbuf_map_mmap_offset(vma);
 
 	rb_map = container_of(map, struct bpf_ringbuf_map, map);
 
 	if (vma->vm_flags & VM_WRITE) {
-		if (vma->vm_pgoff == 0)
+		if (mmap_offset == 0)
 			/* Disallow writable mappings to the consumer pointer,
 			 * and allow writable mappings to both the producer
 			 * position, and the ring buffer data itself.
@@ -292,6 +371,8 @@ static int ringbuf_map_mmap_user(struct bpf_map *map, struct vm_area_struct *vma
 	} else {
 		vm_flags_clear(vma, VM_MAYWRITE);
 	}
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return ringbuf_map_mmap_ppps(rb_map->rb, vma);
 	/* remap_vmalloc_range() checks size and offset constraints */
 	return remap_vmalloc_range(vma, rb_map->rb, vma->vm_pgoff + RINGBUF_PGOFF);
 }
