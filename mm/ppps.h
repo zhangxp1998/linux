@@ -7,6 +7,18 @@
 
 #include "vma.h"
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+int ppps_vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
+			 struct page **pages, unsigned long *num);
+#else
+static inline int ppps_vm_insert_pages(struct vm_area_struct *vma,
+		unsigned long addr, struct page **pages, unsigned long *num)
+{
+	return -EINVAL;
+}
+#endif
+
+
 /*
  * VMA merge geometry.  vm_pgoff advances by one native page per
  * PPPS_SLICES_PER_PAGE compat pages once the slice offset is folded in, so a

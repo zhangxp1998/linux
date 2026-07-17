@@ -2157,7 +2157,8 @@ static int validate_page_before_insert(struct vm_area_struct *vma,
 }
 
 static int insert_page_into_pte_locked(struct vm_area_struct *vma, pte_t *pte,
-			unsigned long addr, struct page *page, pgprot_t prot)
+			unsigned long addr, struct page *page, pgprot_t prot,
+			unsigned int slice_idx)
 {
 	struct folio *folio = page_folio(page);
 	pte_t pteval;
@@ -2173,12 +2174,14 @@ static int insert_page_into_pte_locked(struct vm_area_struct *vma, pte_t *pte,
 		inc_mm_counter(vma->vm_mm, mm_counter_file(folio));
 		folio_add_file_rmap_pte(folio, page, vma);
 	}
+	pteval = pte_mkslice(pteval, slice_idx);
 	set_pte_at(vma->vm_mm, addr, pte, pteval);
 	return 0;
 }
 
 static int insert_page(struct vm_area_struct *vma, unsigned long addr,
-			struct page *page, pgprot_t prot)
+			struct page *page, pgprot_t prot,
+			unsigned int slice_idx)
 {
 	int retval;
 	pte_t *pte;
@@ -2191,7 +2194,8 @@ static int insert_page(struct vm_area_struct *vma, unsigned long addr,
 	pte = get_locked_pte(vma->vm_mm, addr, &ptl);
 	if (!pte)
 		goto out;
-	retval = insert_page_into_pte_locked(vma, pte, addr, page, prot);
+	retval = insert_page_into_pte_locked(vma, pte, addr, page, prot,
+					     slice_idx);
 	pte_unmap_unlock(pte, ptl);
 out:
 	return retval;
@@ -2205,7 +2209,8 @@ static int insert_page_in_batch_locked(struct vm_area_struct *vma, pte_t *pte,
 	err = validate_page_before_insert(vma, page);
 	if (err)
 		return err;
-	return insert_page_into_pte_locked(vma, pte, addr, page, prot);
+	return insert_page_into_pte_locked(vma, pte, addr, page, prot,
+					   vma_address_to_slice(vma, addr));
 }
 
 /* insert_pages() amortizes the cost of spinlock operations
@@ -2342,9 +2347,65 @@ int vm_insert_page(struct vm_area_struct *vma, unsigned long addr,
 		BUG_ON(vma->vm_flags & VM_PFNMAP);
 		vm_flags_set(vma, VM_MIXEDMAP);
 	}
-	return insert_page(vma, addr, page, vma->vm_page_prot);
+	return insert_page(vma, addr, page, vma->vm_page_prot,
+			   vma_address_to_slice(vma, addr));
 }
 EXPORT_SYMBOL(vm_insert_page);
+
+int vm_insert_page_slice(struct vm_area_struct *vma, unsigned long addr,
+			 struct page *page, unsigned int slice_idx)
+{
+	if (!ppps_mm_is_compat(vma->vm_mm) ||
+	    slice_idx >= PPPS_SLICES_PER_PAGE)
+		return -EINVAL;
+	if (addr < vma->vm_start || addr >= vma->vm_end)
+		return -EFAULT;
+	if (!(vma->vm_flags & VM_MIXEDMAP)) {
+		BUG_ON(mmap_read_trylock(vma->vm_mm));
+		BUG_ON(vma->vm_flags & VM_PFNMAP);
+		vm_flags_set(vma, VM_MIXEDMAP);
+	}
+	return insert_page(vma, addr, page, vma->vm_page_prot, slice_idx);
+}
+EXPORT_SYMBOL(vm_insert_page_slice);
+
+/**
+ * vm_insert_page_native - insert a whole native page into user vma
+ * @vma: user vma to map to
+ * @addr: target user address of the first process page
+ * @page: source kernel page
+ *
+ * Like vm_insert_page(), but in a compat VMA every slice of @page is mapped
+ * by consecutive process-page PTEs starting at @addr (up to the end of the
+ * VMA).  Natively identical to vm_insert_page().
+ *
+ * Return: %0 on success, negative error code otherwise.
+ */
+int vm_insert_page_native(struct vm_area_struct *vma, unsigned long addr,
+			  struct page *page)
+{
+	unsigned long num = 1;
+
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return vm_insert_page(vma, addr, page);
+	return ppps_vm_insert_pages(vma, addr, &page, &num);
+}
+EXPORT_SYMBOL(vm_insert_page_native);
+
+/* vm_insert_page_slice() for fault handlers, converted like vmf_insert_page(). */
+vm_fault_t vmf_insert_page_slice(struct vm_area_struct *vma, unsigned long addr,
+				 struct page *page, unsigned int slice)
+{
+	int err = vm_insert_page_slice(vma, addr, page, slice);
+
+	if (err == -ENOMEM)
+		return VM_FAULT_OOM;
+	if (err < 0 && err != -EBUSY)
+		return VM_FAULT_SIGBUS;
+
+	return VM_FAULT_NOPAGE;
+}
+EXPORT_SYMBOL(vmf_insert_page_slice);
 
 /*
  * __vm_map_pages - maps range of kernel pages into user vma
@@ -2614,7 +2675,8 @@ static vm_fault_t __vm_insert_mixed(struct vm_area_struct *vma,
 		 * result in pfn_t_has_page() == false.
 		 */
 		page = pfn_to_page(pfn_t_to_pfn(pfn));
-		err = insert_page(vma, addr, page, pgprot);
+		err = insert_page(vma, addr, page, pgprot,
+				  vma_address_to_slice(vma, addr));
 	} else {
 		return insert_pfn(vma, addr, pfn, pgprot, mkwrite);
 	}
@@ -7374,4 +7436,3 @@ void vma_pgtable_walk_end(struct vm_area_struct *vma)
 	if (is_vm_hugetlb_page(vma))
 		hugetlb_vma_unlock_read(vma);
 }
-
