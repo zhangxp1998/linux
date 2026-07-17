@@ -1913,17 +1913,33 @@ static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
 		     pgprot_val(pte_pgprot(clean_pte)));
 }
 
+static inline pte_t ppps_folio_mk_pte_explicit_slice(
+		struct vm_area_struct *vma, struct folio *folio, pte_t pte,
+		unsigned int slice_idx)
+{
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return folio_mk_pte_slice(folio, pte, slice_idx);
+	return pte;
+}
+
 static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
 					    struct folio *folio, pte_t pte,
 					    unsigned long addr)
 {
 	if (ppps_mm_is_compat(vma->vm_mm))
-		return folio_mk_pte_slice(folio, pte,
-					  vma_address_to_slice(vma, addr));
+		return ppps_folio_mk_pte_explicit_slice(
+			vma, folio, pte, vma_address_to_slice(vma, addr));
 
 	return pte;
 }
 #else
+static inline pte_t ppps_folio_mk_pte_explicit_slice(
+		struct vm_area_struct *vma, struct folio *folio, pte_t pte,
+		unsigned int slice_idx)
+{
+	return pte;
+}
+
 static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
 					    struct folio *folio, pte_t pte,
 					    unsigned long addr)
@@ -3803,6 +3819,8 @@ int remap_pfn_range(struct vm_area_struct *, unsigned long addr,
 int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
 		unsigned long pfn, unsigned long size, pgprot_t prot);
 int vm_insert_page(struct vm_area_struct *, unsigned long addr, struct page *);
+int vm_insert_page_slice(struct vm_area_struct *vma, unsigned long addr,
+			 struct page *page, unsigned int slice_idx);
 int vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
 			struct page **pages, unsigned long *num);
 int vm_map_pages(struct vm_area_struct *vma, struct page **pages,
