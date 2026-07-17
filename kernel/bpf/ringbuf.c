@@ -92,7 +92,7 @@ static struct bpf_ringbuf *bpf_ringbuf_area_alloc(size_t data_sz, int numa_node)
 	const gfp_t flags = GFP_KERNEL_ACCOUNT | __GFP_RETRY_MAYFAIL |
 			    __GFP_NOWARN | __GFP_ZERO;
 	int nr_meta_pages = RINGBUF_NR_META_PAGES;
-	int nr_data_pages = data_sz >> PAGE_SHIFT;
+	int nr_data_pages = DIV_ROUND_UP(data_sz, PAGE_SIZE);
 	int nr_pages = nr_meta_pages + nr_data_pages;
 	struct page **pages, *page;
 	struct bpf_ringbuf *rb;
@@ -190,13 +190,16 @@ static struct bpf_ringbuf *bpf_ringbuf_alloc(size_t data_sz, int numa_node)
 static struct bpf_map *ringbuf_map_alloc(union bpf_attr *attr)
 {
 	struct bpf_ringbuf_map *rb_map;
+	/* A compat process sizes its ring in its own pages. */
+	unsigned long user_page_size = current->mm ?
+				       MM_PAGE_SIZE(current->mm) : PAGE_SIZE;
 
 	if (attr->map_flags & ~RINGBUF_CREATE_FLAG_MASK)
 		return ERR_PTR(-EINVAL);
 
 	if (attr->key_size || attr->value_size ||
 	    !is_power_of_2(attr->max_entries) ||
-	    !PAGE_ALIGNED(attr->max_entries))
+	    !IS_ALIGNED(attr->max_entries, user_page_size))
 		return ERR_PTR(-EINVAL);
 
 	rb_map = bpf_map_area_alloc(sizeof(*rb_map), NUMA_NO_NODE);
@@ -261,17 +264,56 @@ static int ringbuf_map_get_next_key(struct bpf_map *map, void *key,
 	return -ENOTSUPP;
 }
 
+/*
+ * A compat process expects the ring in its own page size, as libbpf lays it
+ * out: consumer_pos page, producer_pos page, then the data (mirrored twice).
+ * Map slice 0 of the two metadata pages and the data slices behind them.
+ */
+static int ringbuf_map_mmap_ppps(struct bpf_ringbuf *rb,
+				 struct vm_area_struct *vma)
+{
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
+	unsigned long offset = vma_file_offset(vma);
+	unsigned long size = vma->vm_end - vma->vm_start;
+	unsigned long total = 2 * page_size + 2 * (rb->mask + 1);
+	unsigned long addr = vma->vm_start;
+
+	if (offset > total || size > total - offset)
+		return -EINVAL;
+	for (; size; offset += page_size, addr += page_size, size -= page_size) {
+		void *kaddr;
+		int err;
+
+		if (offset < page_size)
+			kaddr = &rb->consumer_pos;
+		else if (offset < 2 * page_size)
+			kaddr = &rb->producer_pos;
+		else
+			kaddr = rb->data + (offset - 2 * page_size);
+		err = vm_insert_page_slice(vma, addr, vmalloc_to_page(kaddr),
+					   vma_offset_to_slice(vma, offset_in_page(kaddr)));
+		if (err)
+			return err;
+	}
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+	return 0;
+}
+
 static int ringbuf_map_mmap_kern(struct bpf_map *map, struct vm_area_struct *vma)
 {
 	struct bpf_ringbuf_map *rb_map;
+	unsigned long mmap_offset = ringbuf_map_mmap_offset(vma);
 
 	rb_map = container_of(map, struct bpf_ringbuf_map, map);
 
 	if (vma->vm_flags & VM_WRITE) {
 		/* allow writable mapping for the consumer_pos only */
-		if (vma->vm_pgoff != 0 || vma->vm_end - vma->vm_start != __PAGE_SIZE)
+		if (vma_file_offset(vma) ||
+		    vma->vm_end - vma->vm_start != MM_UAPI_PAGE_SIZE(vma->vm_mm))
 			return -EPERM;
 	}
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return ringbuf_map_mmap_ppps(rb_map->rb, vma);
 	/* remap_vmalloc_range() checks size and offset constraints */
 	return remap_vmalloc_range(vma, rb_map->rb,
 				   vma->vm_pgoff + RINGBUF_PGOFF);
@@ -284,13 +326,15 @@ static int ringbuf_map_mmap_user(struct bpf_map *map, struct vm_area_struct *vma
 	rb_map = container_of(map, struct bpf_ringbuf_map, map);
 
 	if (vma->vm_flags & VM_WRITE) {
-		if (vma->vm_pgoff == 0)
+		if (!vma_file_offset(vma))
 			/* Disallow writable mappings to the consumer pointer,
 			 * and allow writable mappings to both the producer
 			 * position, and the ring buffer data itself.
 			 */
 			return -EPERM;
 	}
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return ringbuf_map_mmap_ppps(rb_map->rb, vma);
 	/* remap_vmalloc_range() checks size and offset constraints */
 	return remap_vmalloc_range(vma, rb_map->rb, vma->vm_pgoff + RINGBUF_PGOFF);
 }
@@ -345,7 +389,7 @@ static u64 ringbuf_map_mem_usage(const struct bpf_map *map)
 	rb = container_of(map, struct bpf_ringbuf_map, map)->rb;
 	usage += (u64)rb->nr_pages << PAGE_SHIFT;
 	nr_meta_pages = RINGBUF_NR_META_PAGES;
-	nr_data_pages = map->max_entries >> PAGE_SHIFT;
+	nr_data_pages = DIV_ROUND_UP(map->max_entries, PAGE_SIZE);
 	usage += (nr_meta_pages + 2 * nr_data_pages) * sizeof(struct page *);
 	return usage;
 }

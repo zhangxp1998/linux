@@ -41,3 +41,41 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm)
 		mm->page_shift = PAGE_SHIFT;
 }
 #endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+int ppps_vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
+			 struct page **pages, unsigned long *num)
+{
+	const unsigned long nr_pages = *num;
+	unsigned long user_pages, logical_pages, i;
+
+	if (!nr_pages)
+		return 0;
+	if (addr < vma->vm_start || addr >= vma->vm_end)
+		return -EFAULT;
+
+	/* pages[] always starts at byte zero, independently of the VMA offset. */
+	if (!MM_PAGE_ALIGNED(vma->vm_mm, addr))
+		return -EFAULT;
+	user_pages = (vma->vm_end - addr) >> PAGE_SHIFT_COMPAT;
+	if (nr_pages > DIV_ROUND_UP(user_pages, PPPS_SLICES_PER_PAGE))
+		return -EFAULT;
+	/* The final native page may cover only the remaining VMA slices. */
+	logical_pages = min(user_pages, nr_pages << PPPS_SLICE_SHIFT);
+	for (i = 0; i < logical_pages; i++) {
+		unsigned long total_slice = i;
+		unsigned long page_index = total_slice >> PPPS_SLICE_SHIFT;
+		int error;
+
+		error = vm_insert_page_slice(vma, addr, pages[page_index],
+					     total_slice & PPPS_SLICE_MASK);
+		if (error) {
+			*num = nr_pages - page_index;
+			return error;
+		}
+		addr += PAGE_SIZE_COMPAT;
+	}
+	*num = 0;
+	return 0;
+}
+#endif
