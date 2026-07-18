@@ -328,6 +328,7 @@ else
 fi
 
 CATEGORY="mmap" run_test ./map_populate
+CATEGORY="mempolicy" run_test ./mbind_ppps
 
 CATEGORY="mlock" run_test ./mlock-random-test
 
