@@ -9,6 +9,11 @@
 
 #include "../gup_retry_ppps.h"
 
+static int mmap_cleanup_fail(struct file *file, struct vm_area_struct *vma)
+{
+	return -EIO;
+}
+
 static long gup_retry_ppps_ioctl(struct file *file, unsigned int cmd,
 				 unsigned long arg)
 {
@@ -48,6 +53,7 @@ static const struct file_operations gup_retry_ppps_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = gup_retry_ppps_ioctl,
 	.compat_ioctl = gup_retry_ppps_ioctl,
+	.mmap = mmap_cleanup_fail,
 };
 
 static struct miscdevice gup_retry_ppps_device = {
