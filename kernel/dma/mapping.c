@@ -775,13 +775,27 @@ EXPORT_SYMBOL_GPL(dma_free_pages);
  */
 int dma_mmap_pfn(struct vm_area_struct *vma, size_t size, unsigned long pfn)
 {
+	unsigned long map_size = vma->vm_end - vma->vm_start;
 	unsigned long count = PAGE_ALIGN(size) >> PAGE_SHIFT;
+	unsigned long available;
+	unsigned long slice_bytes;
+	unsigned int slice = vma_slice_off(vma);
 
-	if (vma->vm_pgoff >= count || vma_pages(vma) > count - vma->vm_pgoff)
+	if (vma->vm_pgoff >= count)
 		return -ENXIO;
-	return remap_pfn_range(vma, vma->vm_start,
-			       pfn + vma->vm_pgoff,
-			       vma_pages(vma) << PAGE_SHIFT, vma->vm_page_prot);
+	available = (count - vma->vm_pgoff) << PAGE_SHIFT;
+	slice_bytes = (unsigned long)slice << MM_PAGE_SHIFT(vma->vm_mm);
+	if (slice_bytes >= available || map_size > available - slice_bytes)
+		return -ENXIO;
+
+	pfn += vma->vm_pgoff;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return remap_pfn_range_slice(vma, vma->vm_start, pfn, slice,
+					     map_size, vma->vm_page_prot);
+#endif
+	return remap_pfn_range(vma, vma->vm_start, pfn, map_size,
+			       vma->vm_page_prot);
 }
 int dma_mmap_pages(struct device *dev, struct vm_area_struct *vma,
 		   size_t size, struct page *page)
