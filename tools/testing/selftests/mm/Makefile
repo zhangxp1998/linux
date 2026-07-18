@@ -147,6 +147,7 @@ TEST_GEN_FILES += perf_mmap_offset_ppps
 TEST_GEN_FILES += pfnmap
 TEST_GEN_FILES += remap_pfn_range_ppps
 TEST_GEN_FILES += process_madv
+TEST_GEN_FILES += print_vma_addr_ppps
 TEST_GEN_FILES += process_madvise_ppps
 TEST_GEN_FILES += process_vm_access_ppps
 TEST_GEN_FILES += prctl_thp_disable
