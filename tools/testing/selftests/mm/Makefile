@@ -3,6 +3,7 @@
 
 LOCAL_HDRS += $(selfdir)/mm/local_config.h $(top_srcdir)/mm/gup_test.h
 LOCAL_HDRS += $(selfdir)/mm/gup_retry_ppps.h
+LOCAL_HDRS += $(selfdir)/mm/dma_mmap_pages_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
 LOCAL_HDRS += $(selfdir)/mm/pagewalk_ppps.h
 
@@ -48,6 +49,7 @@ CFLAGS += -U_FORTIFY_SOURCE
 KDIR ?= /lib/modules/$(shell uname -r)/build
 ifneq (,$(wildcard $(KDIR)/Module.symvers))
 GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
+DMA_MMAP_PAGES_PPPS_MODULE := dma_mmap_pages_ppps_module/dma_mmap_pages_ppps_module.ko
 VM_MAP_PAGES_PPPS_MODULE := vm_map_pages_ppps_module/vm_map_pages_ppps_module.ko
 ifneq (,$(shell grep -s '^CONFIG_MAPPING_DIRTY_HELPERS=y$$' $(KDIR)/.config))
 PAGEWALK_PPPS_MODULE := pagewalk_ppps_module/pagewalk_ppps_module.ko
@@ -55,6 +57,7 @@ endif
 endif
 
 TEST_GEN_FILES = cow
+TEST_GEN_FILES += dma_mmap_pages_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
 TEST_GEN_FILES += compaction_test
@@ -176,6 +179,8 @@ TEST_FILES += charge_reserved_hugetlb.sh
 TEST_FILES += hugetlb_reparenting_test.sh
 TEST_FILES += test_gup_retry_ppps.sh
 TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
+TEST_FILES += test_dma_mmap_pages_ppps.sh
+TEST_FILES += $(DMA_MMAP_PAGES_PPPS_MODULE)
 TEST_FILES += test_pagewalk_ppps.sh
 TEST_FILES += $(PAGEWALK_PPPS_MODULE)
 TEST_FILES += test_vm_map_pages_ppps.sh
@@ -200,6 +205,21 @@ clean_gup_retry_ppps_module:
 	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_gup_retry_ppps_module
+endif
+
+ifneq ($(DMA_MMAP_PAGES_PPPS_MODULE),)
+all: $(DMA_MMAP_PAGES_PPPS_MODULE)
+
+$(DMA_MMAP_PAGES_PPPS_MODULE): dma_mmap_pages_ppps_module/dma_mmap_pages_ppps_module.c \
+				     dma_mmap_pages_ppps_module/Makefile \
+				     dma_mmap_pages_ppps.h
+	+$(MAKE) -C dma_mmap_pages_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_dma_mmap_pages_ppps_module
+clean_dma_mmap_pages_ppps_module:
+	+$(MAKE) -C dma_mmap_pages_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_dma_mmap_pages_ppps_module
 endif
 
 ifneq ($(VM_MAP_PAGES_PPPS_MODULE),)
