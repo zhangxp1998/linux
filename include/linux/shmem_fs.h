@@ -133,6 +133,8 @@ static inline unsigned long shmem_swap_usage(struct vm_area_struct *vma)
 #endif
 extern unsigned long shmem_partial_swap_usage(struct address_space *mapping,
 						pgoff_t start, pgoff_t end);
+unsigned long shmem_swap_usage_bytes(struct address_space *mapping,
+				     u64 start, u64 end);
 
 /* Flag allocation requirements to shmem_get_folio */
 enum sgp_type {
