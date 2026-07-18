@@ -3338,10 +3338,17 @@ int remap_pfn_range_complete(struct vm_area_struct *vma,
 {
 	const unsigned long start = action->remap.start;
 	const unsigned long pfn = action->remap.start_pfn;
+	const unsigned int slice = action->remap.slice;
 	const unsigned long size = action->remap.size;
 	const pgprot_t prot = action->remap.pgprot;
+	phys_addr_t phys_addr;
 
-	return do_remap_pfn_range(vma, start, PFN_PHYS(pfn), size, prot);
+	if (slice >= PPPS_SLICES_PER_PAGE ||
+	    (slice && !ppps_mm_is_compat(vma->vm_mm)))
+		return -EINVAL;
+	phys_addr = PFN_PHYS(pfn) +
+		((phys_addr_t)slice << MM_PAGE_SHIFT(vma->vm_mm));
+	return do_remap_pfn_range(vma, start, phys_addr, size, prot);
 }
 
 static int __simple_ioremap_prep(unsigned long vm_len, pgoff_t vm_pgoff,
@@ -3378,21 +3385,58 @@ static int __simple_ioremap_prep(unsigned long vm_len, pgoff_t vm_pgoff,
 	return 0;
 }
 
+static int __simple_ioremap_prep_ppps(struct mm_struct *mm,
+				      unsigned long vm_len, u64 requested_offset,
+				      phys_addr_t start, unsigned long len,
+				      unsigned long *pfnp, unsigned int *slicep)
+{
+	phys_addr_t phys_addr;
+	unsigned long map_len;
+
+	if (check_add_overflow(len, start & ~PAGE_MASK, &map_len) ||
+	    check_add_overflow(map_len, PAGE_SIZE - 1, &map_len))
+		return -EINVAL;
+	map_len &= PAGE_MASK;
+	if (requested_offset >= map_len || vm_len > map_len - requested_offset)
+		return -EINVAL;
+
+	phys_addr = start & PAGE_MASK;
+	if (check_add_overflow(phys_addr, (phys_addr_t)requested_offset,
+			       &phys_addr))
+		return -EINVAL;
+	*pfnp = PHYS_PFN(phys_addr);
+	*slicep = (phys_addr & ~PAGE_MASK) >> MM_PAGE_SHIFT(mm);
+	return 0;
+}
+
 int simple_ioremap_prepare(struct vm_area_desc *desc)
 {
 	struct mmap_action *action = &desc->action;
 	const phys_addr_t start = action->simple_ioremap.start_phys_addr;
 	const unsigned long size = action->simple_ioremap.size;
+	unsigned int slice = 0;
 	unsigned long pfn;
 	int err;
 
-	err = __simple_ioremap_prep(vma_desc_size(desc), desc->pgoff,
-				    start, size, &pfn);
+	if (ppps_mm_is_compat(desc->mm)) {
+		u64 requested_offset;
+
+		if (desc->pgoff > (U64_MAX >> MM_PAGE_SHIFT(desc->mm)))
+			return -EINVAL;
+		requested_offset = (u64)desc->pgoff << MM_PAGE_SHIFT(desc->mm);
+		err = __simple_ioremap_prep_ppps(desc->mm, vma_desc_size(desc),
+						 requested_offset, start, size,
+						 &pfn, &slice);
+	} else {
+		err = __simple_ioremap_prep(vma_desc_size(desc), desc->pgoff,
+					    start, size, &pfn);
+	}
 	if (err)
 		return err;
 
 	/* The I/O remap logic does the heavy lifting. */
 	mmap_action_ioremap_full(desc, pfn);
+	desc->action.remap.slice = slice;
 	return io_remap_pfn_range_prepare(desc);
 }
 
@@ -3417,29 +3461,19 @@ int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long
 	const unsigned long vm_end = vma->vm_end;
 	const unsigned long vm_len = vm_end - vm_start;
 	loff_t requested_offset;
-	phys_addr_t phys_addr;
-	unsigned long map_len;
 	unsigned int slice;
 	unsigned long pfn;
 	int err;
 
 	if (ppps_mm_is_compat(vma->vm_mm)) {
 		requested_offset = vma_file_offset(vma);
-		if (requested_offset < 0 ||
-		    check_add_overflow(len, start & ~PAGE_MASK, &map_len) ||
-		    check_add_overflow(map_len, PAGE_SIZE - 1, &map_len))
+		if (requested_offset < 0)
 			return -EINVAL;
-		map_len &= PAGE_MASK;
-		if ((u64)requested_offset >= map_len ||
-		    vm_len > map_len - requested_offset)
-			return -EINVAL;
-
-		phys_addr = start & PAGE_MASK;
-		if (check_add_overflow(phys_addr, (u64)requested_offset,
-				       &phys_addr))
-			return -EINVAL;
-		pfn = PHYS_PFN(phys_addr);
-		slice = (phys_addr & ~PAGE_MASK) >> MM_PAGE_SHIFT(vma->vm_mm);
+		err = __simple_ioremap_prep_ppps(vma->vm_mm, vm_len,
+						 requested_offset, start, len,
+						 &pfn, &slice);
+		if (err)
+			return err;
 		pfn = io_remap_pfn_range_pfn(pfn, vm_len);
 		return remap_pfn_range_slice(vma, vm_start, pfn, slice, vm_len,
 					     pgprot_decrypted(vma->vm_page_prot));

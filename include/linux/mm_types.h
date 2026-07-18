@@ -827,6 +827,7 @@ struct mmap_action {
 		struct {
 			unsigned long start;
 			unsigned long start_pfn;
+			unsigned int slice;
 			unsigned long size;
 			pgprot_t pgprot;
 		} remap;

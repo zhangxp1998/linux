@@ -4364,6 +4364,7 @@ static inline void mmap_action_remap(struct vm_area_desc *desc,
 	action->type = MMAP_REMAP_PFN;
 	action->remap.start = start;
 	action->remap.start_pfn = start_pfn;
+	action->remap.slice = 0;
 	action->remap.size = size;
 	action->remap.pgprot = desc->page_prot;
 }
