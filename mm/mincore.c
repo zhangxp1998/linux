@@ -19,6 +19,7 @@
 #include <linux/hugetlb.h>
 #include <linux/pgtable.h>
 #include <linux/page_size_compat.h>
+#include <linux/ppps.h>
 
 #include <linux/uaccess.h>
 #include "swap.h"
@@ -27,6 +28,7 @@ static int mincore_hugetlb(pte_t *pte, unsigned long hmask, unsigned long addr,
 			unsigned long end, struct mm_walk *walk)
 {
 #ifdef CONFIG_HUGETLB_PAGE
+	unsigned long page_size = MM_PAGE_SIZE(walk->mm);
 	unsigned char present;
 	unsigned char *vec = walk->private;
 
@@ -35,7 +37,7 @@ static int mincore_hugetlb(pte_t *pte, unsigned long hmask, unsigned long addr,
 	 * swapped out, but theoretically it needs to be checked.
 	 */
 	present = pte && !huge_pte_none_mostly(huge_ptep_get(walk->mm, addr, pte));
-	for (; addr != end; vec++, addr += PAGE_SIZE)
+	for (; addr != end; vec++, addr += page_size)
 		*vec = present;
 	walk->private = vec;
 #else
@@ -73,15 +75,17 @@ static unsigned char mincore_page(struct address_space *mapping, pgoff_t index)
 static int __mincore_unmapped_range(unsigned long addr, unsigned long end,
 				struct vm_area_struct *vma, unsigned char *vec)
 {
-	unsigned long nr = (end - addr) >> PAGE_SHIFT;
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
+	unsigned long nr = (end - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
 	int i;
 
 	if (vma->vm_file) {
-		pgoff_t pgoff;
+		for (i = 0; i < nr; i++) {
+			pgoff_t pgoff = linear_page_index(
+				vma, addr + i * page_size);
 
-		pgoff = linear_page_index(vma, addr);
-		for (i = 0; i < nr; i++, pgoff++)
 			vec[i] = mincore_page(vma->vm_file->f_mapping, pgoff);
+		}
 	} else {
 		for (i = 0; i < nr; i++)
 			vec[i] = 0;
@@ -101,11 +105,13 @@ static int mincore_unmapped_range(unsigned long addr, unsigned long end,
 static int mincore_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 			struct mm_walk *walk)
 {
+	unsigned long page_size = MM_PAGE_SIZE(walk->mm);
+	unsigned int page_shift = MM_PAGE_SHIFT(walk->mm);
 	spinlock_t *ptl;
 	struct vm_area_struct *vma = walk->vma;
 	pte_t *ptep;
 	unsigned char *vec = walk->private;
-	int nr = (end - addr) >> PAGE_SHIFT;
+	int nr = (end - addr) >> page_shift;
 
 	ptl = pmd_trans_huge_lock(pmd, vma);
 	if (ptl) {
@@ -119,12 +125,12 @@ static int mincore_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 		walk->action = ACTION_AGAIN;
 		return 0;
 	}
-	for (; addr != end; ptep++, addr += PAGE_SIZE) {
+	for (; addr != end; ptep++, addr += page_size) {
 		pte_t pte = ptep_get(ptep);
 
 		/* We need to do cache lookup too for pte markers */
 		if (pte_none_mostly(pte))
-			__mincore_unmapped_range(addr, addr + PAGE_SIZE,
+			__mincore_unmapped_range(addr, addr + page_size,
 						 vma, vec);
 		else if (pte_present(pte))
 			*vec = 1;
@@ -187,6 +193,9 @@ static const struct mm_walk_ops mincore_walk_ops = {
  */
 static long do_mincore(unsigned long addr, unsigned long pages, unsigned char *vec)
 {
+	struct mm_struct *mm = current->mm;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
+	unsigned int page_shift = MM_PAGE_SHIFT(mm);
 	struct vm_area_struct *vma;
 	unsigned long end;
 	int err;
@@ -194,16 +203,16 @@ static long do_mincore(unsigned long addr, unsigned long pages, unsigned char *v
 	vma = vma_lookup(current->mm, addr);
 	if (!vma)
 		return -ENOMEM;
-	end = min(vma->vm_end, addr + (pages << PAGE_SHIFT));
+	end = min(vma->vm_end, addr + (pages << page_shift));
 	if (!can_do_mincore(vma)) {
-		unsigned long pages = DIV_ROUND_UP(end - addr, PAGE_SIZE);
+		unsigned long pages = DIV_ROUND_UP(end - addr, page_size);
 		memset(vec, 1, pages);
 		return pages;
 	}
 	err = walk_page_range(vma->vm_mm, addr, end, &mincore_walk_ops, vec);
 	if (err < 0)
 		return err;
-	return (end - addr) >> PAGE_SHIFT;
+	return (end - addr) >> page_shift;
 }
 
 static inline void __collapse_mincore_result(unsigned char *src_vec,
@@ -237,7 +246,7 @@ static inline void __collapse_mincore_result(unsigned char *src_vec,
  * return values:
  *  zero    - success
  *  -EFAULT - vec points to an illegal address
- *  -EINVAL - addr is not a multiple of PAGE_SIZE
+ *  -EINVAL - addr is not a multiple of the process page size
  *  -ENOMEM - Addresses in the range [addr, addr + len] are
  *		invalid for the address space of this process, or
  *		specify one or more pages which are not currently
@@ -247,6 +256,8 @@ static inline void __collapse_mincore_result(unsigned char *src_vec,
 SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 		unsigned char __user *, vec)
 {
+	struct mm_struct *mm = current->mm;
+	unsigned int page_shift = MM_PAGE_SHIFT(mm);
 	long retval;
 	unsigned long pages;
 	unsigned char *tmp;
@@ -256,16 +267,20 @@ SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 	start = untagged_addr(start);
 
 	/* Check the start address: needs to be page-aligned.. */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (unlikely(start & ~MM_PAGE_MASK(mm)))
+#else
 	if (start & ~__PAGE_MASK)
+#endif
 		return -EINVAL;
 
 	/* ..and we need to be passed a valid user-space range */
 	if (!access_ok((void __user *) start, len))
 		return -ENOMEM;
 
-	/* This also avoids any overflows on PAGE_ALIGN */
-	pages = len >> PAGE_SHIFT;
-	pages += (offset_in_page(len)) != 0;
+	/* This also avoids any overflows while rounding len up. */
+	pages = len >> page_shift;
+	pages += mm_offset_in_page(mm, len) != 0;
 
 	if (!access_ok(vec, pages / nr_subpages))
 		return -EFAULT;
@@ -286,8 +301,8 @@ SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 	retval = 0;
 	while (pages) {
 		/*
-		 * Do at most PAGE_SIZE entries per iteration, due to
-		 * the temporary buffer size.
+		 * Do at most PAGE_SIZE entries per iteration: the temporary
+		 * buffer is one native kernel page and each entry is one byte.
 		 */
 		mmap_read_lock(current->mm);
 		retval = do_mincore(start, min(pages, PAGE_SIZE), tmp);
@@ -311,8 +326,13 @@ SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 			memset(res, 0, retval / nr_subpages);
 
 		pages -= retval;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		vec += retval;
+		start += retval << page_shift;
+#else
 		vec += retval / nr_subpages;
 		start += retval << PAGE_SHIFT;
+#endif
 		retval = 0;
 	}
 	if (unlikely(nr_subpages > 1))
