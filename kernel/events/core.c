@@ -6611,7 +6611,11 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 	vma_size = vma->vm_end - vma->vm_start;
 
 	if (vma->vm_pgoff == 0) {
-		nr_pages = (vma_size / PAGE_SIZE) - 1;
+		unsigned long metadata_size = MM_PAGE_SIZE(vma->vm_mm);
+
+		if (vma_size < metadata_size)
+			return -EINVAL;
+		nr_pages = (vma_size - metadata_size) / PAGE_SIZE;
 	} else {
 		/*
 		 * AUX area mapping: if rb->aux_nr_pages != 0, it's already
@@ -6680,9 +6684,6 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 	 * can do bitmasks instead of modulo.
 	 */
 	if (nr_pages != 0 && !is_power_of_2(nr_pages))
-		return -EINVAL;
-
-	if (vma_size != PAGE_SIZE * (1 + nr_pages))
 		return -EINVAL;
 
 	WARN_ON_ONCE(event->ctx->parent_ctx);
