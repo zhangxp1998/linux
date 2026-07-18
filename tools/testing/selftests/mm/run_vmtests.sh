@@ -430,6 +430,7 @@ CATEGORY="madv_populate" run_test ./madvise_willneed_ppps "$TMPDIR/madvise-willn
 # PROCESS_MADV test
 CATEGORY="process_madv" run_test ./process_madv
 CATEGORY="process_madv" run_test ./process_madvise_ppps
+CATEGORY="process_madv" run_test ./process_vm_access_ppps
 
 CATEGORY="vma_merge" run_test ./merge
 
