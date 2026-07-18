@@ -99,23 +99,37 @@ static int open_perf_ring(struct perf_event_attr *attr,
 			  struct perf_event_mmap_page **metadata,
 			  size_t *page_size, size_t *ring_size)
 {
-	const size_t candidates[] = { USER_PAGE_SIZE, 4 * USER_PAGE_SIZE };
-	size_t i;
+	int fd = perf_event_open(attr);
 
-	for (i = 0; i < ARRAY_SIZE(candidates); i++) {
-		int fd = perf_event_open(attr);
-
-		if (fd < 0)
-			return -1;
-		*page_size = candidates[i];
-		*ring_size = (DATA_PAGES + 1) * *page_size;
-		*metadata = mmap(NULL, *ring_size, PROT_READ | PROT_WRITE,
-				 MAP_SHARED, fd, 0);
-		if (*metadata != MAP_FAILED)
-			return fd;
-		close(fd);
-	}
+	if (fd < 0)
+		return -1;
+	*page_size = USER_PAGE_SIZE;
+	*ring_size = (DATA_PAGES + 1) * *page_size;
+	*metadata = mmap(NULL, *ring_size, PROT_READ | PROT_WRITE,
+			 MAP_SHARED, fd, 0);
+	if (*metadata != MAP_FAILED)
+		return fd;
+	close(fd);
 	return -1;
+}
+
+static bool map_metadata_only(struct perf_event_attr *attr)
+{
+	struct perf_event_mmap_page *metadata;
+	int fd;
+
+	fd = perf_event_open(attr);
+	if (fd < 0)
+		return false;
+	metadata = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			MAP_SHARED, fd, 0);
+	if (metadata == MAP_FAILED) {
+		close(fd);
+		return false;
+	}
+	munmap(metadata, PROCESS_PAGE_SIZE);
+	close(fd);
+	return true;
 }
 
 static int run_test(void)
@@ -132,15 +146,19 @@ static int run_test(void)
 	uint64_t recorded_offset = UINT64_MAX;
 	size_t page_size = 0;
 	size_t ring_size = 0;
+	size_t data_offset;
+	size_t data_size;
 	void *file_mapping;
 	bool found;
 	int memfd;
 	int perf_fd;
 
 	ksft_print_header();
-	ksft_set_plan(5);
+	ksft_set_plan(7);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
+	ksft_test_result(map_metadata_only(&attr),
+			 "map a metadata-only perf event with one process page\n");
 
 	perf_fd = open_perf_ring(&attr, &metadata, &page_size, &ring_size);
 	ksft_test_result(page_size && perf_fd >= 0 && metadata != MAP_FAILED,
@@ -148,6 +166,13 @@ static int run_test(void)
 	if (!page_size || perf_fd < 0 || metadata == MAP_FAILED)
 		ksft_exit_fail_msg("perf event setup failed: %s\n",
 				   strerror(errno));
+	data_offset = metadata->data_offset ?: page_size;
+	data_size = metadata->data_size ?: DATA_PAGES * page_size;
+	ksft_print_msg("ring_size=%zu data_offset=%zu data_size=%zu\n",
+		       ring_size, data_offset, data_size);
+	ksft_test_result(data_offset <= ring_size &&
+			 data_size <= ring_size - data_offset,
+			 "keep the effective perf data ring inside the VMA\n");
 	if (ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, 0))
 		ksft_exit_fail_msg("perf enable failed: %s\n", strerror(errno));
 

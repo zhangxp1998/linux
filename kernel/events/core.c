@@ -6664,7 +6664,13 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 	vma_size = vma->vm_end - vma->vm_start;
 
 	if (vma->vm_pgoff == 0) {
-		nr_pages = (vma_size / PAGE_SIZE) - (__PAGE_SIZE / PAGE_SIZE);
+		unsigned long metadata_size = ppps_mm_is_compat(vma->vm_mm) ?
+					      MM_PAGE_SIZE(vma->vm_mm) :
+					      __PAGE_SIZE;
+
+		if (vma_size < metadata_size)
+			return -EINVAL;
+		nr_pages = (vma_size - metadata_size) / PAGE_SIZE;
 	} else {
 		/*
 		 * AUX area mapping: if rb->aux_nr_pages != 0, it's already
@@ -6733,7 +6739,8 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 	if (nr_pages != 0 && !is_power_of_2(nr_pages))
 		return -EINVAL;
 
-	if (vma_size != PAGE_SIZE * ((__PAGE_SIZE / PAGE_SIZE) + nr_pages))
+	if (!ppps_mm_is_compat(vma->vm_mm) &&
+	    vma_size != PAGE_SIZE * ((__PAGE_SIZE / PAGE_SIZE) + nr_pages))
 		return -EINVAL;
 
 	WARN_ON_ONCE(event->ctx->parent_ctx);
