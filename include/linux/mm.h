@@ -3670,6 +3670,7 @@ static inline unsigned long vma_last_pgoff(struct vm_area_struct *vma)
 	}
 
 	return vma->vm_pgoff + vma_pages(vma) - 1;
+}
 
 
 static inline unsigned long vma_desc_size(const struct vm_area_desc *desc)
@@ -3809,8 +3810,16 @@ static inline void mmap_action_map_kernel_pages(struct vm_area_desc *desc,
 static inline void mmap_action_map_kernel_pages_full(struct vm_area_desc *desc,
 		struct page **pages)
 {
-	mmap_action_map_kernel_pages(desc, desc->start, pages,
-				     vma_desc_pages(desc));
+	unsigned long nr_pages = vma_desc_pages(desc);
+
+	if (ppps_mm_is_compat(desc->mm)) {
+		unsigned long nr_slices = vma_desc_size(desc) >>
+			MM_PAGE_SHIFT(desc->mm);
+
+		nr_pages = DIV_ROUND_UP((desc->pgoff & PPPS_SLICE_MASK) +
+					nr_slices, PPPS_SLICES_PER_PAGE);
+	}
+	mmap_action_map_kernel_pages(desc, desc->start, pages, nr_pages);
 }
 
 int mmap_action_prepare(struct vm_area_desc *desc);
@@ -3850,7 +3859,7 @@ static inline void vma_set_page_prot(struct vm_area_struct *vma)
 
 static inline pgprot_t vma_get_page_prot(vma_flags_t vma_flags)
 {
-	return vm_get_page_prot(vma_flags);
+	return vm_get_page_prot(vma_flags_to_legacy(vma_flags));
 }
 
 void vma_set_file(struct vm_area_struct *vma, struct file *file);

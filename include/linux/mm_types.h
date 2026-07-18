@@ -663,7 +663,6 @@ static inline void *folio_get_private(const struct folio *folio)
 }
 
 typedef unsigned long vm_flags_t;
-typedef vm_flags_t vma_flags_t;
 
 /*
  * freeptr_t represents a SLUB freelist pointer, which might be encoded
@@ -854,6 +853,11 @@ static __always_inline bool vma_flags_empty(const vma_flags_t *flags)
 
 	return bitmap_empty(bitmap, NUM_VMA_FLAG_BITS);
 }
+
+static __always_inline vm_flags_t vma_flags_to_legacy(vma_flags_t flags)
+{
+	return flags.__vma_flags[0];
+}
 /*
  * Describes a VMA that is about to be mmap()'ed. Drivers may choose to
  * manipulate mutable fields which will cause those fields to be updated in the
@@ -877,6 +881,8 @@ struct vm_area_desc {
 	/* Write-only fields. */
 	const struct vm_operations_struct *vm_ops;
 	void *private_data;
+
+	struct mmap_action action;
 };
 
 /*

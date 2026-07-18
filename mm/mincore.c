@@ -38,10 +38,6 @@ static int mincore_hugetlb(pte_t *pte, unsigned long hmask, unsigned long addr,
 	 * Hugepages under user process are always in RAM and never
 	 * swapped out, but theoretically it needs to be checked.
 	 */
-<<<<<<< HEAD
-	present = pte && !huge_pte_none_mostly(huge_ptep_get(walk->mm, addr, pte));
-	for (; addr != end; vec++, addr += PAGE_SIZE)
-=======
 	if (!pte) {
 		present = 0;
 	} else {

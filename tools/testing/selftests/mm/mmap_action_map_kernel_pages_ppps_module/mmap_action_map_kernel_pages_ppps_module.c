@@ -17,7 +17,8 @@ static unsigned int nr_test_pages;
 
 static int mmap_action_map_kernel_pages_ppps_mmap(struct vm_area_desc *desc)
 {
-	if (vma_desc_size(desc) != TEST_SIZE || desc->pgoff)
+	if ((vma_desc_size(desc) != USER_PAGE_SIZE &&
+	     vma_desc_size(desc) != TEST_SIZE) || desc->pgoff)
 		return -EINVAL;
 	mmap_action_map_kernel_pages_full(desc, test_pages);
 	return 0;

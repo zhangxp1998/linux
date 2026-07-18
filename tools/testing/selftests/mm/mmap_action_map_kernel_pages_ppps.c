@@ -46,11 +46,12 @@ static int run_test(void)
 		.sa_handler = fault_handler,
 	};
 	unsigned char *mapping;
+	unsigned char value = 0;
 	unsigned int page;
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(3 + MAPPING_PAGES);
+	ksft_set_plan(5 + MAPPING_PAGES);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -86,6 +87,15 @@ static int run_test(void)
 	}
 
 	munmap(mapping, MAPPING_SIZE);
+	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, 0);
+	ksft_test_result(mapping != MAP_FAILED,
+			 "map one 4K slice through mmap_prepare\n");
+	if (mapping == MAP_FAILED)
+		ksft_exit_fail_msg("4K mmap failed: %s\n", strerror(errno));
+	ksft_test_result(read_byte(mapping, &value) && value == FIRST_MARKER,
+			 "the standalone 4K slice is mapped\n");
+	munmap(mapping, USER_PAGE_SIZE);
 	close(fd);
 	ksft_finished();
 }
