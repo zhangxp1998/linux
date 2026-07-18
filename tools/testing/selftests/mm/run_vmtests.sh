@@ -251,6 +251,18 @@ run_test() {
 	fi # test_selected
 }
 
+# Run a PPPS test that needs one of the fixture modules in ppps_modules/:
+# load <module>_ppps_module.ko, make sure /dev/<module>_ppps exists, run the
+# command, unload the module again.
+ppps_runner=./ppps_run_module.sh
+[ -x "$ppps_runner" ] || ppps_runner=../ppps/ppps_run_module.sh
+run_ppps_module_test() {
+	local module=$1
+	shift
+	run_test "$ppps_runner" "ppps_modules/${module}_ppps_module.ko" \
+		"/dev/${module}_ppps" -- "$@"
+}
+
 echo "TAP version 13" | tap_output
 
 CATEGORY="hugetlb" run_test ./hugepage-mmap
@@ -302,6 +314,7 @@ fi
 # Dump pages 0, 19, and 4096, using pin_user_pages:
 CATEGORY="gup_test" run_test ./gup_test -ct -F 0x1 0 19 0x1000
 CATEGORY="gup_test" run_test ./gup_longterm
+CATEGORY="gup_test" run_test ./test_gup_retry_ppps.sh
 
 CATEGORY="userfaultfd" run_test ./uffd-unit-tests
 CATEGORY="userfaultfd" run_test ./userfaultfd_eof_ppps
