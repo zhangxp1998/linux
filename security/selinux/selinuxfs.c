@@ -248,8 +248,8 @@ static int sel_mmap_handle_status(struct file *filp,
 
 	BUG_ON(!status);
 
-	/* only allows one page from the head */
-	if (vma->vm_pgoff > 0 || size != __PAGE_SIZE)
+	/* only allows one userspace page from the head */
+	if (vma_file_offset(vma) || size != MM_UAPI_PAGE_SIZE(vma->vm_mm))
 		return -EIO;
 	/* disallow writable mapping */
 	if (vma->vm_flags & VM_WRITE)
