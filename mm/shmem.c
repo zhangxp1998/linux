@@ -2733,6 +2733,9 @@ static vm_fault_t shmem_fault(struct vm_fault *vmf)
 	vm_fault_t ret = 0;
 	int err;
 
+	if (vma_addr_beyond_eof(vmf->vma, vmf->address, i_size_read(inode)))
+		return vmf_error(-EINVAL);
+
 	/*
 	 * Trinity finds that probing a hole which tmpfs is punching can
 	 * prevent the hole-punch from ever completing: noted in i_private.
