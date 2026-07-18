@@ -1764,7 +1764,7 @@ static int check_prep_vma(struct vma_remap_struct *vrm)
 	if (!mlock_future_ok(mm, vma->vm_flags, vrm->delta))
 		return -EAGAIN;
 
-	if (!may_expand_vm(mm, vma->vm_flags, vrm->delta >> PAGE_SHIFT))
+	if (!may_expand_vm(mm, vma->vm_flags, vrm->delta >> MM_PAGE_SHIFT(mm)))
 		return -ENOMEM;
 
 	return 0;
