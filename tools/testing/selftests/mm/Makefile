@@ -63,6 +63,7 @@ TEST_GEN_FILES += madvise_willneed_ppps
 TEST_GEN_FILES += map_fixed_noreplace
 TEST_GEN_FILES += map_hugetlb
 TEST_GEN_FILES += map_populate
+TEST_GEN_FILES += mbind_ppps
 TEST_GEN_FILES += mincore_ppps
 TEST_GEN_FILES += mmap_hint_ppps
 TEST_GEN_FILES += anon_vma_name_ppps
