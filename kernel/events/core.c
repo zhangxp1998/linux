@@ -7146,7 +7146,8 @@ static const struct vm_operations_struct perf_mmap_vmops = {
 
 static int map_range(struct perf_buffer *rb, struct vm_area_struct *vma)
 {
-	unsigned long nr_pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+	unsigned long vma_size = vma->vm_end - vma->vm_start;
+	unsigned long nr_pages = max(vma_size >> PAGE_SHIFT, 1UL);
 	int err = 0;
 	unsigned long pagenum;
 
@@ -7190,6 +7191,7 @@ static int map_range(struct perf_buffer *rb, struct vm_area_struct *vma)
 	 */
 	for (pagenum = 0; pagenum < nr_pages; pagenum++) {
 		unsigned long va = vma->vm_start + PAGE_SIZE * pagenum;
+		unsigned long size = min(PAGE_SIZE, vma->vm_end - va);
 		struct page *page = perf_mmap_to_page(rb, vma->vm_pgoff + pagenum);
 
 		if (page == NULL) {
@@ -7198,7 +7200,7 @@ static int map_range(struct perf_buffer *rb, struct vm_area_struct *vma)
 		}
 
 		/* Map readonly, perf_mmap_pfn_mkwrite() called on write fault. */
-		err = remap_pfn_range(vma, va, page_to_pfn(page), PAGE_SIZE,
+		err = remap_pfn_range(vma, va, page_to_pfn(page), size,
 				      vm_get_page_prot(vma->vm_flags & ~VM_SHARED));
 		if (err)
 			break;
@@ -7207,7 +7209,7 @@ static int map_range(struct perf_buffer *rb, struct vm_area_struct *vma)
 #ifdef CONFIG_MMU
 	/* Clear any partial mappings on error. */
 	if (err)
-		zap_vma_range(vma, vma->vm_start, nr_pages * PAGE_SIZE);
+		zap_vma_range(vma, vma->vm_start, vma_size);
 #endif
 
 	return err;
@@ -7442,11 +7444,19 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 	vma_size = vma->vm_end - vma->vm_start;
 	nr_pages = vma_size / PAGE_SIZE;
 
+	/*
+	 * A main ring can use the native pages which fit in a process-page
+	 * aligned VMA, and reports the effective data size through its metadata.
+	 * An AUX ring has an externally supplied offset and size, so it cannot be
+	 * truncated to fit a partial native page.
+	 */
+	if (vma->vm_pgoff && (!nr_pages || vma_size != PAGE_SIZE * nr_pages))
+		return -EINVAL;
+	if (!nr_pages)
+		nr_pages = 1;
+
 	if (nr_pages > INT_MAX)
 		return -ENOMEM;
-
-	if (vma_size != PAGE_SIZE * nr_pages)
-		return -EINVAL;
 
 	scoped_guard (mutex, &event->mmap_mutex) {
 		/*
