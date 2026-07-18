@@ -5,6 +5,7 @@
 #include <linux/file.h>
 #include <linux/swap.h>
 #include <linux/mempolicy.h>
+#include <linux/mutex.h>
 #include <linux/pagemap.h>
 #include <linux/percpu_counter.h>
 #include <linux/xattr.h>
@@ -39,6 +40,14 @@ struct shmem_inode_info {
 	pgoff_t			fallocend;	/* highest fallocate endindex */
 	unsigned int		fsflags;	/* for FS_IOC_[SG]ETFLAGS */
 	atomic_t		stop_eviction;	/* hold when working on inode */
+#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
+	/*
+	 * Per-native-page masks of slices instantiated by UFFDIO_COPY or
+	 * UFFDIO_ZEROPAGE.  PageUptodate cannot distinguish PPPS slices.
+	 */
+	struct mutex		ppps_uffd_lock;
+	struct xarray		ppps_uffd_slices;
+#endif
 #ifdef CONFIG_TMPFS_QUOTA
 	struct dquot __rcu	*i_dquot[MAXQUOTAS];
 #endif
@@ -161,6 +170,16 @@ enum sgp_type {
 
 int shmem_get_folio(struct inode *inode, pgoff_t index, loff_t write_end,
 		struct folio **foliop, enum sgp_type sgp);
+
+#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD) && \
+	defined(CONFIG_SHMEM)
+void shmem_ppps_uffd_forget_folio(struct folio *folio);
+#else
+static inline void shmem_ppps_uffd_forget_folio(struct folio *folio)
+{
+}
+#endif
+
 struct folio *shmem_read_folio_gfp(struct address_space *mapping,
 		pgoff_t index, gfp_t gfp);
 
