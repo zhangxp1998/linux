@@ -70,6 +70,7 @@ static int run_test(void)
 	unsigned long free_swap;
 	unsigned long outside_swap = 0;
 	unsigned long target_swap = 0;
+	unsigned long slice_swap = 0;
 	unsigned char *reservation;
 	unsigned char *outside;
 	unsigned char *target;
@@ -78,7 +79,7 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(5);
+	ksft_set_plan(6);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	if (!swap_info(&total_swap, &free_swap))
@@ -115,6 +116,19 @@ static int run_test(void)
 			 "exclude swapped shmem pages outside the target VMA\n");
 	ksft_print_msg("outside Swap=%lu target Swap=%lu bytes\n",
 		       outside_swap, target_swap);
+
+	munmap(outside, VMA_SIZE);
+	outside = mmap(reservation + 2 * VMA_SIZE, PROCESS_PAGE_SIZE,
+		       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+		       fd, VMA_SIZE);
+	if (outside == MAP_FAILED)
+		ksft_exit_fail_msg("map swapped shmem slice failed: %s\n",
+				   strerror(errno));
+	if (!vma_swap_bytes(outside, &slice_swap))
+		ksft_exit_fail_msg("could not read shmem slice swap usage\n");
+	ksft_test_result(slice_swap == PROCESS_PAGE_SIZE,
+			 "account only the mapped process-page shmem slice\n");
+	ksft_print_msg("single-slice Swap=%lu bytes\n", slice_swap);
 
 	munmap(reservation, RESERVE_SIZE);
 	close(fd);
