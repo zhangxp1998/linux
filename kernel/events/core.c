@@ -6990,11 +6990,16 @@ static void perf_mmap_account(struct vm_area_struct *vma, long user_extra, long 
 static int perf_mmap_rb(struct vm_area_struct *vma, struct perf_event *event,
 			unsigned long nr_pages)
 {
-	long extra = 0, user_extra = nr_pages;
+	long extra = 0, user_extra;
 	struct perf_buffer *rb;
 	int rb_flags = 0;
 
-	nr_pages -= (__PAGE_SIZE / PAGE_SIZE);
+	if (ppps_mm_is_compat(vma->vm_mm))
+		user_extra = nr_pages + 1;
+	else {
+		user_extra = nr_pages;
+		nr_pages -= (__PAGE_SIZE / PAGE_SIZE);
+	}
 
 	/*
 	 * If we have rb pages ensure they're a power-of-two number, so we
@@ -7164,13 +7169,25 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 		return ret;
 
 	vma_size = vma->vm_end - vma->vm_start;
-	nr_pages = vma_size / PAGE_SIZE;
+	if (vma->vm_pgoff == 0) {
+		unsigned long metadata_size = ppps_mm_is_compat(vma->vm_mm) ?
+					      MM_PAGE_SIZE(vma->vm_mm) :
+					      __PAGE_SIZE;
+
+		if (vma_size < metadata_size)
+			return -EINVAL;
+		if (ppps_mm_is_compat(vma->vm_mm))
+			nr_pages = (vma_size - metadata_size) / PAGE_SIZE;
+		else
+			nr_pages = vma_size / PAGE_SIZE;
+	} else {
+		nr_pages = vma_size / PAGE_SIZE;
+		if (vma_size != PAGE_SIZE * nr_pages)
+			return -EINVAL;
+	}
 
 	if (nr_pages > INT_MAX)
 		return -ENOMEM;
-
-	if (vma_size != PAGE_SIZE * nr_pages)
-		return -EINVAL;
 
 	scoped_guard (mutex, &event->mmap_mutex) {
 		/*
