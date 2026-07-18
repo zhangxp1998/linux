@@ -447,6 +447,7 @@ CATEGORY="process_madv" run_test ./process_madv
 
 CATEGORY="vma_merge" run_test ./merge
 CATEGORY="process_madv" run_test ./process_madvise_ppps
+CATEGORY="process_madv" run_test ./process_vm_access_ppps
 
 if [ -x ./memfd_secret ]
 then
