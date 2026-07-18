@@ -2999,7 +2999,8 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 	if (len < hpage_size)
 		return addr;
 
-	offset = (pgoff << PAGE_SHIFT) & (hpage_size - 1);
+	offset = (pgoff << MM_PAGE_SHIFT(current->mm)) &
+		 (hpage_size - 1);
 	if (offset && offset + len < 2 * hpage_size)
 		return addr;
 	if ((addr & (hpage_size - 1)) == offset)
