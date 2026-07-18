@@ -2059,7 +2059,8 @@ static int elf_core_dump(struct coredump_params *cprm)
 		offset += sz;
 	}
 
-	dataoff = offset = roundup(offset, ELF_EXEC_PAGESIZE);
+	offset = roundup(offset, ELF_MIN_ALIGN(current->mm));
+	dataoff = offset;
 
 	offset += cprm->vma_data_size;
 	offset += elf_core_extra_data_size(cprm);
@@ -2099,7 +2100,7 @@ static int elf_core_dump(struct coredump_params *cprm)
 			phdr.p_flags |= PF_W;
 		if (meta->flags & VM_EXEC)
 			phdr.p_flags |= PF_X;
-		phdr.p_align = ELF_EXEC_PAGESIZE;
+		phdr.p_align = ELF_MIN_ALIGN(current->mm);
 
 		if (!dump_emit(cprm, &phdr, sizeof(phdr)))
 			goto end_coredump;
