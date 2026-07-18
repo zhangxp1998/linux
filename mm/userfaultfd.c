@@ -415,10 +415,11 @@ out:
 	return ret;
 }
 
-static int copy_user_to_folio(struct folio *folio, unsigned long dst_addr,
-			      unsigned long src_addr, struct mm_struct *mm,
-			      unsigned long vm_start, unsigned int vm_slice_off,
-			      bool is_anon, bool avoid_pagefault)
+static int copy_user_to_folio(struct folio *folio, size_t folio_offset,
+			      unsigned long dst_addr, unsigned long src_addr,
+			      struct mm_struct *mm, unsigned long vm_start,
+			      unsigned int vm_slice_off, bool is_anon,
+			      bool clear_folio, bool avoid_pagefault)
 {
 	unsigned int slice_idx = 0;
 	unsigned long offset;
@@ -430,8 +431,9 @@ static int copy_user_to_folio(struct folio *folio, unsigned long dst_addr,
 
 	offset = slice_idx * MM_PAGE_SIZE(mm);
 
-	kaddr = kmap_local_folio(folio, 0);
-	memset(kaddr, 0, PAGE_SIZE);
+	kaddr = kmap_local_folio(folio, folio_offset);
+	if (clear_folio)
+		memset(kaddr, 0, PAGE_SIZE);
 
 	if (avoid_pagefault)
 		pagefault_disable();
@@ -445,14 +447,15 @@ static int copy_user_to_folio(struct folio *folio, unsigned long dst_addr,
 	return ret ? -EFAULT : 0;
 }
 
-static int mfill_copy_folio_locked(struct folio *folio, unsigned long dst_addr,
-				   unsigned long src_addr, struct vm_area_struct *vma)
+static int mfill_copy_folio_locked(struct folio *folio, size_t folio_offset,
+				   unsigned long dst_addr, unsigned long src_addr,
+				   struct vm_area_struct *vma, bool clear_folio)
 {
 	int ret;
 
-	ret = copy_user_to_folio(folio, dst_addr, src_addr, vma->vm_mm,
-				 vma->vm_start, vma_slice_off(vma),
-				 vma_is_anonymous(vma), true);
+	ret = copy_user_to_folio(folio, folio_offset, dst_addr, src_addr,
+				 vma->vm_mm, vma->vm_start, vma_slice_off(vma),
+				 vma_is_anonymous(vma), clear_folio, true);
 	if (ret)
 		return ret;
 
@@ -526,7 +529,8 @@ DEFINE_FREE(retry_put, struct mfill_retry_state *,
 	    if (_T) mfill_retry_state_put(_T));
 
 static int mfill_copy_folio_retry(struct mfill_state *mfill_state,
-				  struct folio *folio)
+				  struct folio *folio, size_t folio_offset,
+				  bool clear_folio)
 {
 	struct mfill_retry_state retry_state = { 0 };
 	struct mfill_retry_state *for_free __free(retry_put) = &retry_state;
@@ -538,10 +542,11 @@ static int mfill_copy_folio_retry(struct mfill_state *mfill_state,
 	/* retry copying with mm_lock dropped */
 	mfill_put_vma(mfill_state);
 
-	err = copy_user_to_folio(folio, mfill_state->dst_addr, src_addr,
-				 mfill_state->ctx->mm, retry_state.vm_start,
-				 retry_state.vm_slice_off,
-				 retry_state.ops == &anon_uffd_ops, false);
+	err = copy_user_to_folio(folio, folio_offset, mfill_state->dst_addr,
+				 src_addr, mfill_state->ctx->mm,
+				 retry_state.vm_start, retry_state.vm_slice_off,
+				 retry_state.ops == &anon_uffd_ops, clear_folio,
+				 false);
 	if (unlikely(err))
 		return err;
 
@@ -586,7 +591,8 @@ static int __mfill_atomic_pte(struct mfill_state *state,
 	page = folio_page(folio, slice_idx);
 
 	if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
-		ret = mfill_copy_folio_locked(folio, dst_addr, src_addr, vma);
+		ret = mfill_copy_folio_locked(folio, 0, dst_addr, src_addr,
+					      vma, true);
 		/*
 		 * Fallback to copy_from_user outside mmap_lock.
 		 * If retry is successful, mfill_copy_folio_locked() returns
@@ -595,7 +601,7 @@ static int __mfill_atomic_pte(struct mfill_state *state,
 		 * will take care of unlocking if needed.
 		 */
 		if (unlikely(ret)) {
-			ret = mfill_copy_folio_retry(state, folio);
+			ret = mfill_copy_folio_retry(state, folio, 0, true);
 			if (ret)
 				goto err_folio_put;
 		}
@@ -633,9 +639,60 @@ err_folio_put:
 	return ret;
 }
 
+static int mfill_atomic_pte_copy_existing_ppps(struct mfill_state *state,
+					       const struct vm_uffd_ops *ops)
+{
+	struct vm_area_struct *vma = state->vma;
+	pgoff_t pgoff = linear_page_index(vma, state->dst_addr);
+	struct inode *inode = file_inode(vma->vm_file);
+	struct folio *folio;
+	struct page *page;
+	size_t folio_offset;
+	int ret;
+
+	if (!ops->get_folio_noalloc)
+		return -ENOENT;
+
+	folio = ops->get_folio_noalloc(inode, pgoff);
+	if (IS_ERR(folio))
+		return PTR_ERR(folio);
+	if (!folio)
+		return -ENOENT;
+
+	page = folio_file_page(folio, pgoff);
+	if (PageHWPoison(page)) {
+		ret = -EIO;
+		goto out_release;
+	}
+
+	folio_offset = folio_page_idx(folio, page) * PAGE_SIZE;
+	ret = mfill_copy_folio_locked(folio, folio_offset, state->dst_addr,
+				      state->src_addr, vma, false);
+	if (unlikely(ret)) {
+		ret = mfill_copy_folio_retry(state, folio, folio_offset, false);
+		if (ret)
+			goto out_release;
+	}
+
+	__folio_mark_uptodate(folio);
+	ret = mfill_atomic_install_pte(state->pmd, state->vma,
+				       state->dst_addr, page,
+				       vma_address_to_slice(state->vma,
+							    state->dst_addr),
+				       state->flags);
+	if (!ret)
+		return 0;
+
+out_release:
+	folio_unlock(folio);
+	folio_put(folio);
+	return ret;
+}
+
 static int mfill_atomic_pte_copy(struct mfill_state *state)
 {
 	const struct vm_uffd_ops *ops = vma_uffd_ops(state->vma);
+	int ret;
 
 	/*
 	 * The normal page fault path for a MAP_PRIVATE mapping in a
@@ -648,6 +705,17 @@ static int mfill_atomic_pte_copy(struct mfill_state *state)
 	 */
 	if (!(state->vma->vm_flags & VM_SHARED))
 		ops = &anon_uffd_ops;
+
+	/*
+	 * Multiple process-sized pages can share one page-cache folio under
+	 * PPPS.  Once one slice has been filled, copy later slices into that
+	 * folio without clearing the contents of the first slice.
+	 */
+	if (ppps_mm_is_compat(state->vma->vm_mm) && ops != &anon_uffd_ops) {
+		ret = mfill_atomic_pte_copy_existing_ppps(state, ops);
+		if (ret != -ENOENT)
+			return ret;
+	}
 
 	return __mfill_atomic_pte(state, ops);
 }
