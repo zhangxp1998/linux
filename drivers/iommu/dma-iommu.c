@@ -1715,16 +1715,13 @@ int iommu_dma_mmap(struct device *dev, struct vm_area_struct *vma,
 		unsigned long attrs)
 {
 	unsigned long nr_pages = PAGE_ALIGN(size) >> PAGE_SHIFT;
-	unsigned long pfn, off = vma->vm_pgoff;
+	unsigned long pfn;
 	int ret;
 
 	vma->vm_page_prot = dma_pgprot(dev, vma->vm_page_prot, attrs);
 
 	if (dma_mmap_from_dev_coherent(dev, vma, cpu_addr, size, &ret))
 		return ret;
-
-	if (off >= nr_pages || vma_pages(vma) > nr_pages - off)
-		return -ENXIO;
 
 	if (is_vmalloc_addr(cpu_addr)) {
 		struct page **pages = dma_common_find_pages(cpu_addr);
@@ -1736,9 +1733,7 @@ int iommu_dma_mmap(struct device *dev, struct vm_area_struct *vma,
 		pfn = page_to_pfn(virt_to_page(cpu_addr));
 	}
 
-	return remap_pfn_range(vma, vma->vm_start, pfn + off,
-			       vma->vm_end - vma->vm_start,
-			       vma->vm_page_prot);
+	return dma_mmap_pfn(vma, size, pfn);
 }
 
 int iommu_dma_get_sgtable(struct device *dev, struct sg_table *sgt,
