@@ -394,6 +394,7 @@ CATEGORY="mlock" run_test ./mlock2-tests
 CATEGORY="process_mrelease" run_test ./mrelease_test
 
 CATEGORY="mremap" run_test ./mremap_test
+CATEGORY="mremap" run_test ./mremap_rlimit_ppps
 
 CATEGORY="hugetlb" run_test ./thuge-gen
 CATEGORY="hugetlb" run_test ./charge_reserved_hugetlb.sh -cgroup-v2

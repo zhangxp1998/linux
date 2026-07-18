@@ -10,7 +10,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 
 #define USER_PAGE_SIZE	4096UL
 #define MAPPING_OFFSET	(3 * USER_PAGE_SIZE)
