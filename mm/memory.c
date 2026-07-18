@@ -3040,6 +3040,8 @@ static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long ad
 		if (addr != vma->vm_start || end != vma->vm_end)
 			return -EINVAL;
 		vma->vm_pgoff = PHYS_PFN(phys_addr);
+		vma_set_slice_off(vma, (phys_addr & ~PAGE_MASK) >>
+				  MM_PAGE_SHIFT(vma->vm_mm));
 	}
 
 	vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
@@ -3246,9 +3248,46 @@ EXPORT_SYMBOL(remap_pfn_range_slice);
  *
  * Return: %0 on success, negative error code otherwise.
  */
-int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len)
+int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start,
+		    unsigned long len)
 {
-	unsigned long vm_len, pfn, pages;
+	const unsigned long vm_start = vma->vm_start;
+	const unsigned long vm_end = vma->vm_end;
+	const unsigned long vm_len = vm_end - vm_start;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	loff_t requested_offset;
+	phys_addr_t phys_addr;
+	unsigned long map_len;
+	unsigned int slice;
+#endif
+	unsigned long pfn, pages;
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm)) {
+		unsigned long page_offset =
+			start & (MM_PAGE_SIZE(vma->vm_mm) - 1);
+
+		requested_offset = vma_file_offset(vma);
+		if (requested_offset < 0 ||
+		    check_add_overflow(len, page_offset, &map_len) ||
+		    check_add_overflow(map_len, MM_PAGE_SIZE(vma->vm_mm) - 1,
+				       &map_len))
+			return -EINVAL;
+		map_len &= MM_PAGE_MASK(vma->vm_mm);
+		if ((u64)requested_offset >= map_len ||
+		    vm_len > map_len - requested_offset)
+			return -EINVAL;
+
+		phys_addr = start - page_offset;
+		if (check_add_overflow(phys_addr, (u64)requested_offset,
+				       &phys_addr))
+			return -EINVAL;
+		pfn = PHYS_PFN(phys_addr);
+		slice = (phys_addr & ~PAGE_MASK) >> MM_PAGE_SHIFT(vma->vm_mm);
+		return remap_pfn_range_slice(vma, vm_start, pfn, slice, vm_len,
+					     pgprot_decrypted(vma->vm_page_prot));
+	}
+#endif
 
 	/* Check that the physical memory area passed in looks valid */
 	if (start + len < start)
@@ -3271,7 +3310,6 @@ int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long
 	pages -= vma->vm_pgoff;
 
 	/* Can we fit all of the mapping? */
-	vm_len = vma->vm_end - vma->vm_start;
 	if (vm_len >> PAGE_SHIFT > pages)
 		return -EINVAL;
 
