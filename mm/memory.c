@@ -2524,10 +2524,15 @@ static vm_fault_t insert_pfn(struct vm_area_struct *vma, unsigned long addr,
 	}
 
 	/* Ok, finally just insert the thing.. */
+	entry = pfn_t_pte(pfn, prot);
+	if (ppps_mm_is_compat(mm))
+		entry = __pte(pte_val(entry) |
+			      ((u64)vma_address_to_slice(vma, addr) <<
+			       MM_PAGE_SHIFT(mm)));
 	if (pfn_t_devmap(pfn))
-		entry = pte_mkdevmap(pfn_t_pte(pfn, prot));
+		entry = pte_mkdevmap(entry);
 	else
-		entry = pte_mkspecial(pfn_t_pte(pfn, prot));
+		entry = pte_mkspecial(entry);
 
 	if (mkwrite) {
 		entry = pte_mkyoung(entry);
