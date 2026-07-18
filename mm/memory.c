@@ -3117,59 +3117,6 @@ int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
 }
 EXPORT_SYMBOL(remap_pfn_range_slice);
 
-static int __simple_ioremap_prep(unsigned long vm_len, pgoff_t vm_pgoff,
-				 phys_addr_t start_phys, unsigned long size,
-				 unsigned long *pfnp)
-{
-	unsigned long pfn, pages;
-
-	/* Check that the physical memory area passed in looks valid */
-	if (start_phys + size < start_phys)
-		return -EINVAL;
-	/*
-	 * You *really* shouldn't map things that aren't page-aligned,
-	 * but we've historically allowed it because IO memory might
-	 * just have smaller alignment.
-	 */
-	size += start_phys & ~PAGE_MASK;
-	pfn = start_phys >> PAGE_SHIFT;
-	pages = (size + ~PAGE_MASK) >> PAGE_SHIFT;
-	if (pfn + pages < pfn)
-		return -EINVAL;
-
-	/* We start the mapping 'vm_pgoff' pages into the area */
-	if (vm_pgoff > pages)
-		return -EINVAL;
-	pfn += vm_pgoff;
-	pages -= vm_pgoff;
-
-	/* Can we fit all of the mapping? */
-	if ((vm_len >> PAGE_SHIFT) > pages)
-		return -EINVAL;
-
-	*pfnp = pfn;
-	return 0;
-}
-
-int simple_ioremap_prepare(struct vm_area_desc *desc)
-{
-	struct mmap_action *action = &desc->action;
-	const phys_addr_t start = action->simple_ioremap.start_phys_addr;
-	const unsigned long size = action->simple_ioremap.size;
-	unsigned long pfn;
-	int err;
-
-	err = __simple_ioremap_prep(vma_desc_size(desc), desc->pgoff,
-				    start, size, &pfn);
-	if (err)
-		return err;
-
-	/* The I/O remap logic does the heavy lifting. */
-	mmap_action_ioremap_full(desc, pfn);
-	return io_remap_pfn_range_prepare(desc);
-}
-
->>>>>>> 346550538b9a (mm,dma: make dma_mmap_pages honor PPPS slices)
 /**
  * vm_iomap_memory - remap memory to userspace
  * @vma: user vma to map to
