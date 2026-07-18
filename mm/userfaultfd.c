@@ -166,12 +166,12 @@ static bool mfill_file_over_size(struct vm_area_struct *dst_vma,
  * This function handles both MCOPY_ATOMIC_NORMAL and _CONTINUE for both shmem
  * and anon, and for both shared and private VMAs.
  */
-int mfill_atomic_install_pte(pmd_t *dst_pmd,
+static int __mfill_atomic_install_pte(pmd_t *dst_pmd,
 			     struct vm_area_struct *dst_vma,
 			     unsigned long dst_addr, struct page *page,
 			     bool newly_allocated,
 			     unsigned int slice_idx,
-			     uffd_flags_t flags)
+			     uffd_flags_t flags, struct page *src_page)
 {
 	int ret;
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
@@ -213,6 +213,19 @@ int mfill_atomic_install_pte(pmd_t *dst_pmd,
 	if (!pte_none_mostly(ptep_get(dst_pte)))
 		goto out_unlock;
 
+	/* Commit shared data only after every potentially failing PTE check. */
+	if (src_page) {
+		unsigned long size = MM_PAGE_SIZE(dst_mm);
+		unsigned long offset = slice_idx * size;
+		void *src = kmap_local_page(src_page);
+		void *dst = kmap_local_page(page);
+
+		memcpy(dst + offset, src + offset, size);
+		kunmap_local(dst);
+		kunmap_local(src);
+		flush_dcache_folio(folio);
+		folio_mark_dirty(folio);
+	}
 	if (page_in_cache) {
 		/* Usually, cache pages are already added to LRU */
 		if (newly_allocated)
@@ -238,6 +251,23 @@ out_unlock:
 	pte_unmap_unlock(dst_pte, ptl);
 out:
 	return ret;
+}
+
+int mfill_atomic_install_pte(pmd_t *dst_pmd, struct vm_area_struct *dst_vma,
+		unsigned long dst_addr, struct page *page, bool newly_allocated,
+		unsigned int slice_idx, uffd_flags_t flags)
+{
+	return __mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr, page,
+			newly_allocated, slice_idx, flags, NULL);
+}
+
+int mfill_atomic_install_pte_from(pmd_t *dst_pmd,
+		struct vm_area_struct *dst_vma, unsigned long dst_addr,
+		struct page *page, unsigned int slice_idx, uffd_flags_t flags,
+		struct page *src_page)
+{
+	return __mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr, page,
+			false, slice_idx, flags, src_page);
 }
 
 static int mfill_atomic_pte_copy(pmd_t *dst_pmd,

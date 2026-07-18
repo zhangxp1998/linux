@@ -3791,6 +3791,7 @@ long memfd_pin_folios(struct file *memfd, loff_t start, loff_t end,
 					ret = -EINVAL;
 					goto err;
 				}
+				shmem_ppps_uffd_forget_folio(folio);
 
 				if (nr_folios == 0)
 					*offset = offset_in_folio(folio, start);
