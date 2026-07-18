@@ -974,12 +974,20 @@ static unsigned long vrm_set_new_addr(struct vma_remap_struct *vrm)
 {
 	struct vm_area_struct *vma = vrm->vma;
 	unsigned long map_flags = 0;
-	/* Page Offset _into_ the VMA. */
-	pgoff_t internal_pgoff = (vrm->addr - vma->vm_start) >> PAGE_SHIFT;
-	pgoff_t pgoff = vma->vm_pgoff + internal_pgoff;
 	unsigned long new_addr = vrm_implies_new_addr(vrm) ? vrm->new_addr : 0;
+	pgoff_t pgoff;
 	unsigned long res;
 
+	if (vma->vm_file) {
+		loff_t offset = vma_file_offset(vma) +
+			(vrm->addr - vma->vm_start);
+
+		pgoff = offset >> MM_PAGE_SHIFT(vma->vm_mm);
+	} else {
+		pgoff = vma->vm_pgoff +
+			((vrm->addr - vma->vm_start) >>
+			 MM_PAGE_SHIFT(vma->vm_mm));
+	}
 	if (vrm->flags & MREMAP_FIXED)
 		map_flags |= MAP_FIXED;
 	if (vma->vm_flags & VM_MAYSHARE)

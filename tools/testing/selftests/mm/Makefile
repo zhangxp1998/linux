@@ -59,6 +59,8 @@ ifneq (,$(wildcard $(KDIR)/Module.symvers))
 TEST_GEN_MODS_DIR := page_frag
 GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
 TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
+MREMAP_PGOFF_PPPS_MODULE := mremap_pgoff_ppps_module/mremap_pgoff_ppps_module.ko
+TEST_FILES += $(MREMAP_PGOFF_PPPS_MODULE)
 VM_IOMAP_MEMORY_PPPS_MODULE := vm_iomap_memory_ppps_module/vm_iomap_memory_ppps_module.ko
 TEST_FILES += $(VM_IOMAP_MEMORY_PPPS_MODULE)
 SIMPLE_IOMAP_PREPARE_PPPS_MODULE := simple_ioremap_prepare_ppps_module/simple_ioremap_prepare_ppps_module.ko
@@ -131,6 +133,7 @@ TEST_GEN_FILES += mlock2-tests
 TEST_GEN_FILES += mrelease_test
 TEST_GEN_FILES += mremap_dontunmap
 TEST_GEN_FILES += mremap_test
+TEST_GEN_FILES += mremap_pgoff_ppps
 TEST_GEN_FILES += mremap_rlimit_ppps
 TEST_GEN_FILES += msync_offset_ppps
 TEST_GEN_FILES += mseal_test
@@ -244,6 +247,7 @@ TEST_FILES += va_high_addr_switch.sh
 TEST_FILES += charge_reserved_hugetlb.sh
 TEST_FILES += hugetlb_reparenting_test.sh
 TEST_FILES += test_gup_retry_ppps.sh
+TEST_FILES += test_mremap_pgoff_ppps.sh
 TEST_FILES += test_selinux_status_mmap_ppps.sh
 TEST_FILES += test_vm_iomap_memory_ppps.sh
 TEST_FILES += test_simple_ioremap_prepare_ppps.sh
@@ -272,6 +276,20 @@ clean_gup_retry_ppps_module:
 	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_gup_retry_ppps_module
+endif
+
+ifneq ($(MREMAP_PGOFF_PPPS_MODULE),)
+all: $(MREMAP_PGOFF_PPPS_MODULE)
+
+$(MREMAP_PGOFF_PPPS_MODULE): mremap_pgoff_ppps_module/mremap_pgoff_ppps_module.c \
+				       mremap_pgoff_ppps_module/Makefile
+	+$(MAKE) -C mremap_pgoff_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_mremap_pgoff_ppps_module
+clean_mremap_pgoff_ppps_module:
+	+$(MAKE) -C mremap_pgoff_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_mremap_pgoff_ppps_module
 endif
 
 ifneq ($(VM_IOMAP_MEMORY_PPPS_MODULE),)
