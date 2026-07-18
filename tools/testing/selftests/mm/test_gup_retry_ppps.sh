@@ -5,6 +5,7 @@ ksft_skip=4
 driver=./gup_retry_ppps_module/gup_retry_ppps_module.ko
 device=/dev/gup_retry_ppps
 created_device=false
+test_binary=${1:-gup_retry_ppps}
 
 if [ ! -f "$driver" ]; then
 	driver=./gup_retry_ppps_module.ko
@@ -39,4 +40,4 @@ if [ ! -e "$device" ]; then
 	created_device=true
 fi
 
-./gup_retry_ppps
+./"$test_binary"
