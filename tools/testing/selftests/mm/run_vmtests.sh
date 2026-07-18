@@ -285,6 +285,7 @@ fi
 
 CATEGORY="mmap" run_test ./map_fixed_noreplace
 CATEGORY="mmap" run_test ./mglru_folded
+CATEGORY="mmap" run_test ./mincore_ppps
 
 if $RUN_ALL; then
     run_gup_matrix
