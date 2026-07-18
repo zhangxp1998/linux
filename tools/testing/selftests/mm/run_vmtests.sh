@@ -288,6 +288,7 @@ CATEGORY="mmap" run_test ./mglru_folded
 CATEGORY="mmap" run_test ./mincore_ppps
 CATEGORY="mmap" run_test ./test_gup_retry_ppps.sh mmap_action_cleanup_ppps
 CATEGORY="mmap" run_test ./test_selinux_status_mmap_ppps.sh
+CATEGORY="mmap" run_test ./test_vm_iomap_memory_ppps.sh
 CATEGORY="mmap" run_test ./test_dma_mmap_attrs_ppps.sh
 CATEGORY="mmap" run_test ./test_dma_mmap_pages_ppps.sh
 CATEGORY="mmap" run_test ./test_vm_map_pages_ppps.sh
