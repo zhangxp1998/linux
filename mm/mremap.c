@@ -972,11 +972,23 @@ static unsigned long mremap_get_unmapped_area(struct file *file,
 	return get_unmapped_area(file, addr, len, pgoff, map_flags);
 }
 
+static pgoff_t mremap_pgoff(struct vm_area_struct *vma, unsigned long addr)
+{
+	if (vma->vm_file) {
+		loff_t offset = vma_file_offset(vma) + addr - vma->vm_start;
+
+		return offset >> MM_PAGE_SHIFT(vma->vm_mm);
+	}
+
+	return vma->vm_pgoff +
+	       ((addr - vma->vm_start) >> MM_PAGE_SHIFT(vma->vm_mm));
+}
+
 static unsigned long vrm_set_new_addr(struct vma_remap_struct *vrm)
 {
 	struct vm_area_struct *vma = vrm->vma;
 	unsigned long map_flags = 0;
-	pgoff_t pgoff = vma_pgoff_offset(vma, vrm->addr);
+	pgoff_t pgoff = mremap_pgoff(vma, vrm->addr);
 	unsigned long new_addr = vrm_implies_new_addr(vrm) ? vrm->new_addr : 0;
 	unsigned long res;
 
