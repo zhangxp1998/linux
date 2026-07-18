@@ -2,6 +2,7 @@
 # Makefile for mm selftests
 
 LOCAL_HDRS += $(selfdir)/mm/local_config.h $(top_srcdir)/mm/gup_test.h
+LOCAL_HDRS += $(selfdir)/mm/gup_retry_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
 
 include local_config.mk
@@ -42,6 +43,11 @@ LDLIBS = -lrt -lpthread -lm
 # return value is not checked. Disable _FORTIFY_SOURCE to silence those
 # warnings.
 CFLAGS += -U_FORTIFY_SOURCE
+
+KDIR ?= /lib/modules/$(shell uname -r)/build
+ifneq (,$(wildcard $(KDIR)/Module.symvers))
+GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
+endif
 
 TEST_GEN_FILES = cow
 TEST_GEN_FILES += bpf_array_mmap_ppps
@@ -156,11 +162,29 @@ TEST_FILES += test_hmm.sh
 TEST_FILES += va_high_addr_switch.sh
 TEST_FILES += charge_reserved_hugetlb.sh
 TEST_FILES += hugetlb_reparenting_test.sh
+TEST_FILES += test_gup_retry_ppps.sh
+TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
 
 # required by charge_reserved_hugetlb.sh
 TEST_FILES += write_hugetlb_memory.sh
 
+TEST_GEN_MODS_DIR := ppps_modules
+
 include ../lib.mk
+
+ifneq ($(GUP_RETRY_PPPS_MODULE),)
+all: $(GUP_RETRY_PPPS_MODULE)
+
+$(GUP_RETRY_PPPS_MODULE): gup_retry_ppps_module/gup_retry_ppps_module.c \
+			  gup_retry_ppps_module/Makefile gup_retry_ppps.h
+	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_gup_retry_ppps_module
+clean_gup_retry_ppps_module:
+	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_gup_retry_ppps_module
+endif
 
 $(TEST_GEN_PROGS): vm_util.c thp_settings.c
 $(TEST_GEN_FILES): vm_util.c thp_settings.c
@@ -168,6 +192,20 @@ $(TEST_GEN_FILES): vm_util.c thp_settings.c
 $(OUTPUT)/uffd-stress: uffd-common.c
 $(OUTPUT)/uffd-unit-tests: uffd-common.c
 
+# Headers a PPPS test shares with its fixture module or with the other tuple
+# tests.  Declaring them per target (instead of in LOCAL_HDRS) keeps a header
+# edit from rebuilding the whole directory; the target-specific LOCAL_HDRS
+# keeps lib.mk's link rule from passing the header to the compiler.
+define ppps_test_hdrs
+$(OUTPUT)/$(1): LOCAL_HDRS += $(2)
+$(OUTPUT)/$(1): $(2)
+endef
+$(eval $(call ppps_test_hdrs,fault_in_ppps,fault_in_ppps.h))
+$(eval $(call ppps_test_hdrs,folio_within_range_ppps,folio_within_range_ppps.h))
+$(eval $(call ppps_test_hdrs,gup_retry_ppps,gup_retry_ppps.h))
+$(eval $(call ppps_test_hdrs,iov_iter_ppps,iov_iter_ppps.h))
+$(eval $(call ppps_test_hdrs,mmu_notifier_ppps,mmu_notifier_ppps.h))
+$(eval $(call ppps_test_hdrs,pagewalk_ppps,pagewalk_ppps.h))
 ifeq ($(ARCH),x86_64)
 BINARIES_32 := $(patsubst %,$(OUTPUT)/%,$(BINARIES_32))
 BINARIES_64 := $(patsubst %,$(OUTPUT)/%,$(BINARIES_64))
