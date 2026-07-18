@@ -313,6 +313,7 @@ CATEGORY="mmap" run_test ./mglru_folded
 if [ -x ./elf_4k_align_ppps ]; then
 	CATEGORY="mmap" run_test ./elf_4k_align_ppps
 fi
+CATEGORY="mmap" run_test ./elf_core_ppps
 CATEGORY="mmap" run_test ./mincore_ppps
 CATEGORY="mmap" run_test ./test_gup_retry_ppps.sh mmap_action_cleanup_ppps
 CATEGORY="mmap" run_test ./test_selinux_status_mmap_ppps.sh
