@@ -11,7 +11,7 @@
 #include <signal.h>
 #include <sys/mman.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
 #define MAPPING_OFFSET	(3 * PROCESS_PAGE_SIZE)
 #define MAPPING_SIZE	(2 * PROCESS_PAGE_SIZE)

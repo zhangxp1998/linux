@@ -8,7 +8,7 @@
 
 #include <sys/mman.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
 #define MAPPING_OFFSET	(3 * PROCESS_PAGE_SIZE)
 #define MAPPING_LENGTH	(2 * PROCESS_PAGE_SIZE)

@@ -16,13 +16,7 @@
 #include <sys/syscall.h>
 #include <time.h>
 
-#include "kselftest.h"
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
+#include "kselftest_ppps.h"
 
 struct copy_thread_args {
 	struct uffdio_copy copy;
