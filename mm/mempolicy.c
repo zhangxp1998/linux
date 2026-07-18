@@ -555,7 +555,7 @@ static int queue_folios_pte_range(pmd_t *pmd, unsigned long addr,
 		walk->action = ACTION_AGAIN;
 		return 0;
 	}
-	for (; addr != end; pte++, addr += PAGE_SIZE) {
+	for (; addr != end; pte++, addr += MM_PAGE_SIZE(vma->vm_mm)) {
 		ptent = ptep_get(pte);
 		if (pte_none(ptent))
 			continue;
@@ -915,7 +915,7 @@ static int lookup_node(struct mm_struct *mm, unsigned long addr)
 	struct page *p = NULL;
 	int ret;
 
-	ret = get_user_pages_fast(addr & PAGE_MASK, 1, 0, &p);
+	ret = get_user_pages_fast(addr & MM_PAGE_MASK(mm), 1, 0, &p);
 	if (ret > 0) {
 		ret = page_to_nid(p);
 		put_page(p);
@@ -1282,13 +1282,13 @@ static long do_mbind(unsigned long start, unsigned long len,
 	if ((flags & MPOL_MF_MOVE_ALL) && !capable(CAP_SYS_NICE))
 		return -EPERM;
 
-	if (start & ~PAGE_MASK)
+	if (!MM_PAGE_ALIGNED(mm, start))
 		return -EINVAL;
 
 	if (mode == MPOL_DEFAULT)
 		flags &= ~MPOL_MF_STRICT;
 
-	len = PAGE_ALIGN(len);
+	len = MM_PAGE_ALIGN(mm, len);
 	end = start + len;
 
 	if (end < start)
@@ -1548,7 +1548,7 @@ SYSCALL_DEFINE4(set_mempolicy_home_node, unsigned long, start, unsigned long, le
 	VMA_ITERATOR(vmi, mm, start);
 
 	start = untagged_addr(start);
-	if (start & ~PAGE_MASK)
+	if (!MM_PAGE_ALIGNED(mm, start))
 		return -EINVAL;
 	/*
 	 * flags is used for future extension if any.
@@ -1563,7 +1563,7 @@ SYSCALL_DEFINE4(set_mempolicy_home_node, unsigned long, start, unsigned long, le
 	if (home_node >= MAX_NUMNODES || !node_online(home_node))
 		return -EINVAL;
 
-	len = PAGE_ALIGN(len);
+	len = MM_PAGE_ALIGN(mm, len);
 	end = start + len;
 
 	if (end < start)
