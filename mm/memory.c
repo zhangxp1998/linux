@@ -2997,17 +2997,26 @@ static inline int remap_p4d_range(struct mm_struct *mm, pgd_t *pgd,
 }
 
 static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long addr,
-		unsigned long pfn, unsigned long size, pgprot_t prot)
+		unsigned long pfn, unsigned int slice, unsigned long size,
+		pgprot_t prot)
 {
 	pgd_t *pgd;
 	unsigned long next;
 	struct mm_struct *mm = vma->vm_mm;
-	unsigned long end = addr + MM_PAGE_ALIGN(mm, size);
-	phys_addr_t phys_addr = PFN_PHYS(pfn);
+	phys_addr_t phys_addr;
+	unsigned long end;
 	int err;
 
 	if (WARN_ON_ONCE(!MM_PAGE_ALIGNED(mm, addr)))
 		return -EINVAL;
+
+	size = MM_PAGE_ALIGN(mm, size);
+	if (!size || addr < vma->vm_start || addr >= vma->vm_end ||
+	    size > vma->vm_end - addr)
+		return -EINVAL;
+	end = addr + size;
+	phys_addr = PFN_PHYS(pfn) +
+		    ((phys_addr_t)slice << MM_PAGE_SHIFT(mm));
 
 	/*
 	 * Physically remapped pages are special. Tell the
@@ -3054,10 +3063,19 @@ static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long ad
  * Variant of remap_pfn_range that does not call track_pfn_remap.  The caller
  * must have pre-validated the caching bits of the pgprot_t.
  */
-int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
-		unsigned long pfn, unsigned long size, pgprot_t prot)
+static int remap_pfn_range_notrack_slice(struct vm_area_struct *vma,
+		unsigned long addr, unsigned long pfn, unsigned int slice,
+		unsigned long size, pgprot_t prot)
 {
-	int error = remap_pfn_range_internal(vma, addr, pfn, size, prot);
+	int error;
+
+	size = MM_PAGE_ALIGN(vma->vm_mm, size);
+	if (!size || !MM_PAGE_ALIGNED(vma->vm_mm, addr) ||
+	    addr < vma->vm_start || addr >= vma->vm_end ||
+	    size > vma->vm_end - addr)
+		return -EINVAL;
+
+	error = remap_pfn_range_internal(vma, addr, pfn, slice, size, prot);
 
 	if (!error)
 		return 0;
@@ -3100,6 +3118,12 @@ void pfnmap_track_ctx_release(struct kref *ref)
 	kfree(ctx);
 }
 #endif /* __HAVE_PFNMAP_TRACKING */
+
+int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
+		unsigned long pfn, unsigned long size, pgprot_t prot)
+{
+	return remap_pfn_range_notrack_slice(vma, addr, pfn, 0, size, prot);
+}
 
 /**
  * remap_pfn_range - remap kernel memory to userspace
@@ -3159,6 +3183,53 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 }
 #endif
 EXPORT_SYMBOL(remap_pfn_range);
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
+			  unsigned long pfn, unsigned int slice,
+			  unsigned long size, pgprot_t prot)
+{
+	unsigned long slice_bytes;
+	unsigned long track_size;
+#ifdef __HAVE_PFNMAP_TRACKING
+	struct pfnmap_track_ctx *ctx = NULL;
+#endif
+	int err;
+
+	if (slice >= PPPS_SLICES_PER_PAGE)
+		return -EINVAL;
+
+	size = MM_PAGE_ALIGN(vma->vm_mm, size);
+	slice_bytes = (unsigned long)slice << MM_PAGE_SHIFT(vma->vm_mm);
+	if (size > ULONG_MAX - slice_bytes)
+		return -EINVAL;
+	track_size = PAGE_ALIGN(slice_bytes + size);
+
+#ifdef __HAVE_PFNMAP_TRACKING
+	if (addr == vma->vm_start && addr + size == vma->vm_end) {
+		if (vma->pfnmap_track_ctx)
+			return -EINVAL;
+		ctx = pfnmap_track_ctx_alloc(pfn, track_size, &prot);
+		if (IS_ERR(ctx))
+			return PTR_ERR(ctx);
+	} else if (pfnmap_setup_cachemode(pfn, track_size, &prot)) {
+		return -EINVAL;
+	}
+#endif
+
+	err = remap_pfn_range_notrack_slice(vma, addr, pfn, slice, size, prot);
+#ifdef __HAVE_PFNMAP_TRACKING
+	if (ctx) {
+		if (err)
+			kref_put(&ctx->kref, pfnmap_track_ctx_release);
+		else
+			vma->pfnmap_track_ctx = ctx;
+	}
+#endif
+	return err;
+}
+EXPORT_SYMBOL(remap_pfn_range_slice);
+#endif
 
 /**
  * vm_iomap_memory - remap memory to userspace
