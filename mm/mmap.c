@@ -236,10 +236,19 @@ out:
  */
 static inline unsigned long round_hint_to_min(unsigned long hint)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *mm = current->mm;
+
+	hint &= MM_PAGE_MASK(mm);
+	if (((void *)hint != NULL) &&
+	    (hint < mmap_min_addr))
+		return MM_PAGE_ALIGN(mm, mmap_min_addr);
+#else
 	hint &= __PAGE_MASK;
 	if (((void *)hint != NULL) &&
 	    (hint < mmap_min_addr))
 		return __PAGE_ALIGN(mmap_min_addr);
+#endif
 	return hint;
 }
 
@@ -725,7 +734,7 @@ generic_get_unmapped_area(struct file *filp, unsigned long addr,
 		return addr;
 
 	if (addr) {
-		addr = PAGE_ALIGN(addr);
+		addr = MM_PAGE_ALIGN(mm, addr);
 		vma = find_vma_prev(mm, addr, &prev);
 		if (mmap_end - len >= addr && addr >= mmap_min_addr &&
 		    (!vma || addr + len <= vm_start_gap(vma)) &&
@@ -778,7 +787,7 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 
 	/* requesting a specific address */
 	if (addr) {
-		addr = PAGE_ALIGN(addr);
+		addr = MM_PAGE_ALIGN(mm, addr);
 		vma = find_vma_prev(mm, addr, &prev);
 		if (mmap_end - len >= addr && addr >= mmap_min_addr &&
 				(!vma || addr + len <= vm_start_gap(vma)) &&
