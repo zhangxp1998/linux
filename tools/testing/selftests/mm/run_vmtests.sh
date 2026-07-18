@@ -293,6 +293,7 @@ CATEGORY="mmap" run_test ./perf_mmap_offset_ppps
 CATEGORY="mmap" run_test ./anon_vma_name_ppps
 CATEGORY="mmap" run_test ./test_pagewalk_ppps.sh
 CATEGORY="mmap" run_test ./remap_file_pages_ppps
+CATEGORY="mmap" run_test ./shmem_swap_usage_ppps
 CATEGORY="mmap" run_test ./trace_ring_buffer_mmap_ppps
 CATEGORY="mmap" run_test ./truncate_ppps
 
