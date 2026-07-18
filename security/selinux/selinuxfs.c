@@ -247,8 +247,8 @@ static int sel_mmap_handle_status(struct file *filp,
 
 	BUG_ON(!status);
 
-	/* only allows one page from the head */
-	if (vma->vm_pgoff > 0 || size != PAGE_SIZE)
+	/* only allows one process page from the head */
+	if (vma_file_offset(vma) || size != MM_PAGE_SIZE(vma->vm_mm))
 		return -EIO;
 	/* disallow writable mapping */
 	if (vma->vm_flags & VM_WRITE)
@@ -256,9 +256,12 @@ static int sel_mmap_handle_status(struct file *filp,
 	/* disallow mprotect() turns it into writable */
 	vm_flags_clear(vma, VM_MAYWRITE);
 
-	return remap_pfn_range(vma, vma->vm_start,
-			       page_to_pfn(status),
-			       size, vma->vm_page_prot);
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return remap_pfn_range_slice(vma, vma->vm_start,
+					     page_to_pfn(status), 0, size,
+					     vma->vm_page_prot);
+	return remap_pfn_range(vma, vma->vm_start, page_to_pfn(status), size,
+			       vma->vm_page_prot);
 }
 
 static const struct file_operations sel_handle_status_ops = {
