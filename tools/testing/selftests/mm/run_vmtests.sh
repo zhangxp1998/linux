@@ -312,6 +312,7 @@ CATEGORY="mmap" run_test ./map_fixed_noreplace
 CATEGORY="mmap" run_test ./mglru_folded
 CATEGORY="mmap" run_test ./mincore_ppps
 CATEGORY="mmap" run_test ./test_gup_retry_ppps.sh mmap_action_cleanup_ppps
+CATEGORY="mmap" run_test ./test_dma_mmap_pages_ppps.sh
 CATEGORY="mmap" run_test ./test_vm_map_pages_ppps.sh
 CATEGORY="mmap" run_test ./mmap_hint_ppps
 CATEGORY="mmap" run_test ./perf_mmap_offset_ppps
