@@ -14,6 +14,7 @@
 #include <linux/rcupdate_trace.h>
 #include <linux/btf_ids.h>
 #include <crypto/sha2.h>
+#include <linux/vmalloc.h>
 
 #include "map_in_map.h"
 
@@ -567,17 +568,54 @@ static int array_map_check_btf(const struct bpf_map *map,
 	return 0;
 }
 
+static int array_map_mmap_ppps(struct bpf_array *array,
+			       struct vm_area_struct *vma,
+			       unsigned long offset, unsigned long size)
+{
+	void *kaddr = (void *)array->value + offset;
+	unsigned long uaddr = vma->vm_start;
+
+	while (size) {
+		unsigned int slice_idx = offset_in_page(kaddr) >>
+					 PAGE_SHIFT_COMPAT;
+		struct page *page = vmalloc_to_page(kaddr);
+		int err;
+
+		if (!page)
+			return -EFAULT;
+		err = vm_insert_page_slice(vma, uaddr, page, slice_idx);
+		if (err)
+			return err;
+		uaddr += PAGE_SIZE_COMPAT;
+		kaddr += PAGE_SIZE_COMPAT;
+		size -= PAGE_SIZE_COMPAT;
+	}
+
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+	return 0;
+}
+
 static int array_map_mmap(struct bpf_map *map, struct vm_area_struct *vma)
 {
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	unsigned long size = vma->vm_end - vma->vm_start;
+	unsigned long offset;
+	u64 data_size;
 	pgoff_t pgoff = PAGE_ALIGN(sizeof(*array)) >> PAGE_SHIFT;
 
 	if (!(map->map_flags & BPF_F_MMAPABLE))
 		return -EINVAL;
 
-	if (vma->vm_pgoff * PAGE_SIZE + (vma->vm_end - vma->vm_start) >
-	    __PAGE_ALIGN((u64)array->map.max_entries * array->elem_size))
+	offset = ppps_mm_is_compat(vma->vm_mm) ?
+		 vma_file_offset(vma) : vma->vm_pgoff * PAGE_SIZE;
+	data_size = ppps_mm_is_compat(vma->vm_mm) ?
+		    PAGE_ALIGN((u64)array->map.max_entries * array->elem_size) :
+		    __PAGE_ALIGN((u64)array->map.max_entries * array->elem_size);
+	if (offset > data_size || size > data_size - offset)
 		return -EINVAL;
+
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return array_map_mmap_ppps(array, vma, offset, size);
 
 	return remap_vmalloc_range(vma, array_map_vmalloc_addr(array),
 				   vma->vm_pgoff + pgoff);
