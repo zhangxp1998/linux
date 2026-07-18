@@ -293,6 +293,7 @@ CATEGORY="mmap" run_test ./sysv_shm_ppps
 CATEGORY="mmap" run_test ./io_uring_mmap_ppps
 CATEGORY="mmap" run_test ./thp_mmap_offset_ppps
 CATEGORY="mmap" run_test ./shmem_mmap_offset_ppps
+CATEGORY="mmap" run_test ./secretmem_eof_ppps
 CATEGORY="mmap" run_test ./mincore_ppps
 CATEGORY="mmap" run_test ./test_gup_retry_ppps.sh mmap_action_cleanup_ppps
 CATEGORY="mmap" run_test ./test_selinux_status_mmap_ppps.sh
