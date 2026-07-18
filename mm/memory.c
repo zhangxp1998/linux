@@ -4376,28 +4376,36 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 	return wp_page_copy(vmf);
 }
 
+static unsigned long vma_pgoff_address_clamped(struct vm_area_struct *vma,
+					       pgoff_t pgoff)
+{
+	unsigned long offset = (pgoff - vma->vm_pgoff) << PAGE_SHIFT;
+	unsigned long slice_offset = (unsigned long)vma_slice_off(vma) <<
+		MM_PAGE_SHIFT(vma->vm_mm);
+
+	if (offset <= slice_offset)
+		return vma->vm_start;
+	offset -= slice_offset;
+	if (offset >= vma->vm_end - vma->vm_start)
+		return vma->vm_end;
+	return vma->vm_start + offset;
+}
+
 static inline void unmap_mapping_range_tree(struct rb_root_cached *root,
 					    pgoff_t first_index,
 					    pgoff_t last_index,
 					    struct zap_details *details)
 {
 	struct vm_area_struct *vma;
-	unsigned long start, size;
+	unsigned long start, end;
 	struct mmu_gather tlb;
 
 	vma_interval_tree_foreach(vma, root, first_index, last_index) {
 		const pgoff_t start_idx = max(first_index, vma->vm_pgoff);
 		const pgoff_t end_idx = min(last_index, vma_last_pgoff(vma)) + 1;
 
-		start = vma->vm_start + ((start_idx - vma->vm_pgoff) << PAGE_SHIFT);
-		size = (end_idx - start_idx) << PAGE_SHIFT;
-
-		unsigned long end = start + size;
-
-		if (end > vma->vm_end)
-			end = vma->vm_end;
-		if (start < vma->vm_start)
-			start = vma->vm_start;
+		start = vma_pgoff_address_clamped(vma, start_idx);
+		end = vma_pgoff_address_clamped(vma, end_idx);
 
 		if (start < end) {
 			tlb_gather_mmu(&tlb, vma->vm_mm);
