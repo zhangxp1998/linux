@@ -69,6 +69,7 @@ TEST_GEN_FILES += elf_4k_align_ppps
 TEST_GEN_FILES += elf_4k_align_probe
 TEST_GEN_FILES += elf_core_ppps
 TEST_GEN_FILES += taskstats_ppps
+TEST_GEN_FILES += rusage_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
 TEST_GEN_FILES += compaction_test
