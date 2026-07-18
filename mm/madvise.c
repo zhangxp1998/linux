@@ -1642,9 +1642,15 @@ int madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 	unsigned long end;
 	unsigned long len;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (!MM_PAGE_ALIGNED(mm, start))
+		return -EINVAL;
+	len = MM_PAGE_ALIGN(mm, len_in);
+#else
 	if (start & ~__PAGE_MASK)
 		return -EINVAL;
 	len = (len_in + ~__PAGE_MASK) & __PAGE_MASK;
+#endif
 
 	/* Check to see whether len was rounded up from small -ve to zero */
 	if (len_in && !len)
@@ -1856,9 +1862,9 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 		return -EINVAL;
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	if (!MM_UAPI_PAGE_ALIGNED(mm, start))
+	if (!MM_PAGE_ALIGNED(mm, start))
 		return -EINVAL;
-	len = MM_UAPI_PAGE_ALIGN(mm, len_in);
+	len = MM_PAGE_ALIGN(mm, len_in);
 #else
 	if (!__PAGE_ALIGNED(start))
 		return -EINVAL;
