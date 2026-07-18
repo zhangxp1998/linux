@@ -4,6 +4,7 @@
 LOCAL_HDRS += $(selfdir)/mm/local_config.h $(top_srcdir)/mm/gup_test.h
 LOCAL_HDRS += $(selfdir)/mm/gup_retry_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
+LOCAL_HDRS += $(selfdir)/mm/pagewalk_ppps.h
 
 include local_config.mk
 
@@ -49,6 +50,9 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 ifneq (,$(wildcard $(KDIR)/Module.symvers))
 GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
 VM_MAP_PAGES_PPPS_MODULE := vm_map_pages_ppps_module/vm_map_pages_ppps_module.ko
+ifneq (,$(shell grep -s '^CONFIG_MAPPING_DIRTY_HELPERS=y$$' $(KDIR)/.config))
+PAGEWALK_PPPS_MODULE := pagewalk_ppps_module/pagewalk_ppps_module.ko
+endif
 ifneq (,$(wildcard $(KDIR)/include/linux/page_frag_cache.h))
 TEST_GEN_MODS_DIR := page_frag
 else
@@ -104,6 +108,7 @@ TEST_GEN_FILES += pagemap_ioctl
 TEST_GEN_FILES += pfnmap
 TEST_GEN_FILES += process_madv
 TEST_GEN_FILES += prctl_thp_disable
+TEST_GEN_FILES += pagewalk_ppps
 TEST_GEN_FILES += perf_mmap_offset_ppps
 TEST_GEN_FILES += process_madvise_ppps
 TEST_GEN_FILES += process_vm_access_ppps
@@ -184,6 +189,8 @@ TEST_FILES += hugetlb_reparenting_test.sh
 TEST_FILES += test_page_frag.sh
 TEST_FILES += test_gup_retry_ppps.sh
 TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
+TEST_FILES += test_pagewalk_ppps.sh
+TEST_FILES += $(PAGEWALK_PPPS_MODULE)
 TEST_FILES += test_vm_map_pages_ppps.sh
 TEST_FILES += $(VM_MAP_PAGES_PPPS_MODULE)
 
@@ -219,6 +226,20 @@ clean_vm_map_pages_ppps_module:
 	+$(MAKE) -C vm_map_pages_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_vm_map_pages_ppps_module
+endif
+
+ifneq ($(PAGEWALK_PPPS_MODULE),)
+all: $(PAGEWALK_PPPS_MODULE)
+
+$(PAGEWALK_PPPS_MODULE): pagewalk_ppps_module/pagewalk_ppps_module.c \
+				 pagewalk_ppps_module/Makefile pagewalk_ppps.h
+	+$(MAKE) -C pagewalk_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_pagewalk_ppps_module
+clean_pagewalk_ppps_module:
+	+$(MAKE) -C pagewalk_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_pagewalk_ppps_module
 endif
 
 $(TEST_GEN_PROGS): vm_util.c thp_settings.c
