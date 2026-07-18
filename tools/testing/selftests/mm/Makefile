@@ -67,6 +67,7 @@ PAGE_FRAG_WARNING = "missing Module.symvers, please have the kernel built first"
 endif
 
 TEST_GEN_FILES = cow
+TEST_GEN_FILES += selinux_status_mmap_ppps
 TEST_GEN_FILES += dma_mmap_attrs_ppps
 TEST_GEN_FILES += dma_mmap_pages_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
@@ -196,6 +197,7 @@ TEST_FILES += hugetlb_reparenting_test.sh
 TEST_FILES += test_page_frag.sh
 TEST_FILES += test_gup_retry_ppps.sh
 TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
+TEST_FILES += test_selinux_status_mmap_ppps.sh
 TEST_FILES += test_dma_mmap_attrs_ppps.sh
 TEST_FILES += $(DMA_MMAP_ATTRS_PPPS_MODULE)
 TEST_FILES += test_dma_mmap_pages_ppps.sh
