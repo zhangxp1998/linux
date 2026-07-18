@@ -1056,8 +1056,7 @@ static long madvise_remove(struct vm_area_struct *vma,
 	if (!vma_is_shared_maywrite(vma))
 		return -EACCES;
 
-	offset = (loff_t)(start - vma->vm_start)
-			+ ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
+	offset = vma_addr_file_offset(vma, start);
 
 	/*
 	 * Filesystem's fallocate may need to take i_rwsem.  We need to
