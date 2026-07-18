@@ -48,6 +48,7 @@ CFLAGS += -U_FORTIFY_SOURCE
 KDIR ?= /lib/modules/$(shell uname -r)/build
 ifneq (,$(wildcard $(KDIR)/Module.symvers))
 GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
+VM_MAP_PAGES_PPPS_MODULE := vm_map_pages_ppps_module/vm_map_pages_ppps_module.ko
 ifneq (,$(wildcard $(KDIR)/include/linux/page_frag_cache.h))
 TEST_GEN_MODS_DIR := page_frag
 else
@@ -118,6 +119,7 @@ TEST_GEN_FILES += userfaultfd_eof_ppps
 TEST_GEN_FILES += userfaultfd_retry_ppps
 TEST_GEN_FILES += userfaultfd_shmem_ppps
 TEST_GEN_FILES += userfaultfd_zeropage_ppps
+TEST_GEN_FILES += vm_map_pages_ppps
 TEST_GEN_FILES += split_huge_page_test
 TEST_GEN_FILES += ksm_tests
 TEST_GEN_FILES += ksm_functional_tests
@@ -181,6 +183,8 @@ TEST_FILES += hugetlb_reparenting_test.sh
 TEST_FILES += test_page_frag.sh
 TEST_FILES += test_gup_retry_ppps.sh
 TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
+TEST_FILES += test_vm_map_pages_ppps.sh
+TEST_FILES += $(VM_MAP_PAGES_PPPS_MODULE)
 
 # required by charge_reserved_hugetlb.sh
 TEST_FILES += write_hugetlb_memory.sh
@@ -199,6 +203,21 @@ clean_gup_retry_ppps_module:
 	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_gup_retry_ppps_module
+endif
+
+ifneq ($(VM_MAP_PAGES_PPPS_MODULE),)
+all: $(VM_MAP_PAGES_PPPS_MODULE)
+
+$(VM_MAP_PAGES_PPPS_MODULE): vm_map_pages_ppps_module/vm_map_pages_ppps_module.c \
+				    vm_map_pages_ppps_module/Makefile \
+				    vm_map_pages_ppps.h
+	+$(MAKE) -C vm_map_pages_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_vm_map_pages_ppps_module
+clean_vm_map_pages_ppps_module:
+	+$(MAKE) -C vm_map_pages_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_vm_map_pages_ppps_module
 endif
 
 $(TEST_GEN_PROGS): vm_util.c thp_settings.c
