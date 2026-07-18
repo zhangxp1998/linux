@@ -8,6 +8,7 @@
 LOCAL_HDRS += $(selfdir)/mm/local_config.h $(top_srcdir)/mm/gup_test.h
 LOCAL_HDRS += $(selfdir)/mm/gup_retry_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
+LOCAL_HDRS += $(selfdir)/mm/pagewalk_ppps.h
 
 include local_config.mk
 
@@ -56,6 +57,10 @@ GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
 TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
 VM_MAP_PAGES_PPPS_MODULE := vm_map_pages_ppps_module/vm_map_pages_ppps_module.ko
 TEST_FILES += $(VM_MAP_PAGES_PPPS_MODULE)
+ifneq (,$(shell grep -s '^CONFIG_MAPPING_DIRTY_HELPERS=y$$' $(KDIR)/.config))
+PAGEWALK_PPPS_MODULE := pagewalk_ppps_module/pagewalk_ppps_module.ko
+TEST_FILES += $(PAGEWALK_PPPS_MODULE)
+endif
 else
 PAGE_FRAG_WARNING = "missing Module.symvers, please have the kernel built first"
 endif
@@ -103,6 +108,7 @@ TEST_GEN_FILES += msync_offset_ppps
 TEST_GEN_FILES += mseal_test
 TEST_GEN_FILES += on-fault-limit
 TEST_GEN_FILES += pagemap_ioctl
+TEST_GEN_FILES += pagewalk_ppps
 TEST_GEN_FILES += perf_mmap_offset_ppps
 TEST_GEN_FILES += pfnmap
 TEST_GEN_FILES += remap_pfn_range_ppps
@@ -209,6 +215,7 @@ TEST_FILES += va_high_addr_switch.sh
 TEST_FILES += charge_reserved_hugetlb.sh
 TEST_FILES += hugetlb_reparenting_test.sh
 TEST_FILES += test_gup_retry_ppps.sh
+TEST_FILES += test_pagewalk_ppps.sh
 TEST_FILES += test_vm_map_pages_ppps.sh
 TEST_FILES += test_page_frag.sh
 TEST_FILES += run_vmtests.sh
@@ -245,6 +252,20 @@ clean_vm_map_pages_ppps_module:
 	+$(MAKE) -C vm_map_pages_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_vm_map_pages_ppps_module
+endif
+
+ifneq ($(PAGEWALK_PPPS_MODULE),)
+all: $(PAGEWALK_PPPS_MODULE)
+
+$(PAGEWALK_PPPS_MODULE): pagewalk_ppps_module/pagewalk_ppps_module.c \
+				 pagewalk_ppps_module/Makefile pagewalk_ppps.h
+	+$(MAKE) -C pagewalk_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_pagewalk_ppps_module
+clean_pagewalk_ppps_module:
+	+$(MAKE) -C pagewalk_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_pagewalk_ppps_module
 endif
 
 $(TEST_GEN_PROGS): vm_util.c thp_settings.c
