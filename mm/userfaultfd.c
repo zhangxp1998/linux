@@ -588,7 +588,7 @@ static int __mfill_atomic_pte(struct mfill_state *state,
 	if (!folio)
 		return -ENOMEM;
 
-	page = folio_page(folio, slice_idx);
+	page = &folio->page;
 
 	if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
 		ret = mfill_copy_folio_locked(folio, 0, dst_addr, src_addr,
@@ -723,8 +723,48 @@ static int mfill_atomic_pte_copy(struct mfill_state *state)
 static int mfill_atomic_pte_zeroed_folio(struct mfill_state *state)
 {
 	const struct vm_uffd_ops *ops = vma_uffd_ops(state->vma);
+	struct vm_area_struct *vma = state->vma;
+	pgoff_t pgoff;
+	struct folio *folio;
+	struct page *page;
+	unsigned int slice_idx;
+	unsigned int start;
+	int ret;
 
-	return __mfill_atomic_pte(state, ops);
+	if (!ops || !ppps_mm_is_compat(vma->vm_mm) ||
+	    !(vma->vm_flags & VM_SHARED) || !ops->get_folio_noalloc)
+		return __mfill_atomic_pte(state, ops);
+
+	pgoff = linear_page_index(vma, state->dst_addr);
+	folio = ops->get_folio_noalloc(file_inode(vma->vm_file), pgoff);
+	if (IS_ERR(folio)) {
+		if (PTR_ERR(folio) == -ENOENT)
+			return __mfill_atomic_pte(state, ops);
+		return PTR_ERR(folio);
+	}
+	if (!folio)
+		return __mfill_atomic_pte(state, ops);
+
+	page = folio_file_page(folio, pgoff);
+	if (PageHWPoison(page)) {
+		ret = -EIO;
+		goto out_release;
+	}
+
+	slice_idx = vma_address_to_slice(vma, state->dst_addr);
+	start = slice_idx * MM_PAGE_SIZE(vma->vm_mm);
+	zero_user_segment(page, start, start + MM_PAGE_SIZE(vma->vm_mm));
+	__folio_mark_uptodate(folio);
+
+	ret = mfill_atomic_install_pte(state->pmd, vma, state->dst_addr, page,
+				       slice_idx, state->flags);
+	if (!ret)
+		return 0;
+
+out_release:
+	folio_unlock(folio);
+	folio_put(folio);
+	return ret;
 }
 
 static int mfill_atomic_pte_zeropage(struct mfill_state *state)
