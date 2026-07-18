@@ -115,6 +115,11 @@ static inline uffd_flags_t uffd_flags_set_mode(uffd_flags_t flags, enum mfill_at
 /* Flags controlling behavior. These behavior changes are mode-independent. */
 #define MFILL_ATOMIC_WP MFILL_ATOMIC_FLAG(0)
 
+int mfill_atomic_install_pte_from(pmd_t *dst_pmd,
+		struct vm_area_struct *dst_vma, unsigned long dst_addr,
+		struct page *page, unsigned int slice_idx, uffd_flags_t flags,
+		struct page *src_page);
+
 extern int mfill_atomic_install_pte(pmd_t *dst_pmd,
 				    struct vm_area_struct *dst_vma,
 				    unsigned long dst_addr, struct page *page,
