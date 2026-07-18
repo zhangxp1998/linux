@@ -89,6 +89,7 @@ TEST_GEN_FILES += truncate_ppps
 TEST_GEN_FILES += transhuge-stress
 TEST_GEN_FILES += uffd-stress
 TEST_GEN_FILES += uffd-unit-tests
+TEST_GEN_FILES += userfaultfd_retry_ppps
 TEST_GEN_FILES += userfaultfd_shmem_ppps
 TEST_GEN_FILES += userfaultfd_zeropage_ppps
 TEST_GEN_FILES += split_huge_page_test
