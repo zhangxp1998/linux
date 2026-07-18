@@ -797,6 +797,7 @@ static int dma_buf_mmap_internal(struct file *file, struct vm_area_struct *vma)
 {
 	struct dma_buf *dmabuf;
 	int ret;
+	u64 offset;
 
 	if (!is_dma_buf_file(file))
 		return -EINVAL;
@@ -807,9 +808,10 @@ static int dma_buf_mmap_internal(struct file *file, struct vm_area_struct *vma)
 	if (!dmabuf->ops->mmap)
 		return -EINVAL;
 
+	offset = vma_file_offset(vma);
 	/* check for overflowing the buffer's size */
-	if (vma->vm_pgoff + vma_pages(vma) >
-	    dmabuf->size >> PAGE_SHIFT)
+	if (offset > dmabuf->size ||
+	    vma->vm_end - vma->vm_start > dmabuf->size - offset)
 		return -EINVAL;
 
 	ret = dmabuf->ops->mmap(dmabuf, vma);
