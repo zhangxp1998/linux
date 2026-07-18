@@ -3416,8 +3416,34 @@ int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long
 	const unsigned long vm_start = vma->vm_start;
 	const unsigned long vm_end = vma->vm_end;
 	const unsigned long vm_len = vm_end - vm_start;
+	loff_t requested_offset;
+	phys_addr_t phys_addr;
+	unsigned long map_len;
+	unsigned int slice;
 	unsigned long pfn;
 	int err;
+
+	if (ppps_mm_is_compat(vma->vm_mm)) {
+		requested_offset = vma_file_offset(vma);
+		if (requested_offset < 0 ||
+		    check_add_overflow(len, start & ~PAGE_MASK, &map_len) ||
+		    check_add_overflow(map_len, PAGE_SIZE - 1, &map_len))
+			return -EINVAL;
+		map_len &= PAGE_MASK;
+		if ((u64)requested_offset >= map_len ||
+		    vm_len > map_len - requested_offset)
+			return -EINVAL;
+
+		phys_addr = start & PAGE_MASK;
+		if (check_add_overflow(phys_addr, (u64)requested_offset,
+				       &phys_addr))
+			return -EINVAL;
+		pfn = PHYS_PFN(phys_addr);
+		slice = (phys_addr & ~PAGE_MASK) >> MM_PAGE_SHIFT(vma->vm_mm);
+		pfn = io_remap_pfn_range_pfn(pfn, vm_len);
+		return remap_pfn_range_slice(vma, vm_start, pfn, slice, vm_len,
+					     pgprot_decrypted(vma->vm_page_prot));
+	}
 
 	err = __simple_ioremap_prep(vm_len, vma->vm_pgoff, start, len, &pfn);
 	if (err)
