@@ -68,7 +68,7 @@ static int run_test(void)
 		ksft_print_msg("4K-aligned ELF exited with status %d\n",
 			       WEXITSTATUS(status));
 	ksft_test_result(WIFEXITED(status) && !WEXITSTATUS(status),
-			 "execute a 4K-aligned ELF and access its BSS\n");
+			 "execute a 4K-aligned ELF without mapping past its BSS\n");
 	ksft_finished();
 }
 
