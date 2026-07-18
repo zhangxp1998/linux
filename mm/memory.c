@@ -2983,13 +2983,12 @@ static inline int remap_p4d_range(struct mm_struct *mm, pgd_t *pgd,
 }
 
 static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long addr,
-		unsigned long pfn, unsigned long size, pgprot_t prot)
+		phys_addr_t phys_addr, unsigned long size, pgprot_t prot)
 {
 	pgd_t *pgd;
 	unsigned long next;
 	struct mm_struct *mm = vma->vm_mm;
 	unsigned long end = addr + MM_PAGE_ALIGN(mm, size);
-	phys_addr_t phys_addr = PFN_PHYS(pfn);
 	int err;
 
 	if (WARN_ON_ONCE(!MM_PAGE_ALIGNED(mm, addr)))
@@ -3087,6 +3086,7 @@ void pfnmap_track_ctx_release(struct kref *ref)
 }
 #endif /* __HAVE_PFNMAP_TRACKING */
 
+<<<<<<< HEAD
 /**
  * remap_pfn_range - remap kernel memory to userspace
  * @vma: user vma to map to
@@ -3099,53 +3099,77 @@ void pfnmap_track_ctx_release(struct kref *ref)
  *
  * Return: %0 on success, negative error code otherwise.
  */
-#ifdef __HAVE_PFNMAP_TRACKING
-int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
-		    unsigned long pfn, unsigned long size, pgprot_t prot)
-{
-	struct pfnmap_track_ctx *ctx = NULL;
-	int err;
-
-	size = MM_PAGE_ALIGN(vma->vm_mm, size);
-
-	/*
-	 * If we cover the full VMA, we'll perform actual tracking, and
-	 * remember to untrack when the last reference to our tracking
-	 * context from a VMA goes away. We'll keep tracking the whole pfn
-	 * range even during VMA splits and partial unmapping.
-	 *
-	 * If we only cover parts of the VMA, we'll only setup the cachemode
-	 * in the pgprot for the pfn range.
-	 */
-	if (addr == vma->vm_start && addr + size == vma->vm_end) {
-		if (vma->pfnmap_track_ctx)
-			return -EINVAL;
-		ctx = pfnmap_track_ctx_alloc(pfn, size, &prot);
-		if (IS_ERR(ctx))
-			return PTR_ERR(ctx);
-	} else if (pfnmap_setup_cachemode(pfn, size, &prot)) {
-		return -EINVAL;
-	}
-
-	err = remap_pfn_range_notrack(vma, addr, pfn, size, prot);
-	if (ctx) {
-		if (err)
-			kref_put(&ctx->kref, pfnmap_track_ctx_release);
-		else
-			vma->pfnmap_track_ctx = ctx;
-	}
-	return err;
-}
-
-#else
 int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 		    unsigned long pfn, unsigned long size, pgprot_t prot)
 {
 	return remap_pfn_range_notrack(vma, addr, pfn, size, prot);
 }
-#endif
 EXPORT_SYMBOL(remap_pfn_range);
 
+int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
+			  unsigned long pfn, unsigned int slice,
+			  unsigned long size, pgprot_t prot)
+{
+	if (slice >= PPPS_SLICES_PER_PAGE)
+		return -EINVAL;
+
+	return remap_pfn_range_notrack(vma, addr, pfn, size, prot);
+}
+EXPORT_SYMBOL(remap_pfn_range_slice);
+
+static int __simple_ioremap_prep(unsigned long vm_len, pgoff_t vm_pgoff,
+				 phys_addr_t start_phys, unsigned long size,
+				 unsigned long *pfnp)
+{
+	unsigned long pfn, pages;
+
+	/* Check that the physical memory area passed in looks valid */
+	if (start_phys + size < start_phys)
+		return -EINVAL;
+	/*
+	 * You *really* shouldn't map things that aren't page-aligned,
+	 * but we've historically allowed it because IO memory might
+	 * just have smaller alignment.
+	 */
+	size += start_phys & ~PAGE_MASK;
+	pfn = start_phys >> PAGE_SHIFT;
+	pages = (size + ~PAGE_MASK) >> PAGE_SHIFT;
+	if (pfn + pages < pfn)
+		return -EINVAL;
+
+	/* We start the mapping 'vm_pgoff' pages into the area */
+	if (vm_pgoff > pages)
+		return -EINVAL;
+	pfn += vm_pgoff;
+	pages -= vm_pgoff;
+
+	/* Can we fit all of the mapping? */
+	if ((vm_len >> PAGE_SHIFT) > pages)
+		return -EINVAL;
+
+	*pfnp = pfn;
+	return 0;
+}
+
+int simple_ioremap_prepare(struct vm_area_desc *desc)
+{
+	struct mmap_action *action = &desc->action;
+	const phys_addr_t start = action->simple_ioremap.start_phys_addr;
+	const unsigned long size = action->simple_ioremap.size;
+	unsigned long pfn;
+	int err;
+
+	err = __simple_ioremap_prep(vma_desc_size(desc), desc->pgoff,
+				    start, size, &pfn);
+	if (err)
+		return err;
+
+	/* The I/O remap logic does the heavy lifting. */
+	mmap_action_ioremap_full(desc, pfn);
+	return io_remap_pfn_range_prepare(desc);
+}
+
+>>>>>>> 346550538b9a (mm,dma: make dma_mmap_pages honor PPPS slices)
 /**
  * vm_iomap_memory - remap memory to userspace
  * @vma: user vma to map to
