@@ -385,6 +385,7 @@ CATEGORY="madv_guard" run_test ./guard-regions
 # MADV_POPULATE_READ and MADV_POPULATE_WRITE tests
 CATEGORY="madv_populate" run_test ./madv_populate
 CATEGORY="madv_populate" run_test ./madvise_remove_ppps
+CATEGORY="madv_populate" run_test ./madvise_willneed_ppps "$TMPDIR/madvise-willneed-ppps.bin"
 
 CATEGORY="process_madv" run_test ./process_madvise_ppps
 
