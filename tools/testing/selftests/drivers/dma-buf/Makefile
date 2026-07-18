@@ -2,6 +2,7 @@
 CFLAGS += $(KHDR_INCLUDES)
 
 TEST_GEN_PROGS := udmabuf
+TEST_GEN_PROGS += udmabuf_ppps
 
 top_srcdir ?=../../../../..
 
