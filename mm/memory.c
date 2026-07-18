@@ -2294,6 +2294,46 @@ int vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
 			struct page **pages, unsigned long *num)
 {
 	const unsigned long end_addr = addr + (*num * PAGE_SIZE) - 1;
+	const unsigned long nr_pages = *num;
+	struct mm_struct *mm = vma->vm_mm;
+
+	if (ppps_mm_is_compat(mm)) {
+		unsigned long user_pages, max_pages, logical_pages, i;
+		unsigned int start_slice;
+
+		if (!nr_pages)
+			return 0;
+		if (addr < vma->vm_start || addr >= vma->vm_end)
+			return -EFAULT;
+
+		start_slice = vma_address_to_slice(vma, addr);
+		user_pages = (vma->vm_end - addr) >> MM_PAGE_SHIFT(mm);
+		max_pages = DIV_ROUND_UP(start_slice + user_pages,
+					 PPPS_SLICES_PER_PAGE);
+		if (nr_pages > max_pages)
+			return -EFAULT;
+
+		logical_pages = min(user_pages,
+				    (nr_pages << PPPS_SLICE_SHIFT) -
+				    start_slice);
+		for (i = 0; i < logical_pages; i++) {
+			unsigned long total_slice = start_slice + i;
+			unsigned long page_index =
+				total_slice >> PPPS_SLICE_SHIFT;
+			int error;
+
+			error = insert_page(vma, addr, pages[page_index],
+					    vma->vm_page_prot,
+					    total_slice & PPPS_SLICE_MASK);
+			if (error) {
+				*num = nr_pages - page_index;
+				return error;
+			}
+			addr += MM_PAGE_SIZE(mm);
+		}
+		*num = 0;
+		return 0;
+	}
 
 	if (addr < vma->vm_start || end_addr >= vma->vm_end)
 		return -EFAULT;
@@ -2387,6 +2427,10 @@ static int __vm_map_pages(struct vm_area_struct *vma, struct page **pages,
 {
 	unsigned long count = vma_native_pages(vma);
 	unsigned long uaddr = vma->vm_start;
+
+	if (ppps_mm_is_compat(vma->vm_mm) && vma->vm_file)
+		count = DIV_ROUND_UP(vma_slice_off(vma) + vma_pages(vma),
+				     PPPS_SLICES_PER_PAGE);
 
 	/* Fail if the user requested offset is beyond the end of the object */
 	if (offset >= num)
