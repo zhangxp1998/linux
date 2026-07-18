@@ -1045,7 +1045,7 @@ unsigned long shmem_swap_usage(struct vm_area_struct *vma)
 
 	/* Here comes the more involved part */
 	return shmem_partial_swap_usage(mapping, vma->vm_pgoff,
-					vma->vm_pgoff + vma_pages(vma));
+					vma_last_pgoff(vma) + 1);
 }
 
 /*
