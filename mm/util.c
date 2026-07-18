@@ -1414,7 +1414,7 @@ static int mmap_action_finish(struct vm_area_struct *vma,
 	 * only clear the newly allocated VMA, since this function is only
 	 * invoked if we do NOT merge, so we only clean up the VMA we created.
 	 */
-	len = vma_pages(vma) << PAGE_SHIFT;
+	len = vma->vm_end - vma->vm_start;
 	do_munmap(current->mm, vma->vm_start, len, NULL);
 	if (action->error_hook) {
 		/* We may want to filter the error. */
