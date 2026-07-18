@@ -388,6 +388,7 @@ CATEGORY="madv_populate" run_test ./madvise_remove_ppps
 CATEGORY="madv_populate" run_test ./madvise_willneed_ppps "$TMPDIR/madvise-willneed-ppps.bin"
 
 CATEGORY="process_madv" run_test ./process_madvise_ppps
+CATEGORY="process_madv" run_test ./process_vm_access_ppps
 
 if [ -x ./memfd_secret ]
 then
