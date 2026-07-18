@@ -3051,7 +3051,56 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 		return -ENOMEM;
 	}
 
+	if (ppps_mm_is_compat(dst_vma->vm_mm)) {
+		struct folio *existing = NULL;
+		ret = shmem_get_folio(inode, pgoff, 0, &existing, SGP_NOALLOC);
+		if (!ret && existing) {
+			struct page *page = folio_file_page(existing, pgoff);
+			if (PageHWPoison(page)) {
+				folio_unlock(existing);
+				folio_put(existing);
+				shmem_inode_unacct_blocks(inode, 1);
+				return -EIO;
+			}
+			unsigned int slice_idx = vma_address_to_slice(dst_vma, dst_addr);
+			unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
+			unsigned long offset = slice_idx * pgsize;
+
+			if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
+				page_kaddr = kmap_local_folio(existing, 0);
+				pagefault_disable();
+				ret = copy_from_user(page_kaddr + offset,
+						     (const void __user *)src_addr,
+						     pgsize);
+				pagefault_enable();
+				kunmap_local(page_kaddr);
+				if (unlikely(ret)) {
+					folio_unlock(existing);
+					folio_put(existing);
+					shmem_inode_unacct_blocks(inode, 1);
+					return -EFAULT;
+				}
+				flush_dcache_folio(existing);
+			} else {
+				page_kaddr = kmap_local_folio(existing, 0);
+				memset(page_kaddr + offset, 0, pgsize);
+				kunmap_local(page_kaddr);
+			}
+			__folio_mark_uptodate(existing);
+			ret = mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr,
+						       page, true, slice_idx, flags);
+			folio_unlock(existing);
+			folio_put(existing);
+			shmem_inode_unacct_blocks(inode, 1);
+			return ret;
+		}
+	}
+
 	if (!*foliop) {
+		unsigned int slice_idx = vma_address_to_slice(dst_vma, dst_addr);
+		unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
+		unsigned long offset = slice_idx * pgsize;
+
 		ret = -ENOMEM;
 		folio = shmem_alloc_folio(gfp, 0, info, pgoff);
 		if (!folio)
@@ -3075,9 +3124,9 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 			 * and retry the copy outside the mmap_lock.
 			 */
 			pagefault_disable();
-			ret = copy_from_user(page_kaddr,
+			ret = copy_from_user(page_kaddr + offset,
 					     (const void __user *)src_addr,
-					     PAGE_SIZE);
+					     pgsize);
 			pagefault_enable();
 			kunmap_local(page_kaddr);
 
@@ -3091,7 +3140,9 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 
 			flush_dcache_folio(folio);
 		} else {		/* ZEROPAGE */
-			clear_user_highpage(&folio->page, dst_addr);
+			page_kaddr = kmap_local_folio(folio, 0);
+			memset(page_kaddr + offset, 0, pgsize);
+			kunmap_local(page_kaddr);
 		}
 	} else {
 		folio = *foliop;
