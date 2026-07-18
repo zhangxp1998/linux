@@ -386,6 +386,8 @@ CATEGORY="madv_guard" run_test ./guard-regions
 CATEGORY="madv_populate" run_test ./madv_populate
 CATEGORY="madv_populate" run_test ./madvise_remove_ppps
 
+CATEGORY="process_madv" run_test ./process_madvise_ppps
+
 if [ -x ./memfd_secret ]
 then
 (echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope 2>&1) | tap_prefix
