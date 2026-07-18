@@ -11,7 +11,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
 #define MAPPING_SIZE	(2 * PROCESS_PAGE_SIZE)
 

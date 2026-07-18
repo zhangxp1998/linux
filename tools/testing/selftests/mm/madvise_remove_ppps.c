@@ -9,7 +9,7 @@
 #include <linux/memfd.h>
 #include <sys/mman.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
 #define FILE_PAGES	8
 #define FILE_SIZE	(FILE_PAGES * PROCESS_PAGE_SIZE)
