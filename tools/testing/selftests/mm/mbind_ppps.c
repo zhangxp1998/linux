@@ -8,21 +8,17 @@
 
 #include <errno.h>
 #include <linux/mempolicy.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 
 #include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
+#define MAPPING_SIZE	(2 * NATIVE_PAGE_SIZE)
 
-#define USER_PAGE_SIZE	4096UL
-#define NATIVE_PAGE_SIZE 16384UL
+static uintptr_t align_up(uintptr_t value, size_t alignment)
+{
+	return (value + alignment - 1) & ~(uintptr_t)(alignment - 1);
+}
 
 static bool mbind_available(void)
 {
@@ -54,12 +50,13 @@ static int run_test(void)
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
-	mapping = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE,
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (mapping == MAP_FAILED)
 		ksft_exit_fail_msg("mmap failed: %s\n", strerror(errno));
-	target = mapping + USER_PAGE_SIZE;
-	aligned = !((unsigned long)target & (USER_PAGE_SIZE - 1)) &&
+	target = (unsigned char *)align_up((uintptr_t)mapping, NATIVE_PAGE_SIZE) +
+		 PROCESS_PAGE_SIZE;
+	aligned = !((unsigned long)target & (PROCESS_PAGE_SIZE - 1)) &&
 		  ((unsigned long)target & (NATIVE_PAGE_SIZE - 1));
 	ksft_test_result(aligned,
 			 "target is 4K aligned but not 16K aligned\n");
@@ -83,7 +80,7 @@ static int run_test(void)
 	ksft_test_result(!result, "set home node on one 4K subpage\n");
 	ksft_print_msg("home-node result=%ld errno=%d\n", result, errno);
 
-	munmap(mapping, NATIVE_PAGE_SIZE);
+	munmap(mapping, MAPPING_SIZE);
 	ksft_finished();
 }
 
