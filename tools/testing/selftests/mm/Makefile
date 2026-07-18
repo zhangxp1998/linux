@@ -65,6 +65,8 @@ DMA_MMAP_PAGES_PPPS_MODULE := dma_mmap_pages_ppps_module/dma_mmap_pages_ppps_mod
 TEST_FILES += $(DMA_MMAP_PAGES_PPPS_MODULE)
 VM_MAP_PAGES_PPPS_MODULE := vm_map_pages_ppps_module/vm_map_pages_ppps_module.ko
 TEST_FILES += $(VM_MAP_PAGES_PPPS_MODULE)
+IOMMU_DMA_MMAP_PPPS_MODULE := iommu_dma_mmap_ppps_module/iommu_dma_mmap_ppps_module.ko
+TEST_FILES += $(IOMMU_DMA_MMAP_PPPS_MODULE)
 ifneq (,$(shell grep -s '^CONFIG_MAPPING_DIRTY_HELPERS=y$$' $(KDIR)/.config))
 PAGEWALK_PPPS_MODULE := pagewalk_ppps_module/pagewalk_ppps_module.ko
 TEST_FILES += $(PAGEWALK_PPPS_MODULE)
@@ -81,6 +83,7 @@ TEST_GEN_FILES += selinux_status_mmap_ppps
 TEST_GEN_FILES += vm_iomap_memory_ppps
 TEST_GEN_FILES += dma_mmap_attrs_ppps
 TEST_GEN_FILES += dma_mmap_pages_ppps
+TEST_GEN_FILES += iommu_dma_mmap_ppps
 TEST_GEN_FILES += elf_4k_align_ppps
 TEST_GEN_FILES += elf_4k_align_probe
 TEST_GEN_FILES += elf_core_ppps
@@ -225,6 +228,7 @@ TEST_FILES += test_selinux_status_mmap_ppps.sh
 TEST_FILES += test_vm_iomap_memory_ppps.sh
 TEST_FILES += test_dma_mmap_attrs_ppps.sh
 TEST_FILES += test_dma_mmap_pages_ppps.sh
+TEST_FILES += test_iommu_dma_mmap_ppps.sh
 TEST_FILES += test_pagewalk_ppps.sh
 TEST_FILES += test_vm_map_pages_ppps.sh
 TEST_FILES += test_page_frag.sh
@@ -320,6 +324,20 @@ clean_vm_map_pages_ppps_module:
 	+$(MAKE) -C vm_map_pages_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_vm_map_pages_ppps_module
+endif
+
+ifneq ($(IOMMU_DMA_MMAP_PPPS_MODULE),)
+all: $(IOMMU_DMA_MMAP_PPPS_MODULE)
+
+$(IOMMU_DMA_MMAP_PPPS_MODULE): iommu_dma_mmap_ppps_module/iommu_dma_mmap_ppps_module.c \
+				      iommu_dma_mmap_ppps_module/Makefile
+	+$(MAKE) -C iommu_dma_mmap_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_iommu_dma_mmap_ppps_module
+clean_iommu_dma_mmap_ppps_module:
+	+$(MAKE) -C iommu_dma_mmap_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_iommu_dma_mmap_ppps_module
 endif
 
 ifneq ($(PAGEWALK_PPPS_MODULE),)
