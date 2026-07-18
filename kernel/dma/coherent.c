@@ -236,15 +236,10 @@ static int __dma_mmap_from_coherent(struct dma_coherent_mem *mem,
 {
 	if (mem && vaddr >= mem->virt_base && vaddr + size <=
 		   (mem->virt_base + ((dma_addr_t)mem->size << PAGE_SHIFT))) {
-		unsigned long off = vma->vm_pgoff;
 		int start = (vaddr - mem->virt_base) >> PAGE_SHIFT;
-		unsigned long user_count = vma_pages(vma);
-		int count = PAGE_ALIGN(size) >> PAGE_SHIFT;
+		unsigned long pfn = mem->pfn_base + start;
 
-		*ret = -ENXIO;
-		if (off < count && user_count <= count - off) {
-			*ret = dma_mmap_pfn(vma, size, mem->pfn_base + start);
-		}
+		*ret = dma_mmap_pfn(vma, size, pfn);
 		return 1;
 	}
 	return 0;
