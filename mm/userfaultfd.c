@@ -507,6 +507,10 @@ static bool mfill_retry_state_changed(struct mfill_retry_state *state,
 	if (state->ops != vma_uffd_ops(vma))
 		return true;
 
+	if (state->vm_start != vma->vm_start ||
+	    state->vm_slice_off != vma_slice_off(vma))
+		return true;
+
 	/* VMA was anonymous before; changed only if it no longer is */
 	if (!state->file)
 		return !vma_is_anonymous(vma);
