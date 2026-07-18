@@ -2915,6 +2915,8 @@ static vm_fault_t shmem_fault(struct vm_fault *vmf)
 {
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	gfp_t gfp = mapping_gfp_mask(inode->i_mapping);
+	loff_t offset = vma_file_offset(vmf->vma) +
+		(vmf->address - vmf->vma->vm_start);
 	struct folio *folio = NULL;
 	vm_fault_t ret = 0;
 	int err;
@@ -2927,6 +2929,9 @@ static vm_fault_t shmem_fault(struct vm_fault *vmf)
 	max_idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
 	if (unlikely(vmf->pgoff >= max_idx))
 		return VM_FAULT_NEED_ANONPAGE;
+
+	if (offset >= i_size_read(inode))
+		return vmf_error(-EINVAL);
 
 	/*
 	 * Trinity finds that probing a hole which tmpfs is punching can
