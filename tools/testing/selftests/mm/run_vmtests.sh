@@ -445,6 +445,7 @@ CATEGORY="madv_populate" run_test ./madvise_remove_ppps
 CATEGORY="process_madv" run_test ./process_madv
 
 CATEGORY="vma_merge" run_test ./merge
+CATEGORY="process_madv" run_test ./process_madvise_ppps
 
 if [ -x ./memfd_secret ]
 then
