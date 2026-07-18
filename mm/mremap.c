@@ -1020,9 +1020,9 @@ static bool vrm_calc_charge(struct vma_remap_struct *vrm)
 	 * the length of the new one. Otherwise it's just the delta in size.
 	 */
 	if (vrm->flags & MREMAP_DONTUNMAP)
-		charged = vrm->new_len >> PAGE_SHIFT;
+		charged = vrm->new_len >> MM_PAGE_SHIFT(current->mm);
 	else
-		charged = vrm->delta >> PAGE_SHIFT;
+		charged = vrm->delta >> MM_PAGE_SHIFT(current->mm);
 
 
 	/* This accounts 'charged' pages of memory. */
@@ -1233,7 +1233,7 @@ static void unmap_source_vma(struct vma_remap_struct *vrm)
 	vrm->vmi_needs_invalidate = true;
 	if (err) {
 		/* OOM: unable to split vma, just get accounts right */
-		vm_acct_memory(len >> PAGE_SHIFT);
+		vm_acct_memory(len >> MM_PAGE_SHIFT(mm));
 		return;
 	}
 
