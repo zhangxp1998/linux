@@ -427,6 +427,8 @@ fi
 
 CATEGORY="pagemap" run_test ./pagemap_ioctl
 
+CATEGORY="pfnmap" run_test ./remap_pfn_range_ppps
+
 # COW tests
 CATEGORY="cow" run_test ./cow
 

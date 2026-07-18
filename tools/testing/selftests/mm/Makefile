@@ -73,6 +73,7 @@ TEST_GEN_FILES += on-fault-limit
 TEST_GEN_FILES += pagemap_ioctl
 TEST_GEN_FILES += process_madvise_ppps
 TEST_GEN_FILES += process_vm_access_ppps
+TEST_GEN_FILES += remap_pfn_range_ppps
 TEST_GEN_FILES += remap_file_pages_ppps
 TEST_GEN_FILES += thuge-gen
 TEST_GEN_FILES += transhuge-stress
