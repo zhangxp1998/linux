@@ -149,15 +149,12 @@ static bool mfill_file_over_size(struct vm_area_struct *dst_vma,
 				 unsigned long dst_addr)
 {
 	struct inode *inode;
-	pgoff_t offset, max_off;
 
 	if (!dst_vma->vm_file)
 		return false;
 
 	inode = dst_vma->vm_file->f_inode;
-	offset = linear_page_index(dst_vma, dst_addr);
-	max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
-	return offset >= max_off;
+	return vma_addr_beyond_eof(dst_vma, dst_addr, i_size_read(inode));
 }
 
 /*
