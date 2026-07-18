@@ -3818,16 +3818,12 @@ static inline unsigned long vma_pages(const struct vm_area_struct *vma)
  */
 static inline unsigned long vma_last_pgoff(const struct vm_area_struct *vma)
 {
-	/*
-	 * For file-backed VMAs, vm_pgoff is always expressed in native PAGE_SIZE
-	 * units (matching the page cache indexing). For anonymous VMAs, it is
-	 * scaled to the process's page size.
-	 */
-	if (!vma_is_anonymous(vma)) {
-		size += (unsigned long)vma_slice_off(vma) <<
-			MM_PAGE_SHIFT(vma->vm_mm);
-		return vma->vm_pgoff + DIV_ROUND_UP(size, PAGE_SIZE) - 1;
-	}
+	unsigned long last = vma_pages(vma) - 1;
+
+	if (ppps_vma_has_slices(vma))
+		last = (last + vma_slice_off(vma)) >> PPPS_SLICE_SHIFT;
+	return vma->vm_pgoff + last;
+}
 
 /* Number of native pages @vma touches (a partial first or last page counts). */
 static inline unsigned long vma_native_pages(const struct vm_area_struct *vma)
