@@ -3102,13 +3102,12 @@ static int get_remap_pgoff(bool is_cow, unsigned long addr,
 }
 
 static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long addr,
-		unsigned long pfn, unsigned long size, pgprot_t prot)
+		phys_addr_t phys_addr, unsigned long size, pgprot_t prot)
 {
 	pgd_t *pgd;
 	unsigned long next;
 	struct mm_struct *mm = vma->vm_mm;
 	unsigned long end = addr + MM_PAGE_ALIGN(mm, size);
-	phys_addr_t phys_addr = PFN_PHYS(pfn);
 	int err;
 
 	if (WARN_ON_ONCE(!MM_PAGE_ALIGNED(mm, addr)))
@@ -3136,9 +3135,9 @@ static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long ad
  * must have pre-validated the caching bits of the pgprot_t.
  */
 static int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
-		unsigned long pfn, unsigned long size, pgprot_t prot)
+		phys_addr_t phys_addr, unsigned long size, pgprot_t prot)
 {
-	int error = remap_pfn_range_internal(vma, addr, pfn, size, prot);
+	int error = remap_pfn_range_internal(vma, addr, phys_addr, size, prot);
 
 	if (!error)
 		return 0;
@@ -3182,12 +3181,15 @@ void pfnmap_track_ctx_release(struct kref *ref)
 }
 
 static int remap_pfn_range_track(struct vm_area_struct *vma, unsigned long addr,
-		unsigned long pfn, unsigned long size, pgprot_t prot)
+		phys_addr_t phys_addr, unsigned long size, pgprot_t prot)
 {
 	struct pfnmap_track_ctx *ctx = NULL;
+	unsigned long pfn = PHYS_PFN(phys_addr);
+	unsigned long track_size;
 	int err;
 
 	size = MM_PAGE_ALIGN(vma->vm_mm, size);
+	track_size = PAGE_ALIGN(offset_in_page(phys_addr) + size);
 
 	/*
 	 * If we cover the full VMA, we'll perform actual tracking, and
@@ -3201,14 +3203,14 @@ static int remap_pfn_range_track(struct vm_area_struct *vma, unsigned long addr,
 	if (addr == vma->vm_start && addr + size == vma->vm_end) {
 		if (vma->pfnmap_track_ctx)
 			return -EINVAL;
-		ctx = pfnmap_track_ctx_alloc(pfn, size, &prot);
+		ctx = pfnmap_track_ctx_alloc(pfn, track_size, &prot);
 		if (IS_ERR(ctx))
 			return PTR_ERR(ctx);
-	} else if (pfnmap_setup_cachemode(pfn, size, &prot)) {
+	} else if (pfnmap_setup_cachemode(pfn, track_size, &prot)) {
 		return -EINVAL;
 	}
 
-	err = remap_pfn_range_notrack(vma, addr, pfn, size, prot);
+	err = remap_pfn_range_notrack(vma, addr, phys_addr, size, prot);
 	if (ctx) {
 		if (err)
 			kref_put(&ctx->kref, pfnmap_track_ctx_release);
@@ -3219,15 +3221,15 @@ static int remap_pfn_range_track(struct vm_area_struct *vma, unsigned long addr,
 }
 
 static int do_remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
-		unsigned long pfn, unsigned long size, pgprot_t prot)
+		phys_addr_t phys_addr, unsigned long size, pgprot_t prot)
 {
-	return remap_pfn_range_track(vma, addr, pfn, size, prot);
+	return remap_pfn_range_track(vma, addr, phys_addr, size, prot);
 }
 #else
 static int do_remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
-		unsigned long pfn, unsigned long size, pgprot_t prot)
+		phys_addr_t phys_addr, unsigned long size, pgprot_t prot)
 {
-	return remap_pfn_range_notrack(vma, addr, pfn, size, prot);
+	return remap_pfn_range_notrack(vma, addr, phys_addr, size, prot);
 }
 #endif
 
@@ -3260,6 +3262,9 @@ static int remap_pfn_range_prepare_vma(struct vm_area_struct *vma,
 	const bool is_cow = is_cow_mapping(vma->vm_flags);
 	int err;
 
+	if (!range_in_vma(vma, addr, end))
+		return -EFAULT;
+
 	err = get_remap_pgoff(is_cow, addr, end, vma->vm_start, vma->vm_end,
 			      pfn, &vma->vm_pgoff);
 	if (err)
@@ -3290,9 +3295,43 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 	if (err)
 		return err;
 
-	return do_remap_pfn_range(vma, addr, pfn, size, prot);
+	return do_remap_pfn_range(vma, addr, PFN_PHYS(pfn), size, prot);
 }
 EXPORT_SYMBOL(remap_pfn_range);
+
+/**
+ * remap_pfn_range_slice - remap a native PFN starting at a PPPS slice
+ * @vma: user vma to map to
+ * @addr: target process-page-aligned user address
+ * @pfn: native page frame number of the physical memory
+ * @slice: process-page offset within @pfn
+ * @size: size of mapping area
+ * @prot: page protection flags for this mapping
+ *
+ * This is the PPPS equivalent of remap_pfn_range() for a physical range that
+ * starts between native page boundaries.
+ *
+ * Return: %0 on success, negative error code otherwise.
+ */
+int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
+			  unsigned long pfn, unsigned int slice,
+			  unsigned long size, pgprot_t prot)
+{
+	phys_addr_t phys_addr;
+	int err;
+
+	if (!ppps_mm_is_compat(vma->vm_mm) || slice >= PPPS_SLICES_PER_PAGE)
+		return -EINVAL;
+
+	err = remap_pfn_range_prepare_vma(vma, addr, pfn, size);
+	if (err)
+		return err;
+
+	phys_addr = PFN_PHYS(pfn) +
+		((phys_addr_t)slice << MM_PAGE_SHIFT(vma->vm_mm));
+	return do_remap_pfn_range(vma, addr, phys_addr, size, prot);
+}
+EXPORT_SYMBOL(remap_pfn_range_slice);
 
 int remap_pfn_range_complete(struct vm_area_struct *vma,
 			     struct mmap_action *action)
@@ -3302,7 +3341,7 @@ int remap_pfn_range_complete(struct vm_area_struct *vma,
 	const unsigned long size = action->remap.size;
 	const pgprot_t prot = action->remap.pgprot;
 
-	return do_remap_pfn_range(vma, start, pfn, size, prot);
+	return do_remap_pfn_range(vma, start, PFN_PHYS(pfn), size, prot);
 }
 
 static int __simple_ioremap_prep(unsigned long vm_len, pgoff_t vm_pgoff,
