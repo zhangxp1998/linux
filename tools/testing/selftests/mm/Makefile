@@ -73,6 +73,10 @@ TEST_GEN_FILES += selinux_status_mmap_ppps
 TEST_GEN_FILES += vm_iomap_memory_ppps
 TEST_GEN_FILES += dma_mmap_attrs_ppps
 TEST_GEN_FILES += dma_mmap_pages_ppps
+ifeq ($(ARCH),arm64)
+TEST_GEN_FILES += elf_4k_align_ppps
+TEST_GEN_FILES += elf_4k_align_probe
+endif
 TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
 TEST_GEN_FILES += compaction_test
@@ -377,6 +381,9 @@ $(OUTPUT)/ksm_tests: LDLIBS += -lnuma
 $(OUTPUT)/migration: LDLIBS += -lnuma
 
 $(OUTPUT)/rmap: LDLIBS += -lnuma
+$(OUTPUT)/elf_4k_align_probe: elf_4k_align_probe.S
+	$(CC) -nostdlib -static -Wl,-no-pie -Wl,--build-id=none \
+		-Wl,-z,max-page-size=4096 $< -o $@
 
 local_config.mk local_config.h: check_config.sh
 	/bin/sh ./check_config.sh $(CC)
