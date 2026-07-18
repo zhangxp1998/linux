@@ -2714,9 +2714,10 @@ vm_fault_t vmf_insert_mixed_mkwrite(struct vm_area_struct *vma,
  */
 static int remap_pte_range(struct mm_struct *mm, pmd_t *pmd,
 			unsigned long addr, unsigned long end,
-			unsigned long pfn, pgprot_t prot)
+			phys_addr_t phys_addr, pgprot_t prot)
 {
 	pte_t *pte, *mapped_pte;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
 	spinlock_t *ptl;
 	int err = 0;
 
@@ -2725,14 +2726,19 @@ static int remap_pte_range(struct mm_struct *mm, pmd_t *pmd,
 		return -ENOMEM;
 	arch_enter_lazy_mmu_mode();
 	do {
+		unsigned long pfn = PHYS_PFN(phys_addr);
+		pte_t entry;
+
 		BUG_ON(!pte_none(ptep_get(pte)));
 		if (!pfn_modify_allowed(pfn, prot)) {
 			err = -EACCES;
 			break;
 		}
-		set_pte_at(mm, addr, pte, pte_mkspecial(pfn_pte(pfn, prot)));
-		pfn++;
-	} while (pte++, addr += PAGE_SIZE, addr != end);
+		entry = pfn_pte(pfn, prot);
+		entry = pte_mkslice(entry, offset_in_page(phys_addr) >> PAGE_SHIFT_COMPAT);
+		set_pte_at(mm, addr, pte, pte_mkspecial(entry));
+		phys_addr += page_size;
+	} while (pte++, addr += page_size, addr != end);
 	arch_leave_lazy_mmu_mode();
 	pte_unmap_unlock(mapped_pte, ptl);
 	return err;
@@ -2740,13 +2746,12 @@ static int remap_pte_range(struct mm_struct *mm, pmd_t *pmd,
 
 static inline int remap_pmd_range(struct mm_struct *mm, pud_t *pud,
 			unsigned long addr, unsigned long end,
-			unsigned long pfn, pgprot_t prot)
+			phys_addr_t phys_addr, pgprot_t prot)
 {
 	pmd_t *pmd;
 	unsigned long next;
 	int err;
 
-	pfn -= addr >> PAGE_SHIFT;
 	pmd = pmd_alloc(mm, pud, addr);
 	if (!pmd)
 		return -ENOMEM;
@@ -2754,53 +2759,54 @@ static inline int remap_pmd_range(struct mm_struct *mm, pud_t *pud,
 	do {
 		next = pmd_addr_end_mm(mm, addr, end);
 		err = remap_pte_range(mm, pmd, addr, next,
-				pfn + (addr >> PAGE_SHIFT), prot);
+				phys_addr, prot);
 		if (err)
 			return err;
+		phys_addr += next - addr;
 	} while (pmd++, addr = next, addr != end);
 	return 0;
 }
 
 static inline int remap_pud_range(struct mm_struct *mm, p4d_t *p4d,
 			unsigned long addr, unsigned long end,
-			unsigned long pfn, pgprot_t prot)
+			phys_addr_t phys_addr, pgprot_t prot)
 {
 	pud_t *pud;
 	unsigned long next;
 	int err;
 
-	pfn -= addr >> PAGE_SHIFT;
 	pud = pud_alloc(mm, p4d, addr);
 	if (!pud)
 		return -ENOMEM;
 	do {
 		next = pud_addr_end_mm(mm, addr, end);
 		err = remap_pmd_range(mm, pud, addr, next,
-				pfn + (addr >> PAGE_SHIFT), prot);
+				phys_addr, prot);
 		if (err)
 			return err;
+		phys_addr += next - addr;
 	} while (pud++, addr = next, addr != end);
 	return 0;
 }
 
 static inline int remap_p4d_range(struct mm_struct *mm, pgd_t *pgd,
 			unsigned long addr, unsigned long end,
-			unsigned long pfn, pgprot_t prot)
+			phys_addr_t phys_addr, pgprot_t prot)
 {
 	p4d_t *p4d;
 	unsigned long next;
 	int err;
 
-	pfn -= addr >> PAGE_SHIFT;
 	p4d = p4d_alloc(mm, pgd, addr);
 	if (!p4d)
 		return -ENOMEM;
 	do {
 		next = p4d_addr_end_mm(mm, addr, end);
 		err = remap_pud_range(mm, p4d, addr, next,
-				pfn + (addr >> PAGE_SHIFT), prot);
+				phys_addr, prot);
 		if (err)
 			return err;
+		phys_addr += next - addr;
 	} while (p4d++, addr = next, addr != end);
 	return 0;
 }
@@ -2810,11 +2816,12 @@ static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long ad
 {
 	pgd_t *pgd;
 	unsigned long next;
-	unsigned long end = addr + PAGE_ALIGN(size);
 	struct mm_struct *mm = vma->vm_mm;
+	unsigned long end = addr + MM_PAGE_ALIGN(mm, size);
+	phys_addr_t phys_addr = PFN_PHYS(pfn);
 	int err;
 
-	if (WARN_ON_ONCE(!PAGE_ALIGNED(addr)))
+	if (WARN_ON_ONCE(!MM_PAGE_ALIGNED(mm, addr)))
 		return -EINVAL;
 
 	/*
@@ -2844,15 +2851,15 @@ static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long ad
 	vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
 
 	BUG_ON(addr >= end);
-	pfn -= addr >> PAGE_SHIFT;
 	pgd = pgd_offset(mm, addr);
 	flush_cache_range(vma, addr, end);
 	do {
 		next = pgd_addr_end_mm(mm, addr, end);
 		err = remap_p4d_range(mm, pgd, addr, next,
-				pfn + (addr >> PAGE_SHIFT), prot);
+				phys_addr, prot);
 		if (err)
 			return err;
+		phys_addr += next - addr;
 	} while (pgd++, addr = next, addr != end);
 
 	return 0;
@@ -2894,15 +2901,15 @@ int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
 int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 		    unsigned long pfn, unsigned long size, pgprot_t prot)
 {
+	unsigned long track_size = PAGE_ALIGN(size);
 	int err;
 
-	err = track_pfn_remap(vma, &prot, pfn, addr, PAGE_ALIGN(size));
+	err = track_pfn_remap(vma, &prot, pfn, addr, track_size);
 	if (err)
 		return -EINVAL;
-
 	err = remap_pfn_range_notrack(vma, addr, pfn, size, prot);
 	if (err)
-		untrack_pfn(vma, pfn, PAGE_ALIGN(size), true);
+		untrack_pfn(vma, pfn, track_size, true);
 	return err;
 }
 EXPORT_SYMBOL(remap_pfn_range);
