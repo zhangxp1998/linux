@@ -3038,6 +3038,41 @@ __bpf_kfunc int bpf_copy_from_user_str(void *dst, u32 dst__sz, const void __user
 	return ret + 1;
 }
 
+/**
+ * bpf_copy_from_user_task_str() - Copy a string from a task's address space
+ * @dst: Destination address in kernel space.
+ * @dst__sz: Maximum number of bytes to copy, including the trailing NUL.
+ * @unsafe_ptr__ign: Source address in the task's address space.
+ * @tsk: Task whose address space will be used.
+ * @flags: The only supported flag is BPF_F_PAD_ZEROS.
+ *
+ * Return: Number of copied bytes including the NUL, or a negative error.
+ */
+__bpf_kfunc int bpf_copy_from_user_task_str(void *dst, u32 dst__sz,
+					    const void __user *unsafe_ptr__ign,
+					    struct task_struct *tsk, u64 flags)
+{
+	int ret;
+
+	if (unlikely(flags & ~BPF_F_PAD_ZEROS))
+		return -EINVAL;
+	if (unlikely(!dst__sz))
+		return 0;
+
+	ret = copy_remote_vm_str(tsk, (unsigned long)unsafe_ptr__ign, dst,
+				 dst__sz, 0);
+	if (ret < 0) {
+		if (flags & BPF_F_PAD_ZEROS)
+			memset(dst, 0, dst__sz);
+		return ret;
+	}
+
+	if (flags & BPF_F_PAD_ZEROS)
+		memset(dst + ret, 0, dst__sz - ret);
+
+	return ret + 1;
+}
+
 __bpf_kfunc_end_defs();
 
 BTF_KFUNCS_START(generic_btf_ids)
@@ -3124,6 +3159,7 @@ BTF_ID_FLAGS(func, bpf_iter_bits_new, KF_ITER_NEW)
 BTF_ID_FLAGS(func, bpf_iter_bits_next, KF_ITER_NEXT | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_iter_bits_destroy, KF_ITER_DESTROY)
 BTF_ID_FLAGS(func, bpf_copy_from_user_str, KF_SLEEPABLE)
+BTF_ID_FLAGS(func, bpf_copy_from_user_task_str, KF_SLEEPABLE)
 BTF_KFUNCS_END(common_btf_ids)
 
 static const struct btf_kfunc_id_set common_kfunc_set = {
