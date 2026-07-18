@@ -299,6 +299,7 @@ CATEGORY="mmap" run_test ./test_vm_iomap_memory_ppps.sh
 CATEGORY="mmap" run_test ./test_dma_mmap_attrs_ppps.sh
 CATEGORY="mmap" run_test ./test_dma_mmap_pages_ppps.sh
 CATEGORY="mmap" run_test ./test_iommu_dma_mmap_ppps.sh
+CATEGORY="mmap" run_test ./test_v9fs_mmap_close_ppps.sh
 CATEGORY="mmap" run_test ./test_vm_map_pages_ppps.sh
 CATEGORY="mmap" run_test ./mmap_hint_ppps
 CATEGORY="mmap" run_test ./perf_mmap_offset_ppps
