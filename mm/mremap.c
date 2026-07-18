@@ -902,6 +902,18 @@ static unsigned long mremap_get_unmapped_area(struct file *file,
 	return get_unmapped_area(file, addr, len, pgoff, map_flags);
 }
 
+static pgoff_t mremap_pgoff(struct vm_area_struct *vma, unsigned long addr)
+{
+	if (vma->vm_file) {
+		loff_t offset = vma_file_offset(vma) + addr - vma->vm_start;
+
+		return offset >> MM_PAGE_SHIFT(vma->vm_mm);
+	}
+
+	return vma->vm_pgoff +
+	       ((addr - vma->vm_start) >> MM_PAGE_SHIFT(vma->vm_mm));
+}
+
 static unsigned long mremap_to(unsigned long addr, unsigned long old_len,
 		unsigned long new_addr, unsigned long new_len, bool *locked,
 		unsigned long flags, struct vm_userfaultfd_ctx *uf,
@@ -979,7 +991,7 @@ static unsigned long mremap_to(unsigned long addr, unsigned long old_len,
 		map_flags |= MAP_SHARED;
 
 	ret = mremap_get_unmapped_area(vma->vm_file, new_addr, new_len,
-					vma_pgoff_offset(vma, addr), map_flags,
+					mremap_pgoff(vma, addr), map_flags,
 					addr, flags);
 	if (IS_ERR_VALUE(ret))
 		goto out;
@@ -1200,7 +1212,7 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			map_flags |= MAP_SHARED;
 
 		new_addr = mremap_get_unmapped_area(vma->vm_file, 0, new_len,
-					vma_pgoff_offset(vma, addr), map_flags,
+					mremap_pgoff(vma, addr), map_flags,
 					addr, flags);
 		if (IS_ERR_VALUE(new_addr)) {
 			ret = new_addr;
