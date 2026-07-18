@@ -77,6 +77,7 @@ ifeq ($(ARCH),arm64)
 TEST_GEN_FILES += elf_4k_align_ppps
 TEST_GEN_FILES += elf_4k_align_probe
 endif
+TEST_GEN_FILES += elf_core_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
 TEST_GEN_FILES += compaction_test
