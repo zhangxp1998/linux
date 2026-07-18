@@ -1791,16 +1791,17 @@ static void madvise_finish_tlb(struct madvise_behavior *madv_behavior)
 		tlb_finish_mmu(madv_behavior->tlb);
 }
 
-static bool is_valid_madvise(unsigned long start, size_t len_in, int behavior)
+static bool is_valid_madvise(struct mm_struct *mm, unsigned long start,
+			     size_t len_in, int behavior)
 {
 	size_t len;
 
 	if (!madvise_behavior_valid(behavior))
 		return false;
 
-	if (!MM_PAGE_ALIGNED(start))
+	if (!MM_PAGE_ALIGNED(mm, start))
 		return false;
-	len = MM_PAGE_ALIGN(len_in);
+	len = MM_PAGE_ALIGN(mm, len_in);
 
 	/* Check to see whether len was rounded up from small -ve to zero */
 	if (len_in && !len)
@@ -1814,6 +1815,7 @@ static bool is_valid_madvise(unsigned long start, size_t len_in, int behavior)
 
 /*
  * madvise_should_skip() - Return if the request is invalid or nothing.
+ * @mm:		Address space targeted by the request.
  * @start:	Start address of madvise-requested address range.
  * @len_in:	Length of madvise-requested address range.
  * @behavior:	Requested madvise behavor.
@@ -1823,14 +1825,14 @@ static bool is_valid_madvise(unsigned long start, size_t len_in, int behavior)
  * operation.  This function returns true in the cases, otherwise false.  In
  * the former case we store an error on @err.
  */
-static bool madvise_should_skip(unsigned long start, size_t len_in,
-		int behavior, int *err)
+static bool madvise_should_skip(struct mm_struct *mm, unsigned long start,
+				size_t len_in, int behavior, int *err)
 {
-	if (!is_valid_madvise(start, len_in, behavior)) {
+	if (!is_valid_madvise(mm, start, len_in, behavior)) {
 		*err = -EINVAL;
 		return true;
 	}
-	if (start + MM_PAGE_ALIGN(len_in) == start) {
+	if (start + MM_PAGE_ALIGN(mm, len_in) == start) {
 		*err = 0;
 		return true;
 	}
@@ -1970,7 +1972,7 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 		.tlb = &tlb,
 	};
 
-	if (madvise_should_skip(start, len_in, behavior, &error))
+	if (madvise_should_skip(mm, start, len_in, behavior, &error))
 		return error;
 	error = madvise_lock(&madv_behavior);
 	if (error)
@@ -2013,7 +2015,7 @@ static ssize_t vector_madvise(struct mm_struct *mm, struct iov_iter *iter,
 		size_t len_in = iter_iov_len(iter);
 		int error;
 
-		if (madvise_should_skip(start, len_in, behavior, &error))
+		if (madvise_should_skip(mm, start, len_in, behavior, &error))
 			ret = error;
 		else
 			ret = madvise_do_behavior(start, len_in, &madv_behavior);

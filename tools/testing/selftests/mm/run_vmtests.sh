@@ -442,6 +442,7 @@ CATEGORY="madv_populate" run_test ./madvise_remove_ppps
 
 # PROCESS_MADV test
 CATEGORY="process_madv" run_test ./process_madv
+CATEGORY="process_madv" run_test ./process_madvise_ppps
 
 CATEGORY="vma_merge" run_test ./merge
 
