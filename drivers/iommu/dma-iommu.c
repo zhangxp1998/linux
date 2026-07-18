@@ -1091,8 +1091,6 @@ int iommu_dma_mmap_noncontiguous(struct device *dev, struct vm_area_struct *vma,
 {
 	unsigned long count = PAGE_ALIGN(size) >> PAGE_SHIFT;
 
-	if (vma->vm_pgoff >= count || vma_pages(vma) > count - vma->vm_pgoff)
-		return -ENXIO;
 	return vm_map_pages(vma, sgt_handle(sgt)->pages, count);
 }
 
