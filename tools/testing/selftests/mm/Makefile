@@ -91,6 +91,7 @@ TEST_GEN_FILES += mseal_test
 TEST_GEN_FILES += on-fault-limit
 TEST_GEN_FILES += pagemap_ioctl
 TEST_GEN_FILES += pfnmap
+TEST_GEN_FILES += remap_pfn_range_ppps
 TEST_GEN_FILES += process_madv
 TEST_GEN_FILES += process_madvise_ppps
 TEST_GEN_FILES += process_vm_access_ppps
