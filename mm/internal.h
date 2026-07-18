@@ -1051,6 +1051,13 @@ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
 	return address;
 }
 
+/* Does user address @addr of file-backed @vma lie at or beyond size @isize? */
+static inline bool vma_addr_beyond_eof(const struct vm_area_struct *vma,
+				       unsigned long addr, loff_t isize)
+{
+	return vma_addr_file_offset(vma, addr) >= isize;
+}
+
 static inline struct file *maybe_unlock_mmap_for_io(struct vm_fault *vmf,
 						    struct file *fpin)
 {
