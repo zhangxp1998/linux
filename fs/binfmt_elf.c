@@ -84,15 +84,20 @@ static int elf_core_dump(struct coredump_params *cprm);
 #define elf_core_dump	NULL
 #endif
 
-#define ELF_MIN_ALIGN	ELF_EXEC_PAGESIZE
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#define ELF_MIN_ALIGN(mm)	MM_PAGE_SIZE(mm)
+#else
+#define ELF_MIN_ALIGN(mm)	((void)(mm), ELF_EXEC_PAGESIZE)
+#endif
 
 #ifndef ELF_CORE_EFLAGS
 #define ELF_CORE_EFLAGS	0
 #endif
 
-#define ELF_PAGESTART(_v) ((_v) & ~(int)(ELF_MIN_ALIGN-1))
-#define ELF_PAGEOFFSET(_v) ((_v) & (ELF_MIN_ALIGN-1))
-#define ELF_PAGEALIGN(_v) (((_v) + ELF_MIN_ALIGN - 1) & ~(ELF_MIN_ALIGN - 1))
+#define ELF_PAGESTART(mm, _v) ((_v) & ~(int)(ELF_MIN_ALIGN(mm) - 1))
+#define ELF_PAGEOFFSET(mm, _v) ((_v) & (ELF_MIN_ALIGN(mm) - 1))
+#define ELF_PAGEALIGN(mm, _v) \
+	(((_v) + ELF_MIN_ALIGN(mm) - 1) & ~(ELF_MIN_ALIGN(mm) - 1))
 
 static struct linux_binfmt elf_format = {
 	.module		= THIS_MODULE,
@@ -112,13 +117,13 @@ static struct linux_binfmt elf_format = {
  * p_filesz when it ends before the page ends (e.g. bss), otherwise this
  * memory will contain the junk from the file that should not be present.
  */
-static int padzero(unsigned long address)
+static int padzero(struct mm_struct *mm, unsigned long address)
 {
 	unsigned long nbyte;
 
-	nbyte = ELF_PAGEOFFSET(address);
+	nbyte = ELF_PAGEOFFSET(mm, address);
 	if (nbyte) {
-		nbyte = ELF_MIN_ALIGN - nbyte;
+		nbyte = ELF_MIN_ALIGN(mm) - nbyte;
 		if (clear_user((void __user *)address, nbyte))
 			return -EFAULT;
 	}
@@ -350,15 +355,18 @@ create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
  * into memory at "addr". (Note that p_filesz is rounded up to the
  * next page, so any extra bytes from the file must be wiped.)
  */
-static unsigned long elf_map(struct file *filep, unsigned long addr,
+static unsigned long elf_map(struct mm_struct *mm, struct file *filep,
+		unsigned long addr,
 		const struct elf_phdr *eppnt, int prot, int type,
 		unsigned long total_size)
 {
 	unsigned long map_addr;
-	unsigned long size = eppnt->p_filesz + ELF_PAGEOFFSET(eppnt->p_vaddr);
-	unsigned long off = eppnt->p_offset - ELF_PAGEOFFSET(eppnt->p_vaddr);
-	addr = ELF_PAGESTART(addr);
-	size = ELF_PAGEALIGN(size);
+	unsigned long size = eppnt->p_filesz +
+			     ELF_PAGEOFFSET(mm, eppnt->p_vaddr);
+	unsigned long off = eppnt->p_offset -
+			    ELF_PAGEOFFSET(mm, eppnt->p_vaddr);
+	addr = ELF_PAGESTART(mm, addr);
+	size = ELF_PAGEALIGN(mm, size);
 
 	/* mmap() will return -EINVAL if given a zero size, but a
 	 * segment with zero filesize is perfectly valid */
@@ -374,7 +382,7 @@ static unsigned long elf_map(struct file *filep, unsigned long addr,
 	* the end. (which unmap is needed for ELF images with holes.)
 	*/
 	if (total_size) {
-		total_size = ELF_PAGEALIGN(total_size);
+		total_size = ELF_PAGEALIGN(mm, total_size);
 		map_addr = vm_mmap(filep, addr, total_size, prot, type, off);
 		if (!BAD_ADDR(map_addr))
 			vm_munmap(map_addr+size, total_size-size);
@@ -394,7 +402,8 @@ static unsigned long elf_map(struct file *filep, unsigned long addr,
  * into memory at "addr". Memory from "p_filesz" through "p_memsz"
  * rounded up to the next page is zeroed.
  */
-static unsigned long elf_load(struct file *filep, unsigned long addr,
+static unsigned long elf_load(struct mm_struct *mm, struct file *filep,
+		unsigned long addr,
 		const struct elf_phdr *eppnt, int prot, int type,
 		unsigned long total_size)
 {
@@ -402,25 +411,26 @@ static unsigned long elf_load(struct file *filep, unsigned long addr,
 	unsigned long map_addr;
 
 	if (eppnt->p_filesz) {
-		map_addr = elf_map(filep, addr, eppnt, prot, type, total_size);
+		map_addr = elf_map(mm, filep, addr, eppnt, prot, type,
+				   total_size);
 		if (BAD_ADDR(map_addr))
 			return map_addr;
 		if (eppnt->p_memsz > eppnt->p_filesz) {
-			zero_start = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) +
+			zero_start = map_addr + ELF_PAGEOFFSET(mm, eppnt->p_vaddr) +
 				eppnt->p_filesz;
-			zero_end = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) +
+			zero_end = map_addr + ELF_PAGEOFFSET(mm, eppnt->p_vaddr) +
 				eppnt->p_memsz;
 
 			/*
 			 * Zero the end of the last mapped page but ignore
 			 * any errors if the segment isn't writable.
 			 */
-			if (padzero(zero_start) && (prot & PROT_WRITE))
+			if (padzero(mm, zero_start) && (prot & PROT_WRITE))
 				return -EFAULT;
 		}
 	} else {
-		map_addr = zero_start = ELF_PAGESTART(addr);
-		zero_end = zero_start + ELF_PAGEOFFSET(eppnt->p_vaddr) +
+		map_addr = zero_start = ELF_PAGESTART(mm, addr);
+		zero_end = zero_start + ELF_PAGEOFFSET(mm, eppnt->p_vaddr) +
 			eppnt->p_memsz;
 	}
 	if (eppnt->p_memsz > eppnt->p_filesz) {
@@ -431,8 +441,8 @@ static unsigned long elf_load(struct file *filep, unsigned long addr,
 		 */
 		int error;
 
-		zero_start = ELF_PAGEALIGN(zero_start);
-		zero_end = ELF_PAGEALIGN(zero_end);
+		zero_start = ELF_PAGEALIGN(mm, zero_start);
+		zero_end = ELF_PAGEALIGN(mm, zero_end);
 
 		error = vm_brk_flags(zero_start, zero_end - zero_start,
 				     prot & PROT_EXEC ? VM_EXEC : 0);
@@ -443,7 +453,8 @@ static unsigned long elf_load(struct file *filep, unsigned long addr,
 }
 
 
-static unsigned long total_mapping_size(const struct elf_phdr *phdr, int nr)
+static unsigned long total_mapping_size(struct mm_struct *mm,
+					const struct elf_phdr *phdr, int nr)
 {
 	elf_addr_t min_addr = -1;
 	elf_addr_t max_addr = 0;
@@ -452,7 +463,8 @@ static unsigned long total_mapping_size(const struct elf_phdr *phdr, int nr)
 
 	for (i = 0; i < nr; i++) {
 		if (phdr[i].p_type == PT_LOAD) {
-			min_addr = min(min_addr, ELF_PAGESTART(phdr[i].p_vaddr));
+			min_addr = min(min_addr,
+				       ELF_PAGESTART(mm, phdr[i].p_vaddr));
 			max_addr = max(max_addr, phdr[i].p_vaddr + phdr[i].p_memsz);
 			pt_load = true;
 		}
@@ -471,7 +483,8 @@ static int elf_read(struct file *file, void *buf, size_t len, loff_t pos)
 	return 0;
 }
 
-static unsigned long maximum_alignment(struct elf_phdr *cmds, int nr)
+static unsigned long maximum_alignment(struct mm_struct *mm,
+				       struct elf_phdr *cmds, int nr)
 {
 	unsigned long alignment = 0;
 	int i;
@@ -488,7 +501,7 @@ static unsigned long maximum_alignment(struct elf_phdr *cmds, int nr)
 	}
 
 	/* ensure we align to at least one page */
-	return ELF_PAGEALIGN(alignment);
+	return ELF_PAGEALIGN(mm, alignment);
 }
 
 /**
@@ -500,7 +513,8 @@ static unsigned long maximum_alignment(struct elf_phdr *cmds, int nr)
  * header pointed to by elf_ex, into a newly allocated array. The caller is
  * responsible for freeing the allocated data. Returns NULL upon failure.
  */
-static struct elf_phdr *load_elf_phdrs(const struct elfhdr *elf_ex,
+static struct elf_phdr *load_elf_phdrs(struct mm_struct *mm,
+				       const struct elfhdr *elf_ex,
 				       struct file *elf_file)
 {
 	struct elf_phdr *elf_phdata = NULL;
@@ -517,7 +531,7 @@ static struct elf_phdr *load_elf_phdrs(const struct elfhdr *elf_ex,
 	/* Sanity check the number of program headers... */
 	/* ...and their total size. */
 	size = sizeof(struct elf_phdr) * elf_ex->e_phnum;
-	if (size == 0 || size > 65536 || size > ELF_MIN_ALIGN)
+	if (size == 0 || size > 65536 || size > ELF_MIN_ALIGN(mm))
 		goto out;
 
 	elf_phdata = kmalloc(size, GFP_KERNEL);
@@ -625,7 +639,8 @@ static inline int make_prot(u32 p_flags, struct arch_elf_state *arch_state,
    is only provided so that we can read a.out libraries that have
    an ELF header */
 
-static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex,
+static unsigned long load_elf_interp(struct mm_struct *mm,
+		struct elfhdr *interp_elf_ex,
 		struct file *interpreter,
 		unsigned long no_base, struct elf_phdr *interp_elf_phdata,
 		struct arch_elf_state *arch_state)
@@ -647,7 +662,7 @@ static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex,
 	if (!interpreter->f_op->mmap)
 		goto out;
 
-	total_size = total_mapping_size(interp_elf_phdata,
+	total_size = total_mapping_size(mm, interp_elf_phdata,
 					interp_elf_ex->e_phnum);
 	if (!total_size) {
 		error = -EINVAL;
@@ -669,7 +684,7 @@ static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex,
 			else if (no_base && interp_elf_ex->e_type == ET_DYN)
 				load_addr = -vaddr;
 
-			map_addr = elf_load(interpreter, load_addr + vaddr,
+			map_addr = elf_load(mm, interpreter, load_addr + vaddr,
 					eppnt, elf_prot, elf_type, total_size);
 			total_size = 0;
 			error = map_addr;
@@ -678,7 +693,7 @@ static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex,
 
 			if (!load_addr_set &&
 			    interp_elf_ex->e_type == ET_DYN) {
-				load_addr = map_addr - ELF_PAGESTART(vaddr);
+				load_addr = map_addr - ELF_PAGESTART(mm, vaddr);
 				load_addr_set = 1;
 			}
 
@@ -850,7 +865,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	if (!bprm->file->f_op->mmap)
 		goto out;
 
-	elf_phdata = load_elf_phdrs(elf_ex, bprm->file);
+	elf_phdata = load_elf_phdrs(bprm->mm, elf_ex, bprm->file);
 	if (!elf_phdata)
 		goto out;
 
@@ -950,7 +965,7 @@ out_free_interp:
 			goto out_free_dentry;
 
 		/* Load the interpreter program headers */
-		interp_elf_phdata = load_elf_phdrs(interp_elf_ex,
+		interp_elf_phdata = load_elf_phdrs(bprm->mm, interp_elf_ex,
 						   interpreter);
 		if (!interp_elf_phdata)
 			goto out_free_dentry;
@@ -994,6 +1009,7 @@ out_free_interp:
 	retval = begin_new_exec(bprm);
 	if (retval)
 		goto out_free_dentry;
+	mm = current->mm;
 
 	/* Do this immediately, since STACK_TOP as used in setup_arg_pages
 	   may depend on the personality.  */
@@ -1080,7 +1096,7 @@ out_free_interp:
 			 * memory holes between LOADs.
 			 *
 			 */
-			total_size = total_mapping_size(elf_phdata,
+			total_size = total_mapping_size(mm, elf_phdata,
 							elf_ex->e_phnum);
 			if (!total_size) {
 				retval = -EINVAL;
@@ -1088,7 +1104,8 @@ out_free_interp:
 			}
 
 			/* Calculate any requested alignment. */
-			alignment = maximum_alignment(elf_phdata, elf_ex->e_phnum);
+			alignment = maximum_alignment(mm, elf_phdata,
+						      elf_ex->e_phnum);
 
 			/**
 			 * DOC: PIE handling
@@ -1142,8 +1159,8 @@ out_free_interp:
 				 * MAP_FIXED_NOREPLACE to make sure the mapping
 				 * doesn't collide with anything.
 				 */
-				if (alignment > ELF_MIN_ALIGN) {
-					load_bias = elf_load(bprm->file, 0, elf_ppnt,
+				if (alignment > ELF_MIN_ALIGN(mm)) {
+					load_bias = elf_load(mm, bprm->file, 0, elf_ppnt,
 							     elf_prot, elf_flags, total_size);
 					if (BAD_ADDR(load_bias)) {
 						retval = IS_ERR_VALUE(load_bias) ?
@@ -1166,10 +1183,10 @@ out_free_interp:
 			 * ELF vaddrs will be correctly offset. The result
 			 * is then page aligned.
 			 */
-			load_bias = ELF_PAGESTART(load_bias - vaddr);
+			load_bias = ELF_PAGESTART(mm, load_bias - vaddr);
 		}
 
-		error = elf_load(bprm->file, load_bias + vaddr, elf_ppnt,
+		error = elf_load(mm, bprm->file, load_bias + vaddr, elf_ppnt,
 				elf_prot, elf_flags, total_size);
 		if (BAD_ADDR(error)) {
 			retval = IS_ERR_VALUE(error) ?
@@ -1181,7 +1198,7 @@ out_free_interp:
 			first_pt_load = 0;
 			if (elf_ex->e_type == ET_DYN) {
 				load_bias += error -
-				             ELF_PAGESTART(load_bias + vaddr);
+				             ELF_PAGESTART(mm, load_bias + vaddr);
 				reloc_func_desc = load_bias;
 			}
 		}
@@ -1235,7 +1252,7 @@ out_free_interp:
 	end_data += load_bias;
 
 	if (interpreter) {
-		elf_entry = load_elf_interp(interp_elf_ex,
+		elf_entry = load_elf_interp(mm, interp_elf_ex,
 					    interpreter,
 					    load_bias, interp_elf_phdata,
 					    &arch_state);
@@ -1282,7 +1299,6 @@ out_free_interp:
 	if (retval < 0)
 		goto out;
 
-	mm = current->mm;
 	mm->end_code = end_code;
 	mm->start_code = start_code;
 	mm->start_data = start_data;
@@ -1309,7 +1325,7 @@ out_free_interp:
 		/* This counts as moving the brk, so let brk(2) know. */
 		brk_moved = true;
 	}
-	mm->start_brk = mm->brk = ELF_PAGEALIGN(elf_brk);
+	mm->start_brk = mm->brk = ELF_PAGEALIGN(mm, elf_brk);
 
 	if ((current->flags & PF_RANDOMIZE) && snapshot_randomize_va_space > 1) {
 		/*
@@ -1404,7 +1420,7 @@ static int load_elf_library(struct file *file)
 	/* Now read in all of the header information */
 
 	j = sizeof(struct elf_phdr) * elf_ex.e_phnum;
-	/* j < ELF_MIN_ALIGN because elf_ex.e_phnum <= 2 */
+	/* j < ELF_MIN_ALIGN(current->mm) because elf_ex.e_phnum <= 2 */
 
 	error = -ENOMEM;
 	elf_phdata = kmalloc(j, GFP_KERNEL);
@@ -1427,13 +1443,14 @@ static int load_elf_library(struct file *file)
 		eppnt++;
 
 	/* Now use mmap to map the library into memory. */
-	error = elf_load(file, ELF_PAGESTART(eppnt->p_vaddr),
+	error = elf_load(current->mm, file,
+			 ELF_PAGESTART(current->mm, eppnt->p_vaddr),
 			eppnt,
 			PROT_READ | PROT_WRITE | PROT_EXEC,
 			MAP_FIXED_NOREPLACE | MAP_PRIVATE,
 			0);
 
-	if (error != ELF_PAGESTART(eppnt->p_vaddr))
+	if (error != ELF_PAGESTART(current->mm, eppnt->p_vaddr))
 		goto out_free_ph;
 
 	error = 0;
