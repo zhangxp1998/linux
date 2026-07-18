@@ -37,6 +37,7 @@ CFLAGS = -Wall -I $(top_srcdir) $(EXTRA_CFLAGS) $(KHDR_INCLUDES) $(TOOLS_INCLUDE
 LDLIBS = -lrt -lpthread -lm
 
 TEST_GEN_FILES = cow
+TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += compaction_test
 TEST_GEN_FILES += gup_longterm
 TEST_GEN_FILES += gup_test
