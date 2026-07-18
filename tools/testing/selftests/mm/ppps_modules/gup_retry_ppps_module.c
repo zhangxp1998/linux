@@ -54,6 +54,7 @@ static const struct file_operations gup_retry_ppps_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = gup_retry_ppps_ioctl,
 	.compat_ioctl = gup_retry_ppps_ioctl,
+	.mmap = mmap_cleanup_fail,
 };
 
 PPPS_MISC_MODULE(GUP_RETRY_PPPS_DEVICE_NAME, &gup_retry_ppps_fops, 0,
