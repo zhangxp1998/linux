@@ -299,6 +299,7 @@ fi
 # Dump pages 0, 19, and 4096, using pin_user_pages:
 CATEGORY="gup_test" run_test ./gup_test -ct -F 0x1 0 19 0x1000
 CATEGORY="gup_test" run_test ./gup_longterm
+CATEGORY="gup_test" run_test ./test_gup_retry_ppps.sh
 
 CATEGORY="userfaultfd" run_test ./uffd-unit-tests
 CATEGORY="userfaultfd" run_test ./userfaultfd_eof_ppps

@@ -2,6 +2,7 @@
 # Makefile for mm selftests
 
 LOCAL_HDRS += $(selfdir)/mm/local_config.h $(top_srcdir)/mm/gup_test.h
+LOCAL_HDRS += $(selfdir)/mm/gup_retry_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
 
 include local_config.mk
@@ -36,10 +37,16 @@ MAKEFLAGS += --no-builtin-rules
 CFLAGS = -Wall -I $(top_srcdir) $(EXTRA_CFLAGS) $(KHDR_INCLUDES) $(TOOLS_INCLUDES)
 LDLIBS = -lrt -lpthread -lm
 
+KDIR ?= /lib/modules/$(shell uname -r)/build
+ifneq (,$(wildcard $(KDIR)/Module.symvers))
+GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
+endif
+
 TEST_GEN_FILES = cow
 TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += compaction_test
 TEST_GEN_FILES += gup_longterm
+TEST_GEN_FILES += gup_retry_ppps
 TEST_GEN_FILES += gup_test
 TEST_GEN_FILES += hmm-tests
 TEST_GEN_FILES += hugetlb-madvise
@@ -144,11 +151,27 @@ TEST_FILES += test_hmm.sh
 TEST_FILES += va_high_addr_switch.sh
 TEST_FILES += charge_reserved_hugetlb.sh
 TEST_FILES += hugetlb_reparenting_test.sh
+TEST_FILES += test_gup_retry_ppps.sh
+TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
 
 # required by charge_reserved_hugetlb.sh
 TEST_FILES += write_hugetlb_memory.sh
 
 include ../lib.mk
+
+ifneq ($(GUP_RETRY_PPPS_MODULE),)
+all: $(GUP_RETRY_PPPS_MODULE)
+
+$(GUP_RETRY_PPPS_MODULE): gup_retry_ppps_module/gup_retry_ppps_module.c \
+			  gup_retry_ppps_module/Makefile gup_retry_ppps.h
+	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_gup_retry_ppps_module
+clean_gup_retry_ppps_module:
+	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_gup_retry_ppps_module
+endif
 
 $(TEST_GEN_PROGS): vm_util.c thp_settings.c
 $(TEST_GEN_FILES): vm_util.c thp_settings.c
