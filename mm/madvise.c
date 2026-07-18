@@ -242,8 +242,9 @@ static void shmem_swapin_range(struct vm_area_struct *vma,
 		if (non_swap_entry(entry))
 			continue;
 
-		addr = vma->vm_start +
-			((xas.xa_index - vma->vm_pgoff) << PAGE_SHIFT);
+		/* The first native page may begin before a sliced file VMA. */
+		addr = max(vma->vm_start,
+			   vma_pgoff_to_address(vma, xas.xa_index));
 		xas_pause(&xas);
 		rcu_read_unlock();
 
@@ -301,8 +302,7 @@ static long madvise_willneed(struct vm_area_struct *vma,
 	 */
 	*prev = NULL;	/* tell sys_madvise we drop mmap_lock */
 	get_file(file);
-	offset = (loff_t)(start - vma->vm_start)
-			+ ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
+	offset = vma_addr_file_offset(vma, start);
 	mmap_read_unlock(mm);
 	vfs_fadvise(file, offset, end - start, POSIX_FADV_WILLNEED);
 	fput(file);
