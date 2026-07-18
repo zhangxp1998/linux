@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: GPL-2.0
+#define _GNU_SOURCE
+
+#include <errno.h>
+#include <fcntl.h>
+#include <setjmp.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/personality.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "../kselftest.h"
+#include "vm_map_pages_ppps.h"
+
+#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
+#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
+#endif
+
+#define USER_PAGE_SIZE	4096UL
+#define FILE_OFFSET	USER_PAGE_SIZE
+#define MAPPING_PAGES	5
+#define MAPPING_SIZE	(MAPPING_PAGES * USER_PAGE_SIZE)
+#define FIRST_MARKER	0x41
+
+static sigjmp_buf fault_environment;
+
+static void sigbus_handler(int signal_number)
+{
+	siglongjmp(fault_environment, signal_number);
+}
+
+static bool read_mapping(const unsigned char *mapping, unsigned char *value)
+{
+	if (sigsetjmp(fault_environment, 1))
+		return false;
+	*value = *mapping;
+	return true;
+}
+
+static int run_test(void)
+{
+	struct sigaction action = {
+		.sa_handler = sigbus_handler,
+	};
+	unsigned char value = 0;
+	unsigned char *mapping;
+	bool readable;
+	bool marker_ok;
+	unsigned int page;
+	int fd, status;
+	pid_t pid;
+
+	ksft_print_header();
+	ksft_set_plan(6);
+	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
+			 "process uses 4K pages\n");
+
+	fd = open("/dev/" VM_MAP_PAGES_PPPS_DEVICE_NAME,
+		  O_RDWR | O_CLOEXEC);
+	ksft_test_result(fd >= 0, "open the vm_map_pages test device\n");
+	if (fd < 0)
+		ksft_exit_fail_msg("open test device failed: %s\n",
+				   strerror(errno));
+
+	mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, FILE_OFFSET);
+	ksft_test_result(mapping != MAP_FAILED,
+			 "map five 4K slices at file offset 4K\n");
+	if (mapping == MAP_FAILED)
+		ksft_exit_fail_msg("vm_map_pages mmap failed: %s\n",
+				   strerror(errno));
+
+	sigemptyset(&action.sa_mask);
+	if (sigaction(SIGBUS, &action, NULL))
+		ksft_exit_fail_msg("sigaction failed: %s\n", strerror(errno));
+	readable = true;
+	marker_ok = true;
+	for (page = 0; page < MAPPING_PAGES; page++) {
+		unsigned char expected = FIRST_MARKER + page;
+
+		if (!read_mapping(mapping + page * USER_PAGE_SIZE, &value)) {
+			ksft_print_msg("SIGBUS at logical page %u\n", page + 1);
+			readable = false;
+			marker_ok = false;
+			break;
+		}
+		if (value != expected) {
+			ksft_print_msg("logical page %u value=%#x expected=%#x\n",
+				       page + 1, value, expected);
+			marker_ok = false;
+		}
+	}
+	ksft_test_result(readable,
+			 "every vm_map_pages slice has a present PTE\n");
+	ksft_test_result(marker_ok,
+			 "the mapped slices contain logical pages 1 through 5\n");
+
+	pid = fork();
+	if (pid < 0)
+		ksft_exit_fail_msg("fork failed: %s\n", strerror(errno));
+	if (!pid) {
+		for (page = 0; page < MAPPING_PAGES; page++) {
+			unsigned char expected = FIRST_MARKER + page;
+
+			if (!read_mapping(mapping + page * USER_PAGE_SIZE,
+					  &value) || value != expected)
+				_exit(EXIT_FAILURE);
+		}
+		_exit(EXIT_SUCCESS);
+	}
+	if (waitpid(pid, &status, 0) != pid)
+		ksft_exit_fail_msg("waitpid failed: %s\n", strerror(errno));
+	ksft_test_result(WIFEXITED(status) && !WEXITSTATUS(status),
+			 "fork inherits every vm_map_pages slice\n");
+
+	munmap(mapping, MAPPING_SIZE);
+	close(fd);
+	ksft_finished();
+}
+
+static int exec_compat(void)
+{
+	int persona = personality(0xffffffffUL);
+
+	if (persona < 0)
+		ksft_exit_fail_msg("personality get failed: %s\n",
+				   strerror(errno));
+	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
+		ksft_exit_fail_msg("personality set failed: %s\n",
+				   strerror(errno));
+	execl("/proc/self/exe", "vm_map_pages_ppps", "--run", NULL);
+	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
+}
+
+int main(int argc, char **argv)
+{
+	if (argc == 1)
+		return exec_compat();
+	if (argc == 2 && !strcmp(argv[1], "--run"))
+		return run_test();
+	return EXIT_FAILURE;
+}
