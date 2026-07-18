@@ -25,11 +25,12 @@ int pci_mmap_resource_range(struct pci_dev *pdev, int bar,
 			    struct vm_area_struct *vma,
 			    enum pci_mmap_state mmap_state, int write_combine)
 {
-	unsigned long size;
+	resource_size_t offset = vma_file_offset(vma);
+	resource_size_t size = pci_resource_len(pdev, bar);
+	unsigned long map_size = vma->vm_end - vma->vm_start;
 	int ret;
 
-	size = ((pci_resource_len(pdev, bar) - 1) >> PAGE_SHIFT) + 1;
-	if (vma->vm_pgoff + vma_pages(vma) > size)
+	if (offset > size || map_size > size - offset)
 		return -EINVAL;
 
 	if (write_combine)
@@ -41,14 +42,14 @@ int pci_mmap_resource_range(struct pci_dev *pdev, int bar,
 		ret = pci_iobar_pfn(pdev, bar, vma);
 		if (ret)
 			return ret;
-	} else
-		vma->vm_pgoff += (pci_resource_start(pdev, bar) >> PAGE_SHIFT);
+		vma->vm_ops = &pci_phys_vm_ops;
+		return io_remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
+					  map_size, vma->vm_page_prot);
+	}
 
 	vma->vm_ops = &pci_phys_vm_ops;
 
-	return io_remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
-				  vma->vm_end - vma->vm_start,
-				  vma->vm_page_prot);
+	return vm_iomap_memory(vma, pci_resource_start(pdev, bar), size);
 }
 
 #endif
@@ -60,22 +61,21 @@ int pci_mmap_fits(struct pci_dev *pdev, int resno, struct vm_area_struct *vma,
 		  enum pci_mmap_api mmap_api)
 {
 	resource_size_t pci_start = 0, pci_end;
-	unsigned long nr, start, size;
+	resource_size_t start, size;
+	unsigned long nr;
 
 	if (pci_resource_len(pdev, resno) == 0)
 		return 0;
-	nr = vma_pages(vma);
-	start = vma->vm_pgoff;
-	size = ((pci_resource_len(pdev, resno) - 1) >> PAGE_SHIFT) + 1;
+	nr = vma->vm_end - vma->vm_start;
+	start = vma_file_offset(vma);
+	size = pci_resource_len(pdev, resno);
 	if (mmap_api == PCI_MMAP_PROCFS) {
 		pci_resource_to_user(pdev, resno, &pdev->resource[resno],
 				     &pci_start, &pci_end);
-		pci_start >>= PAGE_SHIFT;
 	}
-	if (start >= pci_start && start < pci_start + size &&
-	    start + nr <= pci_start + size)
-		return 1;
-	return 0;
+	if (start < pci_start || start - pci_start > size)
+		return 0;
+	return nr <= size - (start - pci_start);
 }
 
 #endif
