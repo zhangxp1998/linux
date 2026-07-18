@@ -29,14 +29,16 @@ static int run_test(void)
 	struct udmabuf_create create = {};
 	unsigned char *backing;
 	unsigned char *mapping;
+	void *helper_mapping;
 	bool contents_ok = true;
 	size_t offset;
 	int memfd;
 	int devfd;
 	int buf_fd;
+	int helper_fd;
 
 	ksft_print_header();
-	ksft_set_plan(5);
+	ksft_set_plan(6);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -82,6 +84,18 @@ static int run_test(void)
 	}
 	ksft_test_result(contents_ok,
 			 "preserve all four process-page slices\n");
+
+	helper_fd = open("/dev/dmabuf_mmap_ppps", O_RDWR | O_CLOEXEC);
+	if (helper_fd < 0)
+		ksft_exit_fail_msg("open dma_buf_mmap helper failed: %s\n",
+				   strerror(errno));
+	helper_mapping = mmap(NULL, BUFFER_SIZE, PROT_NONE, MAP_SHARED,
+			      helper_fd, USER_PAGE_SIZE);
+	ksft_test_result(helper_mapping != MAP_FAILED,
+			 "map a complete buffer through dma_buf_mmap()\n");
+	if (helper_mapping != MAP_FAILED)
+		munmap(helper_mapping, BUFFER_SIZE);
+	close(helper_fd);
 
 	munmap(mapping, BUFFER_SIZE);
 	munmap(backing, BUFFER_SIZE);
