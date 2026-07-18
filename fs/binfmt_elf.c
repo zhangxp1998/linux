@@ -87,7 +87,7 @@ static int elf_core_dump(struct coredump_params *cprm);
 #if ELF_EXEC_PAGESIZE > PAGE_SIZE
 #define ELF_MIN_ALIGN	ELF_EXEC_PAGESIZE
 #else
-#define ELF_MIN_ALIGN	PAGE_SIZE
+#define ELF_MIN_ALIGN	MM_PAGE_SIZE()
 #endif
 
 #ifndef ELF_CORE_EFLAGS
