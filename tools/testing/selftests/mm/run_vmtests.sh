@@ -417,6 +417,7 @@ CATEGORY="process_mrelease" run_test ./mrelease_test
 
 CATEGORY="mremap" run_test ./mremap_test
 CATEGORY="mremap" run_test ./mremap_rlimit_ppps
+CATEGORY="mremap" run_test ./test_mremap_pgoff_ppps.sh
 CATEGORY="mmap" run_test ./msync_offset_ppps
 CATEGORY="mmap" run_test ./bpf_array_mmap_ppps
 CATEGORY="mmap" run_test ./bpf_stack_build_id_ppps
