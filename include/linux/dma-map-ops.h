@@ -216,6 +216,7 @@ int dma_common_get_sgtable(struct device *dev, struct sg_table *sgt,
 int dma_common_mmap(struct device *dev, struct vm_area_struct *vma,
 		void *cpu_addr, dma_addr_t dma_addr, size_t size,
 		unsigned long attrs);
+int dma_mmap_pfn(struct vm_area_struct *vma, size_t size, unsigned long pfn);
 struct page *dma_common_alloc_pages(struct device *dev, size_t size,
 		dma_addr_t *dma_handle, enum dma_data_direction dir, gfp_t gfp);
 void dma_common_free_pages(struct device *dev, size_t size, struct page *vaddr,
