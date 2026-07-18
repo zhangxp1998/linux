@@ -1320,9 +1320,9 @@ int madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 	unsigned long end;
 	unsigned long len;
 
-	if (start & ~PAGE_MASK)
+	if (!MM_PAGE_ALIGNED(mm, start))
 		return -EINVAL;
-	len = (len_in + ~PAGE_MASK) & PAGE_MASK;
+	len = MM_PAGE_ALIGN(mm, len_in);
 
 	/* Check to see whether len was rounded up from small -ve to zero */
 	if (len_in && !len)
