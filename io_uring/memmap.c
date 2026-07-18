@@ -192,13 +192,11 @@ void *__io_uaddr_map(struct page ***pages, unsigned short *npages,
 	return ERR_PTR(-ENOMEM);
 }
 
-static void *io_uring_validate_mmap_request(struct file *file, loff_t pgoff,
-					    size_t sz)
+static void *io_uring_validate_mmap_request(struct file *file, loff_t offset)
 {
 	struct io_ring_ctx *ctx = file->private_data;
-	loff_t offset = pgoff << PAGE_SHIFT;
 
-	switch ((pgoff << PAGE_SHIFT) & IORING_OFF_MMAP_MASK) {
+	switch (offset & IORING_OFF_MMAP_MASK) {
 	case IORING_OFF_SQ_RING:
 	case IORING_OFF_CQ_RING:
 		/* Don't allow mmap if the ring was setup without it */
@@ -243,11 +241,11 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct io_ring_ctx *ctx = file->private_data;
 	size_t sz = vma->vm_end - vma->vm_start;
-	long offset = vma->vm_pgoff << PAGE_SHIFT;
+	loff_t offset = vma_file_offset(vma);
 	unsigned int npages;
 	void *ptr;
 
-	ptr = io_uring_validate_mmap_request(file, vma->vm_pgoff, sz);
+	ptr = io_uring_validate_mmap_request(file, offset);
 	if (IS_ERR(ptr))
 		return PTR_ERR(ptr);
 
@@ -270,6 +268,7 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 					 unsigned long len, unsigned long pgoff,
 					 unsigned long flags)
 {
+	loff_t offset = (loff_t)pgoff << MM_PAGE_SHIFT(current->mm);
 	void *ptr;
 
 	/*
@@ -280,7 +279,7 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 	if (addr)
 		return -EINVAL;
 
-	ptr = io_uring_validate_mmap_request(filp, pgoff, len);
+	ptr = io_uring_validate_mmap_request(filp, offset);
 	if (IS_ERR(ptr))
 		return -ENOMEM;
 
@@ -325,9 +324,10 @@ unsigned long io_uring_get_unmapped_area(struct file *file, unsigned long addr,
 					 unsigned long len, unsigned long pgoff,
 					 unsigned long flags)
 {
+	loff_t offset = (loff_t)pgoff << MM_PAGE_SHIFT(current->mm);
 	void *ptr;
 
-	ptr = io_uring_validate_mmap_request(file, pgoff, len);
+	ptr = io_uring_validate_mmap_request(file, offset);
 	if (IS_ERR(ptr))
 		return PTR_ERR(ptr);
 
