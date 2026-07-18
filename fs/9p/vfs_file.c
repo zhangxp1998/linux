@@ -488,15 +488,15 @@ v9fs_vm_page_mkwrite(struct vm_fault *vmf)
 
 static void v9fs_mmap_vm_close(struct vm_area_struct *vma)
 {
+	loff_t start = vma_file_offset(vma);
+
 	if (!(vma->vm_flags & VM_SHARED))
 		return;
 
 	p9_debug(P9_DEBUG_VFS, "9p VMA close, %p, flushing", vma);
 
 	filemap_fdatawrite_range(file_inode(vma->vm_file)->i_mapping,
-			(loff_t)vma->vm_pgoff * PAGE_SIZE,
-			(loff_t)vma->vm_pgoff * PAGE_SIZE +
-				(vma->vm_end - vma->vm_start - 1));
+			start, start + vma->vm_end - vma->vm_start - 1);
 }
 
 static const struct vm_operations_struct v9fs_mmap_file_vm_ops = {
