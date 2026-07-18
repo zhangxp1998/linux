@@ -71,6 +71,7 @@ TEST_GEN_FILES += map_hugetlb
 TEST_GEN_FILES += map_populate
 TEST_GEN_FILES += mbind_ppps
 TEST_GEN_FILES += mincore_ppps
+TEST_GEN_FILES += mmap_action_cleanup_ppps
 TEST_GEN_FILES += mmap_hint_ppps
 TEST_GEN_FILES += anon_vma_name_ppps
 ifneq (,$(filter $(ARCH),arm64 riscv riscv64 x86 x86_64 loongarch32 loongarch64))
