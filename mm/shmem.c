@@ -951,8 +951,8 @@ unsigned long shmem_partial_swap_usage(struct address_space *mapping,
 	return swapped << PAGE_SHIFT;
 }
 
-static unsigned long shmem_swap_usage_bytes(struct address_space *mapping,
-					    u64 start, u64 end)
+unsigned long shmem_swap_usage_bytes(struct address_space *mapping,
+				     u64 start, u64 end)
 {
 	pgoff_t first;
 	pgoff_t last;

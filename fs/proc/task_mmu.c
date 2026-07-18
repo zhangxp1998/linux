@@ -971,10 +971,10 @@ static int smaps_pte_hole(unsigned long addr, unsigned long end,
 {
 	struct mem_size_stats *mss = walk->private;
 	struct vm_area_struct *vma = walk->vma;
+	u64 offset = vma_file_offset(vma) + addr - vma->vm_start;
 
-	mss->swap += shmem_partial_swap_usage(walk->vma->vm_file->f_mapping,
-					      linear_page_index(vma, addr),
-					      linear_page_index(vma, end));
+	mss->swap += shmem_swap_usage_bytes(vma->vm_file->f_mapping, offset,
+					    offset + end - addr);
 
 	return 0;
 }
@@ -987,7 +987,7 @@ static void smaps_pte_hole_lookup(unsigned long addr, struct mm_walk *walk)
 #ifdef CONFIG_SHMEM
 	if (walk->ops->pte_hole) {
 		/* depth is not used */
-		smaps_pte_hole(addr, addr + PAGE_SIZE, 0, walk);
+		smaps_pte_hole(addr, addr + MM_PAGE_SIZE(walk->mm), 0, walk);
 	}
 #endif
 }
