@@ -951,6 +951,49 @@ unsigned long shmem_partial_swap_usage(struct address_space *mapping,
 	return swapped << PAGE_SHIFT;
 }
 
+static unsigned long shmem_swap_usage_bytes(struct address_space *mapping,
+					    u64 start, u64 end)
+{
+	pgoff_t first;
+	pgoff_t last;
+	XA_STATE(xas, &mapping->i_pages, 0);
+	unsigned long swapped = 0;
+	struct folio *folio;
+
+	if (end <= start)
+		return 0;
+	first = start >> PAGE_SHIFT;
+	last = (end - 1) >> PAGE_SHIFT;
+	xas_set(&xas, first);
+
+	rcu_read_lock();
+	xas_for_each(&xas, folio, last) {
+		unsigned long nr_pages;
+		pgoff_t entry_first;
+		u64 entry_start;
+		u64 entry_end;
+
+		if (xas_retry(&xas, folio))
+			continue;
+		if (xa_is_value(folio)) {
+			nr_pages = 1UL << xas_get_order(&xas);
+			entry_first = round_down(xas.xa_index, nr_pages);
+			entry_start = (u64)entry_first << PAGE_SHIFT;
+			entry_end = (u64)(entry_first + nr_pages) << PAGE_SHIFT;
+			swapped += min(end, entry_end) - max(start, entry_start);
+		}
+		if (xas.xa_index == last)
+			break;
+		if (need_resched()) {
+			xas_pause(&xas);
+			cond_resched_rcu();
+		}
+	}
+	rcu_read_unlock();
+
+	return swapped;
+}
+
 /*
  * Determine (in bytes) how many of the shmem object's pages mapped by the
  * given vma is swapped out.
@@ -976,10 +1019,18 @@ unsigned long shmem_swap_usage(struct vm_area_struct *vma)
 	if (!swapped)
 		return 0;
 
-	if (!vma->vm_pgoff && vma->vm_end - vma->vm_start >= inode->i_size)
+	if (!ppps_mm_is_compat(vma->vm_mm) && !vma->vm_pgoff &&
+	    vma->vm_end - vma->vm_start >= inode->i_size)
 		return swapped << PAGE_SHIFT;
 
 	/* Here comes the more involved part */
+	if (ppps_mm_is_compat(vma->vm_mm)) {
+		u64 start = vma_file_offset(vma);
+
+		return shmem_swap_usage_bytes(mapping, start,
+					      start + vma->vm_end - vma->vm_start);
+	}
+
 	return shmem_partial_swap_usage(mapping, vma->vm_pgoff,
 					vma_last_pgoff(vma) + 1);
 }
