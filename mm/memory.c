@@ -4201,27 +4201,35 @@ static void unmap_mapping_range_vma(struct vm_area_struct *vma,
 	zap_page_range_single(vma, start_addr, end_addr - start_addr, details);
 }
 
+static unsigned long vma_pgoff_address_clamped(struct vm_area_struct *vma,
+					       pgoff_t pgoff)
+{
+	unsigned long offset = (pgoff - vma->vm_pgoff) << PAGE_SHIFT;
+	unsigned long slice_offset = (unsigned long)vma_slice_off(vma) <<
+		MM_PAGE_SHIFT(vma->vm_mm);
+
+	if (offset <= slice_offset)
+		return vma->vm_start;
+	offset -= slice_offset;
+	if (offset >= vma->vm_end - vma->vm_start)
+		return vma->vm_end;
+	return vma->vm_start + offset;
+}
+
 static inline void unmap_mapping_range_tree(struct rb_root_cached *root,
 					    pgoff_t first_index,
 					    pgoff_t last_index,
 					    struct zap_details *details)
 {
 	struct vm_area_struct *vma;
-	pgoff_t vba, vea, zba, zea;
+	unsigned long start, end;
 
 	vma_interval_tree_foreach(vma, root, first_index, last_index) {
-		vba = vma->vm_pgoff;
-		vea = vba + vma_pages(vma) - 1;
-		zba = max(first_index, vba);
-		zea = min(last_index, vea);
+		const pgoff_t start_idx = max(first_index, vma->vm_pgoff);
+		const pgoff_t end_idx = min(last_index, vma_last_pgoff(vma)) + 1;
 
-		unsigned long start = ((zba - vba) << PAGE_SHIFT) + vma->vm_start;
-		unsigned long end = ((zea - vba + 1) << PAGE_SHIFT) + vma->vm_start;
-
-		if (end > vma->vm_end)
-			end = vma->vm_end;
-		if (start < vma->vm_start)
-			start = vma->vm_start;
+		start = vma_pgoff_address_clamped(vma, start_idx);
+		end = vma_pgoff_address_clamped(vma, end_idx);
 
 		if (start < end)
 			unmap_mapping_range_vma(vma, start, end, details);
