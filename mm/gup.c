@@ -1735,7 +1735,7 @@ static __always_inline long __get_user_pages_locked(struct mm_struct *mm,
 		 */
 		if (likely(pages))
 			pages += ret;
-		start += ret << PAGE_SHIFT;
+		start += ret << MM_PAGE_SHIFT(mm);
 
 		/* The lock was temporarily dropped, so we must unlock later */
 		must_unlock = true;
