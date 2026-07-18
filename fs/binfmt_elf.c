@@ -84,7 +84,9 @@ static int elf_core_dump(struct coredump_params *cprm);
 #define elf_core_dump	NULL
 #endif
 
-#define ELF_MIN_ALIGN	ELF_EXEC_PAGESIZE
+/* The process page size: ELF segments are laid out in user-visible pages. */
+#define ELF_MIN_ALIGN	(ppps_mm_is_compat(current->mm) ? \
+			 MM_PAGE_SIZE(current->mm) : ELF_EXEC_PAGESIZE)
 
 #ifndef ELF_CORE_EFLAGS
 #define ELF_CORE_EFLAGS	0
