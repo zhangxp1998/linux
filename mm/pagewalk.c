@@ -747,14 +747,16 @@ int walk_page_mapping(struct address_space *mapping, pgoff_t first_index,
 				  first_index + nr - 1) {
 		/* Clip to the vma */
 		vba = vma->vm_pgoff;
-		vea = vba + vma_pages(vma);
+		vea = vma_last_pgoff(vma) + 1;
 		cba = first_index;
 		cba = max(cba, vba);
 		cea = first_index + nr;
 		cea = min(cea, vea);
 
-		start_addr = ((cba - vba) << PAGE_SHIFT) + vma->vm_start;
-		end_addr = ((cea - vba) << PAGE_SHIFT) + vma->vm_start;
+		start_addr = vma->vm_start;
+		if (cba > vba)
+			start_addr = vma_pgoff_to_address(vma, cba);
+		end_addr = min(vma_pgoff_to_address(vma, cea), vma->vm_end);
 		if (start_addr >= end_addr)
 			continue;
 
