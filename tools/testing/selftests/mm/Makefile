@@ -63,6 +63,8 @@ MREMAP_PGOFF_PPPS_MODULE := mremap_pgoff_ppps_module/mremap_pgoff_ppps_module.ko
 TEST_FILES += $(MREMAP_PGOFF_PPPS_MODULE)
 VM_IOMAP_MEMORY_PPPS_MODULE := vm_iomap_memory_ppps_module/vm_iomap_memory_ppps_module.ko
 TEST_FILES += $(VM_IOMAP_MEMORY_PPPS_MODULE)
+SIMPLE_IOMAP_PREPARE_PPPS_MODULE := simple_ioremap_prepare_ppps_module/simple_ioremap_prepare_ppps_module.ko
+TEST_FILES += $(SIMPLE_IOMAP_PREPARE_PPPS_MODULE)
 DMA_MMAP_ATTRS_PPPS_MODULE := dma_mmap_attrs_ppps_module/dma_mmap_attrs_ppps_module.ko
 TEST_FILES += $(DMA_MMAP_ATTRS_PPPS_MODULE)
 DMA_MMAP_PAGES_PPPS_MODULE := dma_mmap_pages_ppps_module/dma_mmap_pages_ppps_module.ko
@@ -266,6 +268,7 @@ TEST_FILES += test_iov_iter_ppps.sh
 TEST_FILES += test_mremap_pgoff_ppps.sh
 TEST_FILES += test_selinux_status_mmap_ppps.sh
 TEST_FILES += test_vm_iomap_memory_ppps.sh
+TEST_FILES += test_simple_ioremap_prepare_ppps.sh
 TEST_FILES += test_dma_mmap_attrs_ppps.sh
 TEST_FILES += test_dma_mmap_pages_ppps.sh
 TEST_FILES += test_iommu_dma_mmap_ppps.sh
@@ -340,6 +343,21 @@ clean_vm_iomap_memory_ppps_module:
 	+$(MAKE) -C vm_iomap_memory_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_vm_iomap_memory_ppps_module
+endif
+
+ifneq ($(SIMPLE_IOMAP_PREPARE_PPPS_MODULE),)
+all: $(SIMPLE_IOMAP_PREPARE_PPPS_MODULE)
+
+$(SIMPLE_IOMAP_PREPARE_PPPS_MODULE): simple_ioremap_prepare_ppps_module/simple_ioremap_prepare_ppps_module.c \
+					   simple_ioremap_prepare_ppps_module/Makefile \
+					   vm_iomap_memory_ppps.h
+	+$(MAKE) -C simple_ioremap_prepare_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_simple_ioremap_prepare_ppps_module
+clean_simple_ioremap_prepare_ppps_module:
+	+$(MAKE) -C simple_ioremap_prepare_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_simple_ioremap_prepare_ppps_module
 endif
 
 ifneq ($(DMA_MMAP_ATTRS_PPPS_MODULE),)

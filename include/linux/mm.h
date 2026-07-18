@@ -3670,7 +3670,152 @@ static inline unsigned long vma_last_pgoff(struct vm_area_struct *vma)
 	}
 
 	return vma->vm_pgoff + vma_pages(vma) - 1;
+
+
+static inline unsigned long vma_desc_size(const struct vm_area_desc *desc)
+{
+	return desc->end - desc->start;
 }
+
+static inline unsigned long vma_desc_pages(const struct vm_area_desc *desc)
+{
+	return vma_desc_size(desc) >> PAGE_SHIFT;
+}
+
+/**
+ * mmap_action_remap - helper for mmap_prepare hook to specify that a pure PFN
+ * remap is required.
+ * @desc: The VMA descriptor for the VMA requiring remap.
+ * @start: The virtual address to start the remap from, must be within the VMA.
+ * @start_pfn: The first PFN in the range to remap.
+ * @size: The size of the range to remap, in bytes, at most spanning to the end
+ * of the VMA.
+ */
+static inline void mmap_action_remap(struct vm_area_desc *desc,
+				     unsigned long start,
+				     unsigned long start_pfn,
+				     unsigned long size)
+{
+	struct mmap_action *action = &desc->action;
+
+	/* [start, start + size) must be within the VMA. */
+	WARN_ON_ONCE(start < desc->start || start >= desc->end);
+	WARN_ON_ONCE(start + size > desc->end);
+
+	action->type = MMAP_REMAP_PFN;
+	action->remap.start = start;
+	action->remap.start_pfn = start_pfn;
+	action->remap.slice = 0;
+	action->remap.size = size;
+	action->remap.pgprot = desc->page_prot;
+}
+
+/**
+ * mmap_action_remap_full - helper for mmap_prepare hook to specify that the
+ * entirety of a VMA should be PFN remapped.
+ * @desc: The VMA descriptor for the VMA requiring remap.
+ * @start_pfn: The first PFN in the range to remap.
+ */
+static inline void mmap_action_remap_full(struct vm_area_desc *desc,
+					  unsigned long start_pfn)
+{
+	mmap_action_remap(desc, desc->start, start_pfn, vma_desc_size(desc));
+}
+
+/**
+ * mmap_action_ioremap - helper for mmap_prepare hook to specify that a pure PFN
+ * I/O remap is required.
+ * @desc: The VMA descriptor for the VMA requiring remap.
+ * @start: The virtual address to start the remap from, must be within the VMA.
+ * @start_pfn: The first PFN in the range to remap.
+ * @size: The size of the range to remap, in bytes, at most spanning to the end
+ * of the VMA.
+ */
+static inline void mmap_action_ioremap(struct vm_area_desc *desc,
+				       unsigned long start,
+				       unsigned long start_pfn,
+				       unsigned long size)
+{
+	mmap_action_remap(desc, start, start_pfn, size);
+	desc->action.type = MMAP_IO_REMAP_PFN;
+}
+
+/**
+ * mmap_action_ioremap_full - helper for mmap_prepare hook to specify that the
+ * entirety of a VMA should be PFN I/O remapped.
+ * @desc: The VMA descriptor for the VMA requiring remap.
+ * @start_pfn: The first PFN in the range to remap.
+ */
+static inline void mmap_action_ioremap_full(struct vm_area_desc *desc,
+					    unsigned long start_pfn)
+{
+	mmap_action_ioremap(desc, desc->start, start_pfn, vma_desc_size(desc));
+}
+
+/**
+ * mmap_action_simple_ioremap - helper for mmap_prepare hook to specify that the
+ * physical range in [start_phys_addr, start_phys_addr + size) should be I/O
+ * remapped.
+ * @desc: The VMA descriptor for the VMA requiring remap.
+ * @start_phys_addr: Start of the physical memory to be mapped.
+ * @size: Size of the area to map.
+ *
+ * NOTE: Some drivers might want to tweak desc->page_prot for purposes of
+ * write-combine or similar.
+ */
+static inline void mmap_action_simple_ioremap(struct vm_area_desc *desc,
+					      phys_addr_t start_phys_addr,
+					      unsigned long size)
+{
+	struct mmap_action *action = &desc->action;
+
+	action->simple_ioremap.start_phys_addr = start_phys_addr;
+	action->simple_ioremap.size = size;
+	action->type = MMAP_SIMPLE_IO_REMAP;
+}
+
+/**
+ * mmap_action_map_kernel_pages - helper for mmap_prepare hook to specify that
+ * @num kernel pages contained in the @pages array should be mapped to userland
+ * starting at virtual address @start.
+ * @desc: The VMA descriptor for the VMA requiring kernel pags to be mapped.
+ * @start: The virtual address from which to map them.
+ * @pages: An array of struct page pointers describing the memory to map.
+ * @nr_pages: The number of entries in the @pages aray.
+ */
+static inline void mmap_action_map_kernel_pages(struct vm_area_desc *desc,
+		unsigned long start, struct page **pages,
+		unsigned long nr_pages)
+{
+	struct mmap_action *action = &desc->action;
+
+	action->type = MMAP_MAP_KERNEL_PAGES;
+	action->map_kernel.start = start;
+	action->map_kernel.pages = pages;
+	action->map_kernel.nr_pages = nr_pages;
+	action->map_kernel.pgoff = desc->pgoff;
+}
+
+/**
+ * mmap_action_map_kernel_pages_full - helper for mmap_prepare hook to specify that
+ * kernel pages contained in the @pages array should be mapped to userland
+ * from @desc->start to @desc->end.
+ * @desc: The VMA descriptor for the VMA requiring kernel pags to be mapped.
+ * @pages: An array of struct page pointers describing the memory to map.
+ *
+ * The caller must ensure that @pages contains sufficient entries to cover the
+ * entire range described by @desc.
+ */
+static inline void mmap_action_map_kernel_pages_full(struct vm_area_desc *desc,
+		struct page **pages)
+{
+	mmap_action_map_kernel_pages(desc, desc->start, pages,
+				     vma_desc_pages(desc));
+}
+
+int mmap_action_prepare(struct vm_area_desc *desc);
+int mmap_action_complete(struct vm_area_struct *vma,
+			 struct mmap_action *action, bool is_compat);
 /* Look up the first VMA which exactly match the interval vm_start ... vm_end */
 static inline struct vm_area_struct *find_exact_vma(struct mm_struct *mm,
 				unsigned long vm_start, unsigned long vm_end)
