@@ -1094,7 +1094,8 @@ static unsigned long __thp_get_unmapped_area(struct file *filp,
 		return 0;
 
 	ret = mm_get_unmapped_area_vmflags(current->mm, filp, addr, len_pad,
-					   off >> PAGE_SHIFT, flags, vm_flags);
+					   off >> MM_PAGE_SHIFT(current->mm),
+					   flags, vm_flags);
 
 	/*
 	 * The failure might be due to length padding. The caller will retry
@@ -1124,7 +1125,7 @@ unsigned long thp_get_unmapped_area_vmflags(struct file *filp, unsigned long add
 		vm_flags_t vm_flags)
 {
 	unsigned long ret;
-	loff_t off = (loff_t)pgoff << PAGE_SHIFT;
+	loff_t off = (loff_t)pgoff << MM_PAGE_SHIFT(current->mm);
 
 	ret = __thp_get_unmapped_area(filp, addr, len, off, flags, PMD_SIZE, vm_flags);
 	if (ret)
