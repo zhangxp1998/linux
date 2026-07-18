@@ -8,6 +8,7 @@
 LOCAL_HDRS += $(selfdir)/mm/local_config.h $(top_srcdir)/mm/gup_test.h
 LOCAL_HDRS += $(selfdir)/mm/gup_retry_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/vm_iomap_memory_ppps.h
+LOCAL_HDRS += $(selfdir)/mm/mmap_action_map_kernel_pages_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/dma_mmap_attrs_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/dma_mmap_pages_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
@@ -62,6 +63,8 @@ VM_IOMAP_MEMORY_PPPS_MODULE := vm_iomap_memory_ppps_module/vm_iomap_memory_ppps_
 TEST_FILES += $(VM_IOMAP_MEMORY_PPPS_MODULE)
 SIMPLE_IOMAP_PREPARE_PPPS_MODULE := simple_ioremap_prepare_ppps_module/simple_ioremap_prepare_ppps_module.ko
 TEST_FILES += $(SIMPLE_IOMAP_PREPARE_PPPS_MODULE)
+MMAP_ACTION_MAP_KERNEL_PAGES_PPPS_MODULE := mmap_action_map_kernel_pages_ppps_module/mmap_action_map_kernel_pages_ppps_module.ko
+TEST_FILES += $(MMAP_ACTION_MAP_KERNEL_PAGES_PPPS_MODULE)
 DMA_MMAP_ATTRS_PPPS_MODULE := dma_mmap_attrs_ppps_module/dma_mmap_attrs_ppps_module.ko
 TEST_FILES += $(DMA_MMAP_ATTRS_PPPS_MODULE)
 DMA_MMAP_PAGES_PPPS_MODULE := dma_mmap_pages_ppps_module/dma_mmap_pages_ppps_module.ko
@@ -79,6 +82,7 @@ endif
 TEST_GEN_FILES = cow
 TEST_GEN_FILES += selinux_status_mmap_ppps
 TEST_GEN_FILES += vm_iomap_memory_ppps
+TEST_GEN_FILES += mmap_action_map_kernel_pages_ppps
 TEST_GEN_FILES += dma_mmap_attrs_ppps
 TEST_GEN_FILES += dma_mmap_pages_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
@@ -234,6 +238,7 @@ TEST_FILES += test_gup_retry_ppps.sh
 TEST_FILES += test_selinux_status_mmap_ppps.sh
 TEST_FILES += test_vm_iomap_memory_ppps.sh
 TEST_FILES += test_simple_ioremap_prepare_ppps.sh
+TEST_FILES += test_mmap_action_map_kernel_pages_ppps.sh
 TEST_FILES += test_dma_mmap_attrs_ppps.sh
 TEST_FILES += test_dma_mmap_pages_ppps.sh
 TEST_FILES += test_pagewalk_ppps.sh
@@ -288,6 +293,21 @@ clean_simple_ioremap_prepare_ppps_module:
 	+$(MAKE) -C simple_ioremap_prepare_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_simple_ioremap_prepare_ppps_module
+endif
+
+ifneq ($(MMAP_ACTION_MAP_KERNEL_PAGES_PPPS_MODULE),)
+all: $(MMAP_ACTION_MAP_KERNEL_PAGES_PPPS_MODULE)
+
+$(MMAP_ACTION_MAP_KERNEL_PAGES_PPPS_MODULE): mmap_action_map_kernel_pages_ppps_module/mmap_action_map_kernel_pages_ppps_module.c \
+					     mmap_action_map_kernel_pages_ppps_module/Makefile \
+					     mmap_action_map_kernel_pages_ppps.h
+	+$(MAKE) -C mmap_action_map_kernel_pages_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_mmap_action_map_kernel_pages_ppps_module
+clean_mmap_action_map_kernel_pages_ppps_module:
+	+$(MAKE) -C mmap_action_map_kernel_pages_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_mmap_action_map_kernel_pages_ppps_module
 endif
 
 ifneq ($(DMA_MMAP_ATTRS_PPPS_MODULE),)

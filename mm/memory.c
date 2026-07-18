@@ -2589,9 +2589,8 @@ int map_kernel_pages_complete(struct vm_area_struct *vma,
 	unsigned long nr_pages;
 
 	nr_pages = action->map_kernel.nr_pages;
-	return insert_pages(vma, action->map_kernel.start,
-			    action->map_kernel.pages,
-			    &nr_pages, vma->vm_page_prot);
+	return vm_insert_pages(vma, action->map_kernel.start,
+			       action->map_kernel.pages, &nr_pages);
 }
 EXPORT_SYMBOL(map_kernel_pages_complete);
 
