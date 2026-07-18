@@ -1136,14 +1136,14 @@ SYSCALL_DEFINE5(remap_file_pages, unsigned long, start, unsigned long, size,
 
 	if (prot)
 		return ret;
-	start = start & PAGE_MASK;
-	size = size & PAGE_MASK;
+	start = start & MM_PAGE_MASK(mm);
+	size = size & MM_PAGE_MASK(mm);
 
 	if (start + size <= start)
 		return ret;
 
 	/* Does pgoff wrap? */
-	if (pgoff + (size >> PAGE_SHIFT) < pgoff)
+	if (pgoff + (size >> MM_PAGE_SHIFT(mm)) < pgoff)
 		return ret;
 
 	if (mmap_read_lock_killable(mm))
