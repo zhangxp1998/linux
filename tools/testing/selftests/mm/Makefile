@@ -116,6 +116,7 @@ TEST_GEN_FILES += process_madvise_ppps
 TEST_GEN_FILES += process_vm_access_ppps
 TEST_GEN_FILES += prctl_thp_disable
 TEST_GEN_FILES += remap_file_pages_ppps
+TEST_GEN_FILES += shmem_swap_usage_ppps
 TEST_GEN_FILES += thuge-gen
 TEST_GEN_FILES += trace_ring_buffer_mmap_ppps
 TEST_GEN_FILES += truncate_ppps

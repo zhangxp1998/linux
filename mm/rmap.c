@@ -2046,7 +2046,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 				folio_mark_dirty(folio);
 		} else if (likely(pte_present(pteval))) {
 			nr_pages = folio_unmap_pte_batch(folio, &pvmw, flags, pteval);
-			end_addr = address + nr_pages * PAGE_SIZE;
+			end_addr = address + nr_pages * MM_PAGE_SIZE(mm);
 			flush_cache_range(vma, address, end_addr);
 
 			/* Nuke the page table entry. */
@@ -2234,7 +2234,7 @@ discard:
 		 * If we are sure that we batched the entire folio and cleared
 		 * all PTEs, we can just optimize and stop right here.
 		 */
-		if (nr_pages == folio_nr_pages(folio))
+		if (nr_pages == folio_size(folio) >> MM_PAGE_SHIFT(mm))
 			goto walk_done;
 		continue;
 walk_abort:
