@@ -338,6 +338,12 @@ static inline int madvise_folio_pte_batch(struct vm_area_struct *vma,
 				   fpb_flags, any_young, any_dirty);
 }
 
+static inline int madvise_folio_nr_ptes(struct vm_area_struct *vma,
+					struct folio *folio)
+{
+	return folio_size(folio) >> MM_PAGE_SHIFT(vma->vm_mm);
+}
+
 static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 				unsigned long addr, unsigned long end,
 				struct mm_walk *walk)
@@ -354,6 +360,7 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 	bool pageout_anon_only_filter;
 	unsigned int batch_count = 0;
 	bool abort_madvise = false;
+	int folio_nr_ptes;
 	int nr;
 	int ret = 0;
 	unsigned long page_size = MM_PAGE_SIZE(mm);
@@ -481,13 +488,13 @@ restart:
 			continue;
 
 		/*
-		 * If we encounter a large folio, only split it if it is not
-		 * fully mapped within the range we are operating on. Otherwise
-		 * leave it as is so that it can be swapped out whole. If we
-		 * fail to split a folio, leave it in place and advance to the
-		 * next pte in the range.
+		 * If a folio spans multiple process PTEs, only split a large
+		 * folio if it is not fully mapped within the range. A native
+		 * folio cannot be split below PAGE_SIZE, so leave it in place
+		 * when a PPPS range covers only some of its slices.
 		 */
-		if (folio_test_large(folio)) {
+		folio_nr_ptes = madvise_folio_nr_ptes(vma, folio);
+		if (folio_nr_ptes > 1) {
 			bool any_young;
 
 			nr = madvise_folio_pte_batch(vma, addr, end, folio, pte,
@@ -496,12 +503,12 @@ restart:
 			if (any_young)
 				ptent = pte_mkyoung(ptent);
 
-			if (nr < folio_nr_pages(folio)) {
+			if (nr < folio_nr_ptes) {
 				int err;
 				bool bypass = false;
 
 				trace_android_vh_split_large_folio_bypass(&bypass);
-				if (bypass)
+				if (bypass || !folio_test_large(folio))
 					continue;
 				if (folio_likely_mapped_shared(folio))
 					continue;
@@ -530,12 +537,11 @@ restart:
 
 		/*
 		 * Do not interfere with other mappings of this folio and
-		 * non-LRU folio. If we have a large folio at this point, we
-		 * know it is fully mapped so if its mapcount is the same as its
-		 * number of pages, it must be exclusive.
+		 * non-LRU folio. The folio is fully mapped at this point, so it
+		 * must be exclusive if its mapcount matches its process PTE count.
 		 */
 		if (!folio_test_lru(folio) ||
-		    folio_mapcount(folio) != folio_nr_pages(folio))
+		    folio_mapcount(folio) != folio_nr_ptes)
 			continue;
 
 		if (pageout_anon_only_filter && !folio_test_anon(folio))
@@ -692,6 +698,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 	spinlock_t *ptl;
 	pte_t *start_pte, *pte, ptent;
 	struct folio *folio;
+	int folio_nr_ptes;
 	int nr_swap = 0;
 	unsigned long next;
 	int nr, max_nr;
@@ -741,21 +748,23 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 			continue;
 
 		/*
-		 * If we encounter a large folio, only split it if it is not
-		 * fully mapped within the range we are operating on. Otherwise
-		 * leave it as is so that it can be marked as lazyfree. If we
-		 * fail to split a folio, leave it in place and advance to the
-		 * next pte in the range.
+		 * If a folio spans multiple process PTEs, only split a large
+		 * folio if it is not fully mapped within the range. A native
+		 * folio cannot be split below PAGE_SIZE, so leave it in place
+		 * when a PPPS range covers only some of its slices.
 		 */
-		if (folio_test_large(folio)) {
+		folio_nr_ptes = madvise_folio_nr_ptes(vma, folio);
+		if (folio_nr_ptes > 1) {
 			bool any_young, any_dirty;
 
 			nr = madvise_folio_pte_batch(vma, addr, end, folio, pte,
 						     ptent, &any_young, &any_dirty);
 
-			if (nr < folio_nr_pages(folio)) {
+			if (nr < folio_nr_ptes) {
 				int err;
 
+				if (!folio_test_large(folio))
+					continue;
 				if (folio_likely_mapped_shared(folio))
 					continue;
 				if (!folio_trylock(folio))
@@ -788,11 +797,10 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 			if (!folio_trylock(folio))
 				continue;
 			/*
-			 * If we have a large folio at this point, we know it is
-			 * fully mapped so if its mapcount is the same as its
-			 * number of pages, it must be exclusive.
+			 * The folio is fully mapped at this point, so it must be
+			 * exclusive if its mapcount matches its process PTE count.
 			 */
-			if (folio_mapcount(folio) != folio_nr_pages(folio)) {
+			if (folio_mapcount(folio) != folio_nr_ptes) {
 				folio_unlock(folio);
 				continue;
 			}
