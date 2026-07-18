@@ -3,6 +3,7 @@
 
 LOCAL_HDRS += $(selfdir)/mm/local_config.h $(top_srcdir)/mm/gup_test.h
 LOCAL_HDRS += $(selfdir)/mm/gup_retry_ppps.h
+LOCAL_HDRS += $(selfdir)/mm/vm_iomap_memory_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/dma_mmap_attrs_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/dma_mmap_pages_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
@@ -54,6 +55,8 @@ ifneq (,$(wildcard $(KDIR)/include/linux/page_frag_cache.h))
 TEST_GEN_MODS_DIR := page_frag
 GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
 TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
+VM_IOMAP_MEMORY_PPPS_MODULE := vm_iomap_memory_ppps_module/vm_iomap_memory_ppps_module.ko
+TEST_FILES += $(VM_IOMAP_MEMORY_PPPS_MODULE)
 DMA_MMAP_ATTRS_PPPS_MODULE := dma_mmap_attrs_ppps_module/dma_mmap_attrs_ppps_module.ko
 TEST_FILES += $(DMA_MMAP_ATTRS_PPPS_MODULE)
 DMA_MMAP_PAGES_PPPS_MODULE := dma_mmap_pages_ppps_module/dma_mmap_pages_ppps_module.ko
@@ -73,6 +76,7 @@ endif
 
 TEST_GEN_FILES = cow
 TEST_GEN_FILES += selinux_status_mmap_ppps
+TEST_GEN_FILES += vm_iomap_memory_ppps
 TEST_GEN_FILES += dma_mmap_attrs_ppps
 TEST_GEN_FILES += dma_mmap_pages_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
@@ -200,6 +204,7 @@ TEST_FILES += charge_reserved_hugetlb.sh
 TEST_FILES += hugetlb_reparenting_test.sh
 TEST_FILES += test_gup_retry_ppps.sh
 TEST_FILES += test_selinux_status_mmap_ppps.sh
+TEST_FILES += test_vm_iomap_memory_ppps.sh
 TEST_FILES += test_dma_mmap_attrs_ppps.sh
 TEST_FILES += test_dma_mmap_pages_ppps.sh
 TEST_FILES += test_pagewalk_ppps.sh
@@ -223,6 +228,21 @@ clean_gup_retry_ppps_module:
 	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_gup_retry_ppps_module
+endif
+
+ifneq ($(VM_IOMAP_MEMORY_PPPS_MODULE),)
+all: $(VM_IOMAP_MEMORY_PPPS_MODULE)
+
+$(VM_IOMAP_MEMORY_PPPS_MODULE): vm_iomap_memory_ppps_module/vm_iomap_memory_ppps_module.c \
+				       vm_iomap_memory_ppps_module/Makefile \
+				       vm_iomap_memory_ppps.h
+	+$(MAKE) -C vm_iomap_memory_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_vm_iomap_memory_ppps_module
+clean_vm_iomap_memory_ppps_module:
+	+$(MAKE) -C vm_iomap_memory_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_vm_iomap_memory_ppps_module
 endif
 
 ifneq ($(DMA_MMAP_ATTRS_PPPS_MODULE),)
