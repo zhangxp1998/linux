@@ -302,6 +302,7 @@ if [ -x ./elf_4k_align_ppps ]; then
 fi
 CATEGORY="mmap" run_test ./elf_core_ppps
 CATEGORY="mmap" run_test ./taskstats_ppps
+CATEGORY="mmap" run_test ./rusage_ppps
 CATEGORY="mmap" run_test ./mincore_ppps
 CATEGORY="mmap" run_test ./test_gup_retry_ppps.sh mmap_action_cleanup_ppps
 CATEGORY="mmap" run_test ./test_selinux_status_mmap_ppps.sh
