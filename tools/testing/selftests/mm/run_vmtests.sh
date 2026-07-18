@@ -304,6 +304,7 @@ CATEGORY="gup_test" run_test ./gup_test -ct -F 0x1 0 19 0x1000
 CATEGORY="gup_test" run_test ./gup_longterm
 
 CATEGORY="userfaultfd" run_test ./uffd-unit-tests
+CATEGORY="userfaultfd" run_test ./userfaultfd_retry_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_shmem_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_zeropage_ppps
 uffd_stress_bin=./uffd-stress
