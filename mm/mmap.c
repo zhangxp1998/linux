@@ -1258,7 +1258,7 @@ int vm_brk_flags(unsigned long addr, unsigned long request, vm_flags_t vm_flags)
 	LIST_HEAD(uf);
 	VMA_ITERATOR(vmi, mm, addr);
 
-	len = PAGE_ALIGN(request);
+	len = MM_PAGE_ALIGN(mm, request);
 	if (len < request)
 		return -ENOMEM;
 	if (!len)
