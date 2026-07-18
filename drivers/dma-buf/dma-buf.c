@@ -1474,6 +1474,8 @@ EXPORT_SYMBOL_NS_GPL(dma_buf_end_cpu_access, DMA_BUF);
 int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 		 unsigned long pgoff)
 {
+	u64 offset;
+
 	if (WARN_ON(!dmabuf || !vma))
 		return -EINVAL;
 
@@ -1481,18 +1483,20 @@ int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 	if (!dmabuf->ops->mmap)
 		return -EINVAL;
 
-	/* check for offset overflow */
-	if (pgoff + vma_pages(vma) < pgoff)
+	/* @pgoff is expressed in native pages, not process pages. */
+	if (pgoff > U64_MAX >> PAGE_SHIFT)
 		return -EOVERFLOW;
+	offset = (u64)pgoff << PAGE_SHIFT;
 
 	/* check for overflowing the buffer's size */
-	if (pgoff + vma_pages(vma) >
-	    dmabuf->size >> PAGE_SHIFT)
+	if (offset > dmabuf->size ||
+	    vma->vm_end - vma->vm_start > dmabuf->size - offset)
 		return -EINVAL;
 
 	/* readjust the vma */
 	vma_set_file(vma, dmabuf->file);
 	vma->vm_pgoff = pgoff;
+	vma_set_slice_off(vma, 0);
 
 	return dmabuf->ops->mmap(dmabuf, vma);
 }
