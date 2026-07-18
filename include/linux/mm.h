@@ -4468,8 +4468,16 @@ static inline void mmap_action_map_kernel_pages(struct vm_area_desc *desc,
 static inline void mmap_action_map_kernel_pages_full(struct vm_area_desc *desc,
 		struct page **pages)
 {
-	mmap_action_map_kernel_pages(desc, desc->start, pages,
-				     vma_desc_pages(desc));
+	unsigned long nr_pages = vma_desc_pages(desc);
+
+	if (ppps_mm_is_compat(desc->mm)) {
+		unsigned long nr_slices = vma_desc_size(desc) >>
+			MM_PAGE_SHIFT(desc->mm);
+
+		nr_pages = DIV_ROUND_UP((desc->pgoff & PPPS_SLICE_MASK) +
+					nr_slices, PPPS_SLICES_PER_PAGE);
+	}
+	mmap_action_map_kernel_pages(desc, desc->start, pages, nr_pages);
 }
 
 int mmap_action_prepare(struct vm_area_desc *desc);

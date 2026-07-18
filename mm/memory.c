@@ -2575,6 +2575,26 @@ int map_kernel_pages_prepare(struct vm_area_desc *desc)
 	}
 
 	nr_pages = action->map_kernel.nr_pages;
+	if (ppps_mm_is_compat(desc->mm)) {
+		unsigned long max_pages, user_pages;
+		unsigned int start_slice;
+
+		if (!nr_pages)
+			return 0;
+		if (addr < desc->start || addr >= desc->end)
+			return -EFAULT;
+
+		start_slice = address_to_slice(desc->mm, addr, desc->start,
+					       action->map_kernel.pgoff &
+					       PPPS_SLICE_MASK);
+		user_pages = (desc->end - addr) >> MM_PAGE_SHIFT(desc->mm);
+		max_pages = DIV_ROUND_UP(start_slice + user_pages,
+					 PPPS_SLICES_PER_PAGE);
+		if (nr_pages > max_pages)
+			return -EFAULT;
+		return 0;
+	}
+
 	end = addr + PAGE_SIZE * nr_pages;
 	if (!range_in_vma_desc(desc, addr, end))
 		return -EFAULT;
