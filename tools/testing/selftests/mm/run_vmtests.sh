@@ -283,6 +283,7 @@ fi
 
 CATEGORY="mmap" run_test ./map_fixed_noreplace
 CATEGORY="mmap" run_test ./mincore_ppps
+CATEGORY="mmap" run_test ./mmap_hint_ppps
 CATEGORY="mmap" run_test ./anon_vma_name_ppps
 CATEGORY="mmap" run_test ./remap_file_pages_ppps
 CATEGORY="mmap" run_test ./truncate_ppps
