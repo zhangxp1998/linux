@@ -3131,6 +3131,8 @@ EXPORT_SYMBOL(remap_pfn_range_slice);
  *
  * Return: %0 on success, negative error code otherwise.
  */
+int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len)
+{
 	const unsigned long vm_start = vma->vm_start;
 	const unsigned long vm_end = vma->vm_end;
 	const unsigned long vm_len = vm_end - vm_start;
