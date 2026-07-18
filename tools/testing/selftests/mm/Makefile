@@ -112,6 +112,7 @@ TEST_GEN_FILES += mremap_dontunmap
 TEST_GEN_FILES += mremap_test
 TEST_GEN_FILES += mremap_pgoff_ppps
 TEST_GEN_FILES += mremap_rlimit_ppps
+TEST_GEN_FILES += mremap_commit_ppps
 TEST_GEN_FILES += msync_offset_ppps
 TEST_GEN_FILES += mseal_test
 TEST_GEN_FILES += seal_elf
