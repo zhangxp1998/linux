@@ -52,11 +52,7 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 	if ((flags & MS_ASYNC) && (flags & MS_SYNC))
 		goto out;
 	error = -ENOMEM;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	len = MM_PAGE_ALIGN(current->mm, len);
-#else
-	len = (len + ~__PAGE_MASK) & __PAGE_MASK;
-#endif
+	len = MM_UAPI_PAGE_ALIGN(current->mm, len);
 	end = start + len;
 	if (end < start)
 		goto out;
@@ -95,8 +91,7 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 			goto out_unlock;
 		}
 		file = vma->vm_file;
-		fstart = (start - vma->vm_start) +
-			 ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
+		fstart = vma_file_offset(vma) + start - vma->vm_start;
 		fend = fstart + (min(end, vma->vm_end) - start) - 1;
 		start = vma->vm_end;
 		if ((flags & MS_SYNC) && file &&
