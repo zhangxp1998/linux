@@ -767,14 +767,10 @@ int dma_mmap_pfn(struct vm_area_struct *vma, size_t size, unsigned long pfn)
 		return -ENXIO;
 
 	pfn += vma->vm_pgoff;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	if (ppps_mm_is_compat(vma->vm_mm))
-		return remap_pfn_range_slice(vma, vma->vm_start, pfn, slice,
-					     map_size, vma->vm_page_prot);
-#endif
-	return remap_pfn_range(vma, vma->vm_start, pfn, map_size,
-			       vma->vm_page_prot);
+	return remap_pfn_range_slice(vma, vma->vm_start, pfn, slice, map_size,
+				     vma->vm_page_prot);
 }
+
 int dma_mmap_pages(struct device *dev, struct vm_area_struct *vma,
 		   size_t size, struct page *page)
 {
