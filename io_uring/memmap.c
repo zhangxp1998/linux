@@ -256,9 +256,8 @@ int io_create_region_mmap_safe(struct io_ring_ctx *ctx, struct io_mapped_region 
 }
 
 static struct io_mapped_region *io_mmap_get_region(struct io_ring_ctx *ctx,
-						   loff_t pgoff)
+						   loff_t offset)
 {
-	loff_t offset = pgoff << PAGE_SHIFT;
 	unsigned int id;
 
 
@@ -293,13 +292,12 @@ static void *io_region_validate_mmap(struct io_ring_ctx *ctx,
 	return io_region_get_ptr(mr);
 }
 
-static void *io_uring_validate_mmap_request(struct file *file, loff_t pgoff,
-					    size_t sz)
+static void *io_uring_validate_mmap_request(struct file *file, loff_t offset)
 {
 	struct io_ring_ctx *ctx = file->private_data;
 	struct io_mapped_region *region;
 
-	region = io_mmap_get_region(ctx, pgoff);
+	region = io_mmap_get_region(ctx, offset);
 	if (!region)
 		return ERR_PTR(-EINVAL);
 	return io_region_validate_mmap(ctx, region);
@@ -322,14 +320,14 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct io_ring_ctx *ctx = file->private_data;
 	size_t sz = vma->vm_end - vma->vm_start;
-	long offset = vma_file_offset(vma);
+	loff_t offset = vma_file_offset(vma);
 	unsigned int page_limit = UINT_MAX;
 	struct io_mapped_region *region;
 	void *ptr;
 
 	guard(mutex)(&ctx->mmap_lock);
 
-	ptr = io_uring_validate_mmap_request(file, vma->vm_pgoff, sz);
+	ptr = io_uring_validate_mmap_request(file, offset);
 	if (IS_ERR(ptr))
 		return PTR_ERR(ptr);
 
@@ -340,7 +338,7 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 		break;
 	}
 
-	region = io_mmap_get_region(ctx, vma->vm_pgoff);
+	region = io_mmap_get_region(ctx, offset);
 	return io_region_mmap(ctx, region, vma, page_limit);
 }
 
@@ -349,6 +347,7 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 					 unsigned long flags)
 {
 	struct io_ring_ctx *ctx = filp->private_data;
+	loff_t offset = (loff_t)pgoff << MM_PAGE_SHIFT(current->mm);
 	void *ptr;
 
 	/*
@@ -361,7 +360,7 @@ unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
 
 	guard(mutex)(&ctx->mmap_lock);
 
-	ptr = io_uring_validate_mmap_request(filp, pgoff, len);
+	ptr = io_uring_validate_mmap_request(filp, offset);
 	if (IS_ERR(ptr))
 		return -ENOMEM;
 
@@ -407,11 +406,12 @@ unsigned long io_uring_get_unmapped_area(struct file *file, unsigned long addr,
 					 unsigned long flags)
 {
 	struct io_ring_ctx *ctx = file->private_data;
+	loff_t offset = (loff_t)pgoff << MM_PAGE_SHIFT(current->mm);
 	void *ptr;
 
 	guard(mutex)(&ctx->mmap_lock);
 
-	ptr = io_uring_validate_mmap_request(file, pgoff, len);
+	ptr = io_uring_validate_mmap_request(file, offset);
 	if (IS_ERR(ptr))
 		return PTR_ERR(ptr);
 
