@@ -11,7 +11,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 
 #define USER_PAGE_SIZE	4096UL
 #define FILE_PAGES	8

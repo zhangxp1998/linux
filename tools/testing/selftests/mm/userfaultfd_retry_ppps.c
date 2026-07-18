@@ -18,7 +18,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 
 #ifndef ADDR_4KB_COMPAT_PAGE_SIZE
 #define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
