@@ -2866,7 +2866,7 @@ static int remap_pte_range(struct mm_struct *mm, pmd_t *pmd,
 		set_pte_at(mm, addr, pte, pte_mkspecial(entry));
 		phys_addr += page_size;
 	} while (pte++, addr += page_size, addr != end);
-	lazy_mmu_mode_disable();
+	arch_leave_lazy_mmu_mode();
 	pte_unmap_unlock(mapped_pte, ptl);
 	return err;
 }
@@ -3100,68 +3100,6 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 	return remap_pfn_range_notrack(vma, addr, pfn, size, prot);
 }
 #endif
-
-int remap_pfn_range_prepare(struct vm_area_desc *desc)
-{
-	const struct mmap_action *action = &desc->action;
-	const unsigned long start = action->remap.start;
-	const unsigned long end = start + action->remap.size;
-	const unsigned long pfn = action->remap.start_pfn;
-	const bool is_cow = vma_desc_is_cow_mapping(desc);
-	int err;
-
-	if (!range_in_vma_desc(desc, start, end))
-		return -EFAULT;
-
-	err = get_remap_pgoff(is_cow, start, end, desc->start, desc->end, pfn,
-			      &desc->pgoff);
-	if (err)
-		return err;
-
-	vma_desc_set_flags_mask(desc, VMA_REMAP_FLAGS);
-	return 0;
-}
-
-static int remap_pfn_range_prepare_vma(struct vm_area_struct *vma,
-				       unsigned long addr, unsigned long pfn,
-				       unsigned long size)
-{
-	const unsigned long end = addr + MM_PAGE_ALIGN(vma->vm_mm, size);
-	const bool is_cow = is_cow_mapping(vma->vm_flags);
-	int err;
-
-	err = get_remap_pgoff(is_cow, addr, end, vma->vm_start, vma->vm_end,
-			      pfn, &vma->vm_pgoff);
-	if (err)
-		return err;
-
-	vma_set_flags_mask(vma, VMA_REMAP_FLAGS);
-	return 0;
-}
-
-/**
- * remap_pfn_range - remap kernel memory to userspace
- * @vma: user vma to map to
- * @addr: target page aligned user address to start at
- * @pfn: page frame number of kernel physical memory address
- * @size: size of mapping area
- * @prot: page protection flags for this mapping
- *
- * Note: this is only safe if the mm semaphore is held when called.
- *
- * Return: %0 on success, negative error code otherwise.
- */
-int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
-		    unsigned long pfn, unsigned long size, pgprot_t prot)
-{
-	int err;
-
-	err = remap_pfn_range_prepare_vma(vma, addr, pfn, size);
-	if (err)
-		return err;
-
-	return do_remap_pfn_range(vma, addr, pfn, size, prot);
-}
 EXPORT_SYMBOL(remap_pfn_range);
 
 /**
