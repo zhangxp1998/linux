@@ -880,6 +880,7 @@ static int __copy_insn(struct address_space *mapping, struct file *filp,
 	if (IS_ERR(page))
 		return PTR_ERR(page);
 
+	shmem_ppps_uffd_forget_folio(page_folio(page));
 	copy_from_page(page, offset, insn, nbytes);
 	put_page(page);
 
