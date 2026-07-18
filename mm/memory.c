@@ -3015,7 +3015,7 @@ static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long ad
 	if (is_cow_mapping(vma->vm_flags)) {
 		if (addr != vma->vm_start || end != vma->vm_end)
 			return -EINVAL;
-		vma->vm_pgoff = pfn;
+		vma->vm_pgoff = PHYS_PFN(phys_addr);
 	}
 
 	vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
@@ -3042,7 +3042,7 @@ static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long ad
 int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
 		unsigned long pfn, unsigned long size, pgprot_t prot)
 {
-	int error = remap_pfn_range_internal(vma, addr, pfn, size, prot);
+	int error = remap_pfn_range_internal(vma, addr, PFN_PHYS(pfn), size, prot);
 
 	if (!error)
 		return 0;
@@ -3086,7 +3086,6 @@ void pfnmap_track_ctx_release(struct kref *ref)
 }
 #endif /* __HAVE_PFNMAP_TRACKING */
 
-<<<<<<< HEAD
 /**
  * remap_pfn_range - remap kernel memory to userspace
  * @vma: user vma to map to
