@@ -22,14 +22,14 @@ static int run_test(void)
 	unsigned long offset;
 	unsigned char checksum = 0;
 	unsigned char *data;
+	void *subpage;
 	bool layout_ok;
+	bool subpage_ok;
 	int saved_errno;
 	int fd;
 
 	ksft_print_header();
 	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
 
 	fd = ppps_open_fixture_or_skip(TRACE_PIPE_RAW, O_RDONLY | O_NONBLOCK);
 	ksft_test_result(true, "open the CPU0 trace ring buffer\n");
@@ -51,6 +51,18 @@ static int run_test(void)
 		       meta->nr_subbufs, data_len);
 	if (!layout_ok)
 		ksft_exit_fail_msg("invalid trace ring-buffer metadata\n");
+
+	errno = 0;
+	subpage = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
+		       PROCESS_PAGE_SIZE);
+	saved_errno = errno;
+	subpage_ok = meta_len == PROCESS_PAGE_SIZE ? subpage != MAP_FAILED :
+						  subpage == MAP_FAILED;
+	ksft_test_result(subpage_ok,
+			 "handle a 4K mmap offset according to the native-page layout (errno=%d)\n",
+			 saved_errno);
+	if (subpage != MAP_FAILED)
+		munmap(subpage, PROCESS_PAGE_SIZE);
 
 	errno = 0;
 	data = mmap(NULL, data_len, PROT_READ, MAP_SHARED, fd, meta_len);
