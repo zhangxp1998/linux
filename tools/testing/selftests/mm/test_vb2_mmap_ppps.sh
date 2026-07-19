@@ -27,4 +27,5 @@ rm -f "$device"
 mknod "$device" c "$major" "$minor" || exit 1
 chmod 0600 "$device"
 
+./vb2_mmap_ppps --native || exit 1
 ./vb2_mmap_ppps
