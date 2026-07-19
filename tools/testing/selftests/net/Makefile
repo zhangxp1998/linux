@@ -171,6 +171,7 @@ TEST_GEN_PROGS := \
 	bind_timewait \
 	bind_wildcard \
 	packet_mmap_ppps \
+	tcp_zerocopy_ppps \
 	xsk_vmalloc_mmap_ppps \
 	epoll_busy_poll \
 	ipv6_fragmentation \
