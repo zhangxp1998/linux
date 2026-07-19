@@ -41,6 +41,7 @@ TEST_PROGS += test_stress_04.sh
 TEST_PROGS += test_stress_05.sh
 
 TEST_GEN_PROGS_EXTENDED = kublk
+TEST_GEN_PROGS := ublk_mmap_ppps
 
 include ../lib.mk
 
