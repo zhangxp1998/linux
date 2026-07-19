@@ -2088,7 +2088,7 @@ static void io_rings_free(struct io_ring_ctx *ctx)
 	ctx->sq_sqes = NULL;
 }
 
-static int rings_size(unsigned int flags, unsigned int sq_entries,
+int io_uring_calc_rings_size(unsigned int flags, unsigned int sq_entries,
 		      unsigned int cq_entries, struct io_rings_layout *rl)
 {
 	struct io_rings *rings;
@@ -2918,8 +2918,8 @@ int io_prepare_config(struct io_ctx_config *config)
 	if (ret)
 		return ret;
 
-	ret = rings_size(p->flags, p->sq_entries, p->cq_entries,
-			 &config->layout);
+	ret = io_uring_calc_rings_size(p->flags, p->sq_entries, p->cq_entries,
+				       &config->layout);
 	if (ret)
 		return ret;
 

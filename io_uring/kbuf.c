@@ -749,7 +749,8 @@ int io_register_pbuf_status(struct io_ring_ctx *ctx, void __user *arg)
 }
 
 struct io_mapped_region *io_pbuf_get_region(struct io_ring_ctx *ctx,
-					    unsigned int bgid)
+					    unsigned int bgid,
+					    size_t *mmap_size)
 {
 	struct io_buffer_list *bl;
 
@@ -758,5 +759,8 @@ struct io_mapped_region *io_pbuf_get_region(struct io_ring_ctx *ctx,
 	bl = xa_load(&ctx->io_bl_xa, bgid);
 	if (!bl || !(bl->flags & IOBL_BUF_RING))
 		return NULL;
+	if (mmap_size)
+		*mmap_size = flex_array_size(bl->buf_ring, bufs,
+					       bl->mask + 1);
 	return &bl->region;
 }

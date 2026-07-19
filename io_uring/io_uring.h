@@ -26,6 +26,9 @@ struct io_rings_layout {
 	size_t sq_array_offset;
 };
 
+int io_uring_calc_rings_size(unsigned int flags, unsigned int sq_entries,
+			     unsigned int cq_entries,
+			     struct io_rings_layout *rl);
 struct io_ctx_config {
 	struct io_uring_params p;
 	struct io_rings_layout layout;

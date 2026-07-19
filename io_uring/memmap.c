@@ -10,6 +10,7 @@
 #include <linux/io_uring_types.h>
 #include <asm/shmparam.h>
 
+#include "io_uring.h"
 #include "memmap.h"
 #include "kbuf.h"
 #include "rsrc.h"
@@ -230,27 +231,59 @@ out_free:
 	return ret;
 }
 
-static struct io_mapped_region *io_mmap_get_region(struct io_ring_ctx *ctx,
-						   loff_t offset)
+static size_t io_ring_mmap_size(struct io_ring_ctx *ctx, loff_t offset)
 {
-	unsigned int id;
+	struct io_rings_layout layout;
+
+	if (io_uring_calc_rings_size(ctx->flags, ctx->sq_entries,
+				    ctx->cq_entries, &layout))
+		return 0;
 
 	switch (offset & IORING_OFF_MMAP_MASK) {
 	case IORING_OFF_SQ_RING:
 	case IORING_OFF_CQ_RING:
-		return &ctx->ring_region;
+		return layout.rings_size;
 	case IORING_OFF_SQES:
-		return &ctx->sq_region;
+		return layout.sq_size;
+	}
+	return 0;
+}
+
+static struct io_mapped_region *io_mmap_get_region(struct io_ring_ctx *ctx,
+						   loff_t offset,
+						   size_t *mmap_size)
+{
+	struct io_mapped_region *region = NULL;
+	unsigned int id;
+
+	if (mmap_size)
+		*mmap_size = 0;
+	switch (offset & IORING_OFF_MMAP_MASK) {
+	case IORING_OFF_SQ_RING:
+	case IORING_OFF_CQ_RING:
+		region = &ctx->ring_region;
+		break;
+	case IORING_OFF_SQES:
+		region = &ctx->sq_region;
+		break;
 	case IORING_OFF_PBUF_RING:
 		id = (offset & ~IORING_OFF_MMAP_MASK) >> IORING_OFF_PBUF_SHIFT;
-		return io_pbuf_get_region(ctx, id);
+		return io_pbuf_get_region(ctx, id, mmap_size);
 	case IORING_MAP_OFF_PARAM_REGION:
-		return &ctx->param_region;
+		region = &ctx->param_region;
+		if (mmap_size)
+			*mmap_size = io_region_size(region);
+		break;
 	case IORING_MAP_OFF_ZCRX_REGION:
 		id = (offset & ~IORING_OFF_MMAP_MASK) >> IORING_OFF_ZCRX_SHIFT;
-		return io_zcrx_get_region(ctx, id);
+		region = io_zcrx_get_region(ctx, id);
+		if (region && mmap_size)
+			*mmap_size = io_region_size(region);
+		break;
 	}
-	return NULL;
+	if (region && mmap_size && !*mmap_size)
+		*mmap_size = io_ring_mmap_size(ctx, offset);
+	return region;
 }
 
 static void *io_region_validate_mmap(struct io_ring_ctx *ctx,
@@ -271,7 +304,7 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t offset)
 	struct io_ring_ctx *ctx = file->private_data;
 	struct io_mapped_region *region;
 
-	region = io_mmap_get_region(ctx, offset);
+	region = io_mmap_get_region(ctx, offset, NULL);
 	if (!region)
 		return ERR_PTR(-EINVAL);
 	return io_region_validate_mmap(ctx, region);
@@ -282,9 +315,14 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t offset)
 static int io_region_mmap(struct io_ring_ctx *ctx,
 			  struct io_mapped_region *mr,
 			  struct vm_area_struct *vma,
+			  size_t mmap_size,
 			  unsigned max_pages)
 {
+	size_t allowed_size = MM_PAGE_ALIGN(vma->vm_mm, mmap_size);
 	unsigned long nr_pages = min(mr->nr_pages, max_pages);
+
+	if (allowed_size < mmap_size || vma->vm_end - vma->vm_start > allowed_size)
+		return -EINVAL;
 
 	vm_flags_set(vma, VM_DONTEXPAND);
 	return vm_insert_pages(vma, vma->vm_start, mr->pages, &nr_pages);
@@ -297,6 +335,7 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 	loff_t offset = vma_file_offset(vma);
 	unsigned int page_limit = UINT_MAX;
 	struct io_mapped_region *region;
+	size_t mmap_size;
 	void *ptr;
 
 	guard(mutex)(&ctx->mmap_lock);
@@ -312,8 +351,10 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 		break;
 	}
 
-	region = io_mmap_get_region(ctx, offset);
-	return io_region_mmap(ctx, region, vma, page_limit);
+	region = io_mmap_get_region(ctx, offset, &mmap_size);
+	if (!region || !mmap_size)
+		return -EINVAL;
+	return io_region_mmap(ctx, region, vma, mmap_size, page_limit);
 }
 
 unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,
