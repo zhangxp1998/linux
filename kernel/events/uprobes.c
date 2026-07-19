@@ -156,6 +156,15 @@ static loff_t vaddr_to_offset(struct vm_area_struct *vma, unsigned long vaddr)
 	return vma_file_offset(vma) + (vaddr - vma->vm_start);
 }
 
+static unsigned long uprobe_vma_page_offset(struct vm_area_struct *vma,
+					    unsigned long vaddr)
+{
+	struct mm_struct *mm = vma->vm_mm;
+
+	return ((unsigned long)vma_address_to_slice(vma, vaddr) <<
+		MM_PAGE_SHIFT(mm)) + mm_offset_in_page(mm, vaddr);
+}
+
 /**
  * is_swbp_insn - check if instruction is breakpoint instruction.
  * @insn: instruction to be checked.
@@ -198,6 +207,7 @@ static void copy_to_page(struct page *page, unsigned long vaddr, const void *src
 static int verify_opcode(struct page *page, unsigned long vaddr, uprobe_opcode_t *insn,
 			 int nbytes, void *data)
 {
+	struct vm_area_struct *vma = data;
 	uprobe_opcode_t old_opcode;
 	bool is_swbp;
 
@@ -210,7 +220,8 @@ static int verify_opcode(struct page *page, unsigned long vaddr, uprobe_opcode_t
 	 * is a trap variant; uprobes always wins over any other (gdb)
 	 * breakpoint.
 	 */
-	uprobe_copy_from_page(page, vaddr, &old_opcode, UPROBE_SWBP_INSN_SIZE);
+	uprobe_copy_from_page(page, uprobe_vma_page_offset(vma, vaddr),
+			      &old_opcode, UPROBE_SWBP_INSN_SIZE);
 	is_swbp = is_swbp_insn(&old_opcode);
 
 	if (is_swbp_insn(insn)) {
@@ -306,9 +317,10 @@ find_ref_ctr_vma(struct uprobe *uprobe, struct mm_struct *mm)
 	return NULL;
 }
 
-static int
-__update_ref_ctr(struct mm_struct *mm, unsigned long vaddr, short d)
+static int __update_ref_ctr(struct vm_area_struct *vma, unsigned long vaddr,
+			    short d)
 {
+	struct mm_struct *mm = vma->vm_mm;
 	void *kaddr;
 	struct page *page;
 	int ret;
@@ -328,7 +340,7 @@ __update_ref_ctr(struct mm_struct *mm, unsigned long vaddr, short d)
 	}
 
 	kaddr = kmap_atomic(page);
-	ptr = kaddr + (vaddr & ~PAGE_MASK);
+	ptr = kaddr + uprobe_vma_page_offset(vma, vaddr);
 
 	if (unlikely(*ptr + d < 0)) {
 		pr_warn("ref_ctr going negative. vaddr: 0x%lx, "
@@ -366,7 +378,7 @@ static int update_ref_ctr(struct uprobe *uprobe, struct mm_struct *mm,
 
 	if (rc_vma) {
 		rc_vaddr = offset_to_vaddr(rc_vma, uprobe->ref_ctr_offset);
-		ret = __update_ref_ctr(mm, rc_vaddr, d);
+		ret = __update_ref_ctr(rc_vma, rc_vaddr, d);
 		if (ret)
 			update_ref_ctr_warn(uprobe, mm, d);
 
@@ -435,7 +447,8 @@ static int __uprobe_write(struct vm_area_struct *vma,
 	 */
 	flush_cache_page(vma, vaddr, pte_pfn(fw->pte));
 	fw->pte = ptep_clear_flush(vma, vaddr, fw->ptep);
-	copy_to_page(fw->page, insn_vaddr, insn, nbytes);
+	copy_to_page(fw->page, uprobe_vma_page_offset(vma, insn_vaddr),
+		     insn, nbytes);
 	trace_android_vh_uprobes_uprobe_write(page_folio(fw->page), folio);
 
 	/*
@@ -497,7 +510,7 @@ int uprobe_write_opcode(struct arch_uprobe *auprobe, struct vm_area_struct *vma,
 		bool is_register)
 {
 	return uprobe_write(auprobe, vma, opcode_vaddr, &opcode, UPROBE_SWBP_INSN_SIZE,
-			    verify_opcode, is_register, true /* do_update_ref_ctr */, NULL);
+			    verify_opcode, is_register, true /* do_update_ref_ctr */, vma);
 }
 
 int uprobe_write(struct arch_uprobe *auprobe, struct vm_area_struct *vma,
@@ -1582,7 +1595,7 @@ static int delayed_ref_ctr_inc(struct vm_area_struct *vma)
 			continue;
 
 		vaddr = offset_to_vaddr(vma, du->uprobe->ref_ctr_offset);
-		ret = __update_ref_ctr(vma->vm_mm, vaddr, 1);
+		ret = __update_ref_ctr(vma, vaddr, 1);
 		if (ret) {
 			update_ref_ctr_warn(du->uprobe, vma->vm_mm, 1);
 			if (!err)
@@ -1702,10 +1715,19 @@ static const struct vm_special_mapping xol_mapping = {
 
 unsigned long __weak arch_uprobe_get_xol_area(void)
 {
-	/* Try to map as high as possible, this is only a hint. */
-	return get_unmapped_area(NULL, TASK_SIZE - PAGE_SIZE, PAGE_SIZE, 0, 0);
-}
+	unsigned long size = PAGE_SIZE;
+	unsigned long addr;
 
+	if (ppps_mm_is_compat(current->mm))
+		size += PAGE_SIZE;
+
+	/* Try to map as high as possible, this is only a hint. */
+	addr = get_unmapped_area(NULL, TASK_SIZE - size, size, 0, 0);
+	if (!IS_ERR_VALUE(addr) && size != PAGE_SIZE)
+		addr = PAGE_ALIGN(addr);
+
+	return addr;
+}
 /* Slot allocation for XOL */
 static int xol_add_vma(struct mm_struct *mm, struct xol_area *area)
 {
