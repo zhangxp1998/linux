@@ -10,6 +10,7 @@
 #include <linux/io_uring_types.h>
 #include <asm/shmparam.h>
 
+#include "io_uring.h"
 #include "memmap.h"
 #include "kbuf.h"
 
@@ -227,9 +228,14 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t offset)
 }
 
 int io_uring_mmap_pages(struct io_ring_ctx *ctx, struct vm_area_struct *vma,
-			struct page **pages, int npages)
+			struct page **pages, int npages, size_t mmap_size)
 {
+	size_t allowed_size = MM_PAGE_ALIGN(vma->vm_mm, mmap_size);
 	unsigned long nr_pages = npages;
+
+	if (allowed_size < mmap_size ||
+	    vma->vm_end - vma->vm_start > allowed_size)
+		return -EINVAL;
 
 	vm_flags_set(vma, VM_DONTEXPAND);
 	return vm_insert_pages(vma, vma->vm_start, pages, &nr_pages);
@@ -243,6 +249,7 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 	size_t sz = vma->vm_end - vma->vm_start;
 	loff_t offset = vma_file_offset(vma);
 	unsigned int npages;
+	size_t mmap_size;
 	void *ptr;
 
 	ptr = io_uring_validate_mmap_request(file, offset);
@@ -252,11 +259,14 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 	switch (offset & IORING_OFF_MMAP_MASK) {
 	case IORING_OFF_SQ_RING:
 	case IORING_OFF_CQ_RING:
+		mmap_size = io_uring_mmap_size(ctx, offset);
 		npages = min(ctx->n_ring_pages, (sz + PAGE_SIZE - 1) >> PAGE_SHIFT);
-		return io_uring_mmap_pages(ctx, vma, ctx->ring_pages, npages);
+		return io_uring_mmap_pages(ctx, vma, ctx->ring_pages, npages,
+					  mmap_size);
 	case IORING_OFF_SQES:
+		mmap_size = io_uring_mmap_size(ctx, offset);
 		return io_uring_mmap_pages(ctx, vma, ctx->sqe_pages,
-						ctx->n_sqe_pages);
+					   ctx->n_sqe_pages, mmap_size);
 	case IORING_OFF_PBUF_RING:
 		return io_pbuf_mmap(file, vma);
 	}

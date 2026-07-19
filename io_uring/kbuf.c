@@ -827,6 +827,7 @@ int io_pbuf_mmap(struct file *file, struct vm_area_struct *vma)
 	struct io_ring_ctx *ctx = file->private_data;
 	loff_t pgoff = vma->vm_pgoff << PAGE_SHIFT;
 	struct io_buffer_list *bl;
+	size_t mmap_size;
 	int bgid, ret;
 
 	bgid = (pgoff & ~IORING_OFF_MMAP_MASK) >> IORING_OFF_PBUF_SHIFT;
@@ -834,7 +835,9 @@ int io_pbuf_mmap(struct file *file, struct vm_area_struct *vma)
 	if (IS_ERR(bl))
 		return PTR_ERR(bl);
 
-	ret = io_uring_mmap_pages(ctx, vma, bl->buf_pages, bl->buf_nr_pages);
+	mmap_size = flex_array_size(bl->buf_ring, bufs, bl->mask + 1);
+	ret = io_uring_mmap_pages(ctx, vma, bl->buf_pages, bl->buf_nr_pages,
+				  mmap_size);
 	io_put_bl(ctx, bl);
 	return ret;
 }
