@@ -2314,6 +2314,11 @@ struct vm_area_struct *userfaultfd_clear_vma(struct vma_iterator *vmi,
 	struct vm_area_struct *ret;
 	bool give_up_on_oom = false;
 	vma_flags_t new_vma_flags = vma->flags;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm = current->pgtable_mm;
+
+	current->pgtable_mm = vma->vm_mm;
+#endif
 
 	vma_flags_clear_mask(&new_vma_flags, __VMA_UFFD_FLAGS);
 
@@ -2340,6 +2345,9 @@ struct vm_area_struct *userfaultfd_clear_vma(struct vma_iterator *vmi,
 	if (!IS_ERR(ret))
 		userfaultfd_reset_ctx(ret);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	current->pgtable_mm = prev_pgtable_mm;
+#endif
 	return ret;
 }
 
