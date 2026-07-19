@@ -88,7 +88,8 @@ static int io_account_mem(struct io_ring_ctx *ctx, unsigned long nr_pages)
 
 static int io_buffer_validate(struct iovec *iov)
 {
-	unsigned long tmp, acct_len = iov->iov_len + (PAGE_SIZE - 1);
+	unsigned long tmp;
+	unsigned long acct_len = MM_PAGE_ALIGN(current->mm, iov->iov_len);
 
 	/*
 	 * Don't impose further limits on the size and buffer
@@ -837,6 +838,9 @@ static int io_buffer_account_pin(struct io_ring_ctx *ctx, struct page **pages,
 
 	imu->acct_pages = 0;
 	for (i = 0; i < nr_pages; i++) {
+		/* PPPS GUP can return one pin per slice of the same native page. */
+		if (i && pages[i] == pages[i - 1])
+			continue;
 		if (!PageCompound(pages[i])) {
 			imu->acct_pages++;
 		} else {
@@ -954,13 +958,75 @@ static bool io_try_coalesce_buffer(struct page ***pages, int *nr_pages,
 	return io_do_coalesce_buffer(pages, nr_pages, data, nr_folios);
 }
 
+static struct page **io_pin_compat_buffer(unsigned long uaddr, size_t len,
+					  unsigned int **offsets_out,
+					  int *nr_pages_out)
+{
+	struct mm_struct *mm = current->mm;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
+	unsigned long first_offset;
+	unsigned long page_addr;
+	unsigned int *offsets;
+	struct page **pages;
+	unsigned long nr_pages;
+	unsigned long i;
+	long pinned;
+
+	uaddr = untagged_addr(uaddr);
+	first_offset = mm_offset_in_page(mm, uaddr);
+	nr_pages = DIV_ROUND_UP(first_offset + len, page_size);
+	if (nr_pages > INT_MAX)
+		return ERR_PTR(-EOVERFLOW);
+
+	pages = kvmalloc_array(nr_pages, sizeof(*pages), GFP_KERNEL_ACCOUNT);
+	if (!pages)
+		return ERR_PTR(-ENOMEM);
+	offsets = kvmalloc_array(nr_pages, sizeof(*offsets),
+				 GFP_KERNEL_ACCOUNT);
+	if (!offsets) {
+		kvfree(pages);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	page_addr = uaddr - first_offset;
+	mmap_read_lock(mm);
+	for (i = 0; i < nr_pages; i++, page_addr += page_size) {
+		struct vm_area_struct *vma = vma_lookup(mm, page_addr);
+
+		if (!vma) {
+			pinned = -EFAULT;
+			goto unlock;
+		}
+		offsets[i] = vma_address_to_slice(vma, page_addr) <<
+			     MM_PAGE_SHIFT(mm);
+	}
+	offsets[0] += first_offset;
+	pinned = pin_user_pages(uaddr, nr_pages,
+				FOLL_WRITE | FOLL_LONGTERM, pages);
+unlock:
+	mmap_read_unlock(mm);
+	if (pinned != nr_pages) {
+		if (pinned > 0)
+			unpin_user_pages(pages, pinned);
+		kvfree(offsets);
+		kvfree(pages);
+		return ERR_PTR(pinned < 0 ? pinned : -EFAULT);
+	}
+
+	*offsets_out = offsets;
+	*nr_pages_out = nr_pages;
+	return pages;
+}
+
 static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 				  struct io_mapped_ubuf **pimu,
 				  struct page **last_hpage)
 {
 	struct io_mapped_ubuf *imu = NULL;
 	struct page **pages = NULL;
+	unsigned int *compat_offsets = NULL;
 	unsigned long off;
+	unsigned long first_offset = 0;
 	size_t size;
 	int ret, nr_pages, i;
 	struct io_imu_folio_data data;
@@ -971,8 +1037,15 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 		return 0;
 
 	ret = -ENOMEM;
-	pages = io_pin_pages((unsigned long) iov->iov_base, iov->iov_len,
-				&nr_pages);
+	if (ppps_mm_is_compat(current->mm)) {
+		first_offset = mm_offset_in_page(current->mm, iov->iov_base);
+		pages = io_pin_compat_buffer((unsigned long)iov->iov_base,
+					     iov->iov_len, &compat_offsets,
+					     &nr_pages);
+	} else {
+		pages = io_pin_pages((unsigned long)iov->iov_base, iov->iov_len,
+				     &nr_pages);
+	}
 	if (IS_ERR(pages)) {
 		ret = PTR_ERR(pages);
 		pages = NULL;
@@ -980,7 +1053,10 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 	}
 
 	/* If it's huge page(s), try to coalesce them into fewer bvec entries */
-	coalesced = io_try_coalesce_buffer(&pages, &nr_pages, &data);
+	if (compat_offsets)
+		coalesced = false;
+	else
+		coalesced = io_try_coalesce_buffer(&pages, &nr_pages, &data);
 
 	imu = kvmalloc(struct_size(imu, bvec, nr_pages), GFP_KERNEL);
 	if (!imu)
@@ -995,20 +1071,33 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 	imu->ubuf = (unsigned long) iov->iov_base;
 	imu->len = iov->iov_len;
 	imu->nr_bvecs = nr_pages;
-	imu->folio_shift = PAGE_SHIFT;
+	imu->folio_shift = compat_offsets ? MM_PAGE_SHIFT(current->mm) :
+					   PAGE_SHIFT;
 	if (coalesced)
 		imu->folio_shift = data.folio_shift;
 	refcount_set(&imu->refs, 1);
-	off = (unsigned long)iov->iov_base & ~PAGE_MASK;
-	if (coalesced)
-		off += data.first_folio_page_idx << PAGE_SHIFT;
+	if (compat_offsets)
+		off = compat_offsets[0];
+	else {
+		off = (unsigned long)iov->iov_base & ~PAGE_MASK;
+		if (coalesced)
+			off += data.first_folio_page_idx << PAGE_SHIFT;
+	}
 	*pimu = imu;
 	ret = 0;
 
 	for (i = 0; i < nr_pages; i++) {
 		size_t vec_len;
 
-		vec_len = min_t(size_t, size, (1UL << imu->folio_shift) - off);
+		if (compat_offsets) {
+			off = compat_offsets[i];
+			vec_len = min_t(size_t, size,
+					MM_PAGE_SIZE(current->mm) -
+					(i ? 0 : first_offset));
+		} else {
+			vec_len = min_t(size_t, size,
+					(1UL << imu->folio_shift) - off);
+		}
 		bvec_set_page(&imu->bvec[i], pages[i], vec_len, off);
 		off = 0;
 		size -= vec_len;
@@ -1021,6 +1110,7 @@ done:
 				unpin_user_folio(page_folio(pages[i]), 1);
 		}
 	}
+	kvfree(compat_offsets);
 	kvfree(pages);
 	return ret;
 }
