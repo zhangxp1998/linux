@@ -1249,7 +1249,6 @@ int drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 
 	return ret;
 }
-}
 EXPORT_SYMBOL(drm_gem_mmap);
 
 void drm_gem_print_info(struct drm_printer *p, unsigned int indent,
