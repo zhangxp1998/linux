@@ -24,6 +24,7 @@ TARGETS += drivers/net/bonding
 TARGETS += drivers/net/team
 TARGETS += drivers/net/virtio_net
 TARGETS += drivers/platform/x86/intel/ifs
+TARGETS += drivers/uio
 TARGETS += dt
 TARGETS += efivarfs
 TARGETS += exec
