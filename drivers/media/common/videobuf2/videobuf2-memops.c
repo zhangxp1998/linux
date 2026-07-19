@@ -38,18 +38,22 @@ struct frame_vector *vb2_create_framevec(unsigned long start,
 					 unsigned long length,
 					 bool write)
 {
+	struct mm_struct *mm = current->mm;
 	int ret;
-	unsigned long first, last;
+	unsigned long first_offset;
 	unsigned long nr;
 	struct frame_vector *vec;
 
-	first = start >> PAGE_SHIFT;
-	last = (start + length - 1) >> PAGE_SHIFT;
-	nr = last - first + 1;
+	if (!length)
+		return ERR_PTR(-EINVAL);
+	first_offset = mm_offset_in_page(mm, start);
+	if (check_add_overflow(first_offset, length, &nr))
+		return ERR_PTR(-EOVERFLOW);
+	nr = DIV_ROUND_UP(nr, MM_PAGE_SIZE(mm));
 	vec = frame_vector_create(nr);
 	if (!vec)
 		return ERR_PTR(-ENOMEM);
-	ret = get_vaddr_frames(start & PAGE_MASK, nr, write, vec);
+	ret = get_vaddr_frames(start, nr, write, vec);
 	if (ret < 0)
 		goto out_destroy;
 	/* We accept only complete set of PFNs */
@@ -65,6 +69,46 @@ out_destroy:
 	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL(vb2_create_framevec);
+
+int vb2_framevec_to_sgtable(struct frame_vector *vec, unsigned long size,
+			    struct sg_table *sgt)
+{
+	struct page **pages = frame_vector_pages(vec);
+	unsigned int frame_size = frame_vector_frame_size(vec);
+	unsigned int i;
+	struct scatterlist *sg;
+	int ret;
+
+	if (IS_ERR(pages))
+		return PTR_ERR(pages);
+	ret = sg_alloc_table(sgt, frame_vector_count(vec), GFP_KERNEL);
+	if (ret)
+		return ret;
+
+	for_each_sgtable_sg(sgt, sg, i) {
+		unsigned int offset = frame_vector_frame_offset(vec, i);
+		unsigned int frame_offset = offset % frame_size;
+		unsigned int len = min_t(unsigned long, size,
+					 frame_size - frame_offset);
+
+		if (!len || offset + len > PAGE_SIZE) {
+			ret = -EINVAL;
+			goto out_free;
+		}
+		sg_set_page(sg, pages[i], len, offset);
+		size -= len;
+	}
+	if (size) {
+		ret = -EINVAL;
+		goto out_free;
+	}
+	return 0;
+
+out_free:
+	sg_free_table(sgt);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(vb2_framevec_to_sgtable);
 
 /**
  * vb2_destroy_framevec() - release vector of mapped pfns

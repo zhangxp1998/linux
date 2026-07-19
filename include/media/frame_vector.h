@@ -6,8 +6,14 @@
 struct frame_vector {
 	unsigned int nr_allocated;	/* Number of frames we have space for */
 	unsigned int nr_frames;	/* Number of frames stored in ptrs array */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	unsigned int frame_size;	/* Userspace-visible size of each frame */
+#endif
 	bool got_ref;		/* Did we pin pages by getting page ref? */
 	bool is_pfns;		/* Does array contain pages or pfns? */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	unsigned int *offsets;	/* Byte offset of each frame in its native page */
+#endif
 	void *ptrs[];		/* Array of pinned pfns / pages. Use
 				 * pfns_vector_pages() or pfns_vector_pfns()
 				 * for access */
@@ -24,6 +30,42 @@ void frame_vector_to_pfns(struct frame_vector *vec);
 static inline unsigned int frame_vector_count(struct frame_vector *vec)
 {
 	return vec->nr_frames;
+}
+
+static inline unsigned int frame_vector_frame_size(struct frame_vector *vec)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return vec->frame_size;
+#else
+	return PAGE_SIZE;
+#endif
+}
+
+static inline void frame_vector_set_frame_size(struct frame_vector *vec,
+					unsigned int frame_size)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	vec->frame_size = frame_size;
+#endif
+}
+
+static inline unsigned int *frame_vector_offsets(struct frame_vector *vec)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return vec->offsets;
+#else
+	return (unsigned int *)&vec->ptrs[vec->nr_allocated];
+#endif
+}
+
+static inline unsigned int
+frame_vector_frame_offset(struct frame_vector *vec, unsigned int frame)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return vec->offsets[frame];
+#else
+	return frame_vector_offsets(vec)[frame];
+#endif
 }
 
 static inline struct page **frame_vector_pages(struct frame_vector *vec)

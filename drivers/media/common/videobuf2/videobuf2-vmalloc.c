@@ -11,6 +11,7 @@
  */
 
 #include <linux/io.h>
+#include <linux/highmem.h>
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/refcount.h>
@@ -25,6 +26,7 @@
 struct vb2_vmalloc_buf {
 	void				*vaddr;
 	struct frame_vector		*vec;
+	bool				userptr_bounce;
 	enum dma_data_direction		dma_dir;
 	unsigned long			size;
 	refcount_t			refcount;
@@ -33,6 +35,36 @@ struct vb2_vmalloc_buf {
 };
 
 static void vb2_vmalloc_put(void *buf_priv);
+
+static void vb2_vmalloc_copy_userptr(struct vb2_vmalloc_buf *buf,
+				     bool to_user)
+{
+	struct page **pages = frame_vector_pages(buf->vec);
+	unsigned int frame_size = frame_vector_frame_size(buf->vec);
+	unsigned long remaining = buf->size;
+	unsigned long copied = 0;
+	unsigned int i;
+
+	if (WARN_ON_ONCE(IS_ERR(pages)))
+		return;
+
+	for (i = 0; i < frame_vector_count(buf->vec) && remaining; i++) {
+		unsigned int offset = frame_vector_frame_offset(buf->vec, i);
+		unsigned int frame_offset = offset % frame_size;
+		unsigned long len = min_t(unsigned long, remaining,
+					  frame_size - frame_offset);
+		void *page_addr = kmap_local_page(pages[i]);
+
+		if (to_user)
+			memcpy(page_addr + offset, buf->vaddr + copied, len);
+		else
+			memcpy(buf->vaddr + copied, page_addr + offset, len);
+		kunmap_local(page_addr);
+		copied += len;
+		remaining -= len;
+	}
+	WARN_ON_ONCE(remaining);
+}
 
 static void *vb2_vmalloc_alloc(struct vb2_buffer *vb, struct device *dev,
 			       unsigned long size)
@@ -83,7 +115,6 @@ static void *vb2_vmalloc_get_userptr(struct vb2_buffer *vb, struct device *dev,
 		return ERR_PTR(-ENOMEM);
 
 	buf->dma_dir = vb->vb2_queue->dma_dir;
-	offset = vaddr & ~PAGE_MASK;
 	buf->size = size;
 	vec = vb2_create_framevec(vaddr, size,
 				  buf->dma_dir == DMA_FROM_DEVICE ||
@@ -94,6 +125,17 @@ static void *vb2_vmalloc_get_userptr(struct vb2_buffer *vb, struct device *dev,
 	}
 	buf->vec = vec;
 	n_pages = frame_vector_count(vec);
+	if (frame_vector_frame_size(vec) != PAGE_SIZE) {
+		buf->vaddr = vmalloc(size);
+		if (!buf->vaddr)
+			goto fail_map;
+		buf->userptr_bounce = true;
+		if (buf->dma_dir == DMA_TO_DEVICE ||
+		    buf->dma_dir == DMA_BIDIRECTIONAL)
+			vb2_vmalloc_copy_userptr(buf, false);
+		return buf;
+	}
+	offset = frame_vector_frame_offset(vec, 0);
 	if (frame_vector_to_pages(vec) < 0) {
 		unsigned long *nums = frame_vector_pfns(vec);
 
@@ -133,7 +175,9 @@ static void vb2_vmalloc_put_userptr(void *buf_priv)
 
 	if (!buf->vec->is_pfns) {
 		n_pages = frame_vector_count(buf->vec);
-		if (vaddr)
+		if (buf->userptr_bounce)
+			vfree(buf->vaddr);
+		else if (vaddr)
 			vm_unmap_ram((void *)vaddr, n_pages);
 		if (buf->dma_dir == DMA_FROM_DEVICE ||
 		    buf->dma_dir == DMA_BIDIRECTIONAL) {
@@ -147,6 +191,26 @@ static void vb2_vmalloc_put_userptr(void *buf_priv)
 	}
 	vb2_destroy_framevec(buf->vec);
 	kfree(buf);
+}
+
+static void vb2_vmalloc_prepare(void *buf_priv)
+{
+	struct vb2_vmalloc_buf *buf = buf_priv;
+
+	if (buf->userptr_bounce &&
+	    (buf->dma_dir == DMA_TO_DEVICE ||
+	     buf->dma_dir == DMA_BIDIRECTIONAL))
+		vb2_vmalloc_copy_userptr(buf, false);
+}
+
+static void vb2_vmalloc_finish(void *buf_priv)
+{
+	struct vb2_vmalloc_buf *buf = buf_priv;
+
+	if (buf->userptr_bounce &&
+	    (buf->dma_dir == DMA_FROM_DEVICE ||
+	     buf->dma_dir == DMA_BIDIRECTIONAL))
+		vb2_vmalloc_copy_userptr(buf, true);
 }
 
 static void *vb2_vmalloc_vaddr(struct vb2_buffer *vb, void *buf_priv)
@@ -437,6 +501,8 @@ const struct vb2_mem_ops vb2_vmalloc_memops = {
 	.put		= vb2_vmalloc_put,
 	.get_userptr	= vb2_vmalloc_get_userptr,
 	.put_userptr	= vb2_vmalloc_put_userptr,
+	.prepare	= vb2_vmalloc_prepare,
+	.finish		= vb2_vmalloc_finish,
 #ifdef CONFIG_HAS_DMA
 	.get_dmabuf	= vb2_vmalloc_get_dmabuf,
 #endif

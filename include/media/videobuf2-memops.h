@@ -18,6 +18,8 @@
 #include <linux/mm.h>
 #include <linux/refcount.h>
 
+struct sg_table;
+
 /**
  * struct vb2_vmarea_handler - common vma refcount tracking handler.
  *
@@ -37,5 +39,7 @@ struct frame_vector *vb2_create_framevec(unsigned long start,
 					 unsigned long length,
 					 bool write);
 void vb2_destroy_framevec(struct frame_vector *vec);
+int vb2_framevec_to_sgtable(struct frame_vector *vec, unsigned long size,
+			    struct sg_table *sgt);
 
 #endif
