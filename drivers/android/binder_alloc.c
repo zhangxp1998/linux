@@ -86,6 +86,11 @@ static bool binder_alloc_page_aligned(struct binder_alloc *alloc,
 	return IS_ALIGNED(address - alloc->vm_start, PAGE_SIZE);
 }
 
+static size_t binder_alloc_nr_pages(const struct binder_alloc *alloc)
+{
+	return DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE);
+}
+
 static void binder_insert_free_buffer(struct binder_alloc *alloc,
 				      struct binder_buffer *new_buffer)
 {
@@ -946,7 +951,7 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 
 	alloc->vm_start = vma->vm_start;
 
-	alloc->pages = kvcalloc(DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE),
+	alloc->pages = kvcalloc(binder_alloc_nr_pages(alloc),
 				sizeof(alloc->pages[0]),
 				GFP_KERNEL);
 	if (!alloc->pages) {
@@ -1027,9 +1032,9 @@ void binder_alloc_deferred_release(struct binder_alloc *alloc)
 
 	page_count = 0;
 	if (alloc->pages) {
-		int i;
+		size_t i;
 
-		for (i = 0; i < alloc->buffer_size / PAGE_SIZE; i++) {
+		for (i = 0; i < binder_alloc_nr_pages(alloc); i++) {
 			struct page *page;
 			bool on_lru;
 
@@ -1042,7 +1047,7 @@ void binder_alloc_deferred_release(struct binder_alloc *alloc)
 					      page_to_nid(page),
 					      NULL);
 			binder_alloc_debug(BINDER_DEBUG_BUFFER_ALLOC,
-				     "%s: %d: page %d %s\n",
+				     "%s: %d: page %zu %s\n",
 				     __func__, alloc->pid, i,
 				     on_lru ? "on lru" : "active");
 			binder_free_page(page);
@@ -1095,7 +1100,7 @@ void binder_alloc_print_pages(struct seq_file *m,
 			      struct binder_alloc *alloc)
 {
 	struct page *page;
-	int i;
+	size_t i;
 	int active = 0;
 	int lru = 0;
 	int free = 0;
@@ -1106,7 +1111,7 @@ void binder_alloc_print_pages(struct seq_file *m,
 	 * read inconsistent state.
 	 */
 	if (binder_alloc_is_mapped(alloc)) {
-		for (i = 0; i < alloc->buffer_size / PAGE_SIZE; i++) {
+		for (i = 0; i < binder_alloc_nr_pages(alloc); i++) {
 			page = binder_get_installed_page(alloc, i);
 			if (!page)
 				free++;

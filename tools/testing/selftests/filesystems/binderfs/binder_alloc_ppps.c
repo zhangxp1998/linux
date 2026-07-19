@@ -30,10 +30,10 @@
 
 #define USER_PAGE_SIZE 4096UL
 #define NATIVE_PAGE_SIZE 16384UL
-#define BINDER_VM_SIZE (4UL * 1024 * 1024)
+#define BINDER_VM_SIZE ((1UL * 1024 * 1024) - 2 * USER_PAGE_SIZE)
 #define BINDER_VM_HINT ((void *)0x100001000ULL)
 #define TEST_CODE 0x50505053U
-#define TRANSACTION_PAYLOAD_SIZE (5 * USER_PAGE_SIZE + 123)
+#define TRANSACTION_PAYLOAD_SIZE (BINDER_VM_SIZE - USER_PAGE_SIZE)
 
 struct server_ready {
 	int error;
@@ -82,6 +82,78 @@ static bool read_full(int fd, void *buffer, size_t size)
 		size -= bytes;
 	}
 	return true;
+}
+
+static unsigned long mapping_kernel_page_size(pid_t pid, uintptr_t address)
+{
+	char path[64];
+	char *line = NULL;
+	size_t line_size = 0;
+	unsigned long page_size = 0;
+	bool in_mapping = false;
+	FILE *file;
+
+	if (snprintf(path, sizeof(path), "/proc/%d/smaps", pid) >=
+	    (int)sizeof(path))
+		return 0;
+	file = fopen(path, "re");
+	if (!file)
+		return 0;
+	while (getline(&line, &line_size, file) >= 0) {
+		unsigned long start, end, size_kb;
+
+		if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
+			in_mapping = address >= start && address < end;
+			continue;
+		}
+		if (in_mapping &&
+		    sscanf(line, "KernelPageSize: %lu kB", &size_kb) == 1) {
+			page_size = size_kb * 1024;
+			break;
+		}
+	}
+	free(line);
+	fclose(file);
+	return page_size;
+}
+
+static int binder_page_slots(const char *binderfs_dir, pid_t pid)
+{
+	char path[320];
+	char *line = NULL;
+	size_t line_size = 0;
+	int slots = -1;
+	bool in_proc = false;
+	FILE *file;
+
+	if (snprintf(path, sizeof(path), "%s/binder_logs/stats",
+		     binderfs_dir) >= (int)sizeof(path))
+		return -1;
+	file = fopen(path, "re");
+	if (!file) {
+		ksft_print_msg("open %s failed: %s\n", path, strerror(errno));
+		return -1;
+	}
+	while (getline(&line, &line_size, file) >= 0) {
+		int active, lru, free_pages;
+		int current_pid;
+
+		if (sscanf(line, "proc %d", &current_pid) == 1) {
+			in_proc = current_pid == pid;
+			continue;
+		}
+		if (!in_proc)
+			continue;
+		if (sscanf(line, "  pages: %d:%d:%d", &active, &lru, &free_pages) == 3) {
+			slots = active + lru + free_pages;
+			break;
+		}
+	}
+	free(line);
+	fclose(file);
+	if (slots < 0)
+		ksft_print_msg("no Binder page statistics in %s\n", path);
+	return slots;
 }
 
 static int binder_write_commands(int fd, const void *commands, size_t size)
@@ -212,7 +284,6 @@ static int send_transaction(const char *device_path)
 	struct binder_transaction_data transaction = {
 		.target.handle = 0,
 		.code = TEST_CODE,
-		.flags = TF_ONE_WAY,
 		.data_size = sizeof(transaction_payload),
 		.data.ptr.buffer = (binder_uintptr_t)(uintptr_t)transaction_payload,
 	};
@@ -247,7 +318,10 @@ static int run_test(const char *binderfs_dir)
 	char device_path[256];
 	struct binderfs_device device = {};
 	struct server_ready ready = {};
+	unsigned long kernel_page_size;
+	unsigned long expected_slots;
 	bool received = false;
+	int page_slots;
 	int ready_pipe[2];
 	int result_pipe[2];
 	pid_t server;
@@ -255,7 +329,7 @@ static int run_test(const char *binderfs_dir)
 	int status;
 
 	ksft_print_header();
-	ksft_set_plan(4);
+	ksft_set_plan(5);
 	init_transaction_payload();
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
@@ -295,6 +369,14 @@ static int run_test(const char *binderfs_dir)
 	ksft_test_result(!ready.error && ready.mapping == (uintptr_t)BINDER_VM_HINT &&
 			 (ready.mapping & (NATIVE_PAGE_SIZE - 1)) == USER_PAGE_SIZE,
 			 "map binder at a native-page-misaligned hint\n");
+	kernel_page_size = mapping_kernel_page_size(server, ready.mapping);
+	page_slots = binder_page_slots(binderfs_dir, server);
+	expected_slots = kernel_page_size ?
+		(BINDER_VM_SIZE + kernel_page_size - 1) / kernel_page_size : 0;
+	ksft_print_msg("binder size=%lu kernel_page_size=%lu slots=%d expected=%lu\n",
+		       BINDER_VM_SIZE, kernel_page_size, page_slots, expected_slots);
+	ksft_test_result(kernel_page_size && page_slots == (int)expected_slots,
+			 "track the Android Binder mapping's partial backing page\n");
 
 	if (!ready.error && send_transaction(device_path) == 0 &&
 	    wait_readable(result_pipe[0], 5000))
@@ -337,7 +419,7 @@ static int run_in_private_binderfs(void)
 	if (!mkdtemp(mountpoint))
 		ksft_exit_fail_msg("create binderfs mountpoint failed: %s\n",
 				   strerror(errno));
-	if (mount(NULL, mountpoint, "binder", 0, NULL)) {
+	if (mount(NULL, mountpoint, "binder", 0, "stats=global")) {
 		int saved_errno = errno;
 
 		rmdir(mountpoint);
