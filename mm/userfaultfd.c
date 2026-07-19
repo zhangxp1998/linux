@@ -256,6 +256,9 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 	void *kaddr;
 	int ret;
 	struct folio *folio;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	if (!*foliop) {
 		ret = -ENOMEM;
@@ -282,10 +285,17 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 		 * Disable page faults to prevent potential deadlock
 		 * and retry the copy outside the mmap_lock.
 		 */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		prev_pgtable_mm = current->pgtable_mm;
+		current->pgtable_mm = current->mm;
+#endif
 		pagefault_disable();
 		ret = copy_from_user(kaddr + offset,
 				     (const void __user *)src_addr, pgsize);
 		pagefault_enable();
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		current->pgtable_mm = prev_pgtable_mm;
+#endif
 		kunmap_local(kaddr);
 
 		/* fallback to copy_from_user outside mmap_lock */

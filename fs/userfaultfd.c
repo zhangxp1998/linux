@@ -1237,6 +1237,20 @@ static __always_inline int validate_range(struct mm_struct *mm,
 	return validate_unaligned_range(mm, start, len);
 }
 
+static __always_inline int validate_copy_source_range(struct mm_struct *dst_mm,
+						      __u64 start, __u64 len)
+{
+	__u64 task_size = current->mm->task_size;
+
+	if (len & ~MM_PAGE_MASK(dst_mm))
+		return -EINVAL;
+	if (!len || start >= task_size || len > task_size - start)
+		return -EINVAL;
+	if (start + len <= start)
+		return -EINVAL;
+	return 0;
+}
+
 static int userfaultfd_register(struct userfaultfd_ctx *ctx,
 				unsigned long arg)
 {
@@ -1586,6 +1600,9 @@ static int userfaultfd_copy(struct userfaultfd_ctx *ctx,
 	struct uffdio_copy __user *user_uffdio_copy;
 	struct userfaultfd_wake_range range;
 	uffd_flags_t flags = 0;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	user_uffdio_copy = (struct uffdio_copy __user *) arg;
 
@@ -1599,8 +1616,8 @@ static int userfaultfd_copy(struct userfaultfd_ctx *ctx,
 			   sizeof(uffdio_copy)-sizeof(__s64)))
 		goto out;
 
-	ret = validate_unaligned_range(ctx->mm, uffdio_copy.src,
-				       uffdio_copy.len);
+	ret = validate_copy_source_range(ctx->mm, uffdio_copy.src,
+					 uffdio_copy.len);
 	if (ret)
 		goto out;
 	ret = validate_range(ctx->mm, uffdio_copy.dst, uffdio_copy.len);
@@ -1613,8 +1630,15 @@ static int userfaultfd_copy(struct userfaultfd_ctx *ctx,
 	if (uffdio_copy.mode & UFFDIO_COPY_MODE_WP)
 		flags |= MFILL_ATOMIC_WP;
 	if (mmget_not_zero(ctx->mm)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		prev_pgtable_mm = current->pgtable_mm;
+		current->pgtable_mm = ctx->mm;
+#endif
 		ret = mfill_atomic_copy(ctx, uffdio_copy.dst, uffdio_copy.src,
 					uffdio_copy.len, flags);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		current->pgtable_mm = prev_pgtable_mm;
+#endif
 		mmput(ctx->mm);
 	} else {
 		return -ESRCH;
