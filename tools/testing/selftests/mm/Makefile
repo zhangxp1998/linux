@@ -85,6 +85,7 @@ TEST_GEN_FILES += rusage_ppps
 TEST_GEN_FILES += sysv_shm_ppps
 TEST_GEN_FILES += io_uring_mmap_ppps
 TEST_GEN_FILES += io_uring_fixed_buffer_ppps
+TEST_GEN_FILES += mglru_ppps
 TEST_GEN_FILES += thp_mmap_offset_ppps
 TEST_GEN_FILES += shmem_mmap_offset_ppps
 TEST_GEN_FILES += secretmem_eof_ppps
