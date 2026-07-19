@@ -2348,7 +2348,7 @@ static int unuse_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 		folio_free_swap(folio);
 		folio_unlock(folio);
 		folio_put(folio);
-	} while (addr += PAGE_SIZE, addr != end);
+	} while (addr += MM_PAGE_SIZE(vma->vm_mm), addr != end);
 
 	if (pte)
 		pte_unmap(pte);
@@ -3307,16 +3307,75 @@ __weak unsigned long arch_max_swapfile_size(void)
 	return generic_max_swapfile_size();
 }
 
+static int swap_badpage_cmp(const void *left, const void *right)
+{
+	const __u32 left_page = *(const __u32 *)left;
+	const __u32 right_page = *(const __u32 *)right;
+
+	return (left_page > right_page) - (left_page < right_page);
+}
+
+static unsigned int swap_header_page_shift(union swap_header *swap_header)
+{
+	char *header = (char *)swap_header;
+
+	if (!memcmp("SWAPSPACE2", header + PAGE_SIZE - 10, 10))
+		return PAGE_SHIFT;
+
+	/*
+	 * A compat mkswap process formats the area in process-page units.  The
+	 * swapon caller need not be that process, so inspect the compat location
+	 * independently of the caller's current page size.
+	 */
+#if PAGE_SHIFT_COMPAT != PAGE_SHIFT
+	if (!memcmp("SWAPSPACE2", header + PAGE_SIZE_COMPAT - 10, 10))
+		return PAGE_SHIFT_COMPAT;
+#endif
+
+	return PAGE_SHIFT;
+}
+
+static void swap_header_to_native_pages(union swap_header *swap_header,
+					unsigned int header_page_shift)
+{
+	unsigned int page_shift_delta = PAGE_SHIFT - header_page_shift;
+	unsigned int nr_badpages = swap_header->info.nr_badpages;
+	unsigned int i, nr_unique = 0;
+	u64 nr_pages = (u64)swap_header->info.last_page + 1;
+
+	swap_header->info.last_page = (nr_pages >> page_shift_delta) - 1;
+	for (i = 0; i < nr_badpages; i++)
+		swap_header->info.badpages[i] >>= page_shift_delta;
+
+	sort(swap_header->info.badpages, nr_badpages,
+	     sizeof(swap_header->info.badpages[0]), swap_badpage_cmp, NULL);
+	for (i = 0; i < nr_badpages; i++) {
+		if (nr_unique && swap_header->info.badpages[i] ==
+				 swap_header->info.badpages[nr_unique - 1])
+			continue;
+		swap_header->info.badpages[nr_unique++] =
+			swap_header->info.badpages[i];
+	}
+	swap_header->info.nr_badpages = nr_unique;
+}
+
 static unsigned long read_swap_header(struct swap_info_struct *si,
 					union swap_header *swap_header,
 					struct inode *inode)
 {
+	unsigned int header_page_shift = swap_header_page_shift(swap_header);
+	unsigned long max_badpages =
+		(((1UL << header_page_shift) - 10 -
+		  offsetof(union swap_header, info.badpages)) /
+		 sizeof(swap_header->info.badpages[0]));
+	char *swap_magic = (char *)swap_header +
+		(1UL << header_page_shift) - 10;
 	int i;
 	unsigned long maxpages;
 	unsigned long swapfilepages;
 	unsigned long last_page;
 
-	if (memcmp("SWAPSPACE2", swap_header->magic.magic, 10)) {
+	if (memcmp("SWAPSPACE2", swap_magic, 10)) {
 		pr_err("Unable to find swap-space signature\n");
 		return 0;
 	}
@@ -3326,7 +3385,7 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
 		swab32s(&swap_header->info.version);
 		swab32s(&swap_header->info.last_page);
 		swab32s(&swap_header->info.nr_badpages);
-		if (swap_header->info.nr_badpages > MAX_SWAP_BADPAGES)
+		if (swap_header->info.nr_badpages > max_badpages)
 			return 0;
 		for (i = 0; i < swap_header->info.nr_badpages; i++)
 			swab32s(&swap_header->info.badpages[i]);
@@ -3336,6 +3395,18 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
 		pr_warn("Unable to handle swap header version %d\n",
 			swap_header->info.version);
 		return 0;
+	}
+	if (swap_header->info.nr_badpages > max_badpages)
+		return 0;
+
+	if (header_page_shift < PAGE_SHIFT) {
+		u64 nr_pages = (u64)swap_header->info.last_page + 1;
+
+		if (!(nr_pages >> (PAGE_SHIFT - header_page_shift))) {
+			pr_warn("Empty swap-file\n");
+			return 0;
+		}
+		swap_header_to_native_pages(swap_header, header_page_shift);
 	}
 
 	maxpages = swapfile_maximum_size;
@@ -3364,7 +3435,7 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
 	}
 	if (swap_header->info.nr_badpages && S_ISREG(inode->i_mode))
 		return 0;
-	if (swap_header->info.nr_badpages > MAX_SWAP_BADPAGES)
+	if (swap_header->info.nr_badpages > max_badpages)
 		return 0;
 
 	return maxpages;
