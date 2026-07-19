@@ -28,13 +28,15 @@ static int run_test(void)
 	};
 	unsigned char residency[RING_SIZE / PROCESS_PAGE_SIZE] = {};
 	int version = TPACKET_V3;
+	void *offset_ring;
 	void *ring = MAP_FAILED;
 	bool resident = true;
+	int saved_errno;
 	int fd;
 	int i;
 
 	ksft_print_header();
-	ksft_set_plan(5);
+	ksft_set_plan(6);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, htons(ETH_P_ALL));
@@ -49,6 +51,16 @@ static int run_test(void)
 		ksft_exit_fail_msg("packet ring setup failed: %s\n",
 				   strerror(errno));
 	ksft_test_result_pass("configure a 16K packet ring\n");
+
+	errno = 0;
+	offset_ring = mmap(NULL, RING_SIZE, PROT_READ | PROT_WRITE,
+			   MAP_SHARED, fd, PROCESS_PAGE_SIZE);
+	saved_errno = errno;
+	ksft_test_result(offset_ring == MAP_FAILED,
+			 "reject a packet-ring mmap at offset 4K (errno=%d)\n",
+			 saved_errno);
+	if (offset_ring != MAP_FAILED)
+		munmap(offset_ring, RING_SIZE);
 
 	ring = mmap(NULL, RING_SIZE, PROT_READ | PROT_WRITE,
 		    MAP_SHARED | MAP_POPULATE, fd, 0);
