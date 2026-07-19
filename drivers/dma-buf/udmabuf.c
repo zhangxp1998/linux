@@ -26,6 +26,8 @@ MODULE_PARM_DESC(size_limit_mb, "Max size of a dmabuf, in megabytes. Default is 
 
 struct udmabuf {
 	pgoff_t pagecount;
+	unsigned int page_shift;
+	size_t size;
 	struct folio **folios;
 
 	/**
@@ -42,47 +44,85 @@ struct udmabuf {
 	struct sg_table *sg;
 	struct miscdevice *device;
 	pgoff_t *offsets;
+	pgoff_t vmap_pagecount;
+	unsigned long vmap_offset;
 };
+
+static unsigned int udmabuf_process_page_shift(struct mm_struct *mm)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return MM_PAGE_SHIFT(mm);
+#else
+	(void)mm;
+	return __PAGE_SHIFT;
+#endif
+}
+
+static bool udmabuf_process_page_aligned(struct mm_struct *mm,
+					 unsigned long value)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return MM_PAGE_ALIGNED(mm, value);
+#else
+	(void)mm;
+	return __PAGE_ALIGNED(value);
+#endif
+}
+
+static vm_fault_t udmabuf_insert_pfn(struct vm_area_struct *vma,
+				     struct udmabuf *ubuf,
+				     unsigned long address)
+{
+	loff_t offset = vma_file_offset(vma);
+	unsigned long folio_offset;
+	unsigned int slice_idx;
+	struct page *page;
+	pgoff_t index;
+
+	if (check_add_overflow(offset,
+			       (loff_t)(address - vma->vm_start), &offset) ||
+	    offset < 0 || offset >= ubuf->size)
+		return VM_FAULT_SIGBUS;
+
+	index = offset >> ubuf->page_shift;
+	if (WARN_ON_ONCE(index >= ubuf->pagecount))
+		return VM_FAULT_SIGBUS;
+
+	folio_offset = ubuf->offsets[index] +
+		(offset & ((1UL << ubuf->page_shift) - 1));
+	page = folio_page(ubuf->folios[index], folio_offset >> PAGE_SHIFT);
+	slice_idx = (folio_offset & ~PAGE_MASK) >>
+		MM_PAGE_SHIFT(vma->vm_mm);
+
+	return vmf_insert_pfn_slice(vma, address, page_to_pfn(page), slice_idx);
+}
 
 static vm_fault_t udmabuf_vm_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct udmabuf *ubuf = vma->vm_private_data;
-	pgoff_t pgoff = vmf->pgoff;
-	unsigned long addr, pfn;
+	unsigned long addr;
 	vm_fault_t ret;
 
-	if (pgoff >= ubuf->pagecount)
-		return VM_FAULT_SIGBUS;
-
-	pfn = folio_pfn(ubuf->folios[pgoff]);
-	pfn += ubuf->offsets[pgoff] >> PAGE_SHIFT;
-
-	ret = vmf_insert_pfn(vma, vmf->address, pfn);
+	ret = udmabuf_insert_pfn(vma, ubuf, vmf->address);
 	if (ret & VM_FAULT_ERROR)
 		return ret;
 
 	/* pre fault */
-	pgoff = vma->vm_pgoff;
 	addr = vma->vm_start;
 
-	for (; addr < vma->vm_end; pgoff++, addr += PAGE_SIZE) {
+	for (; addr < vma->vm_end;
+	     addr += MM_PAGE_SIZE(vma->vm_mm)) {
 		if (addr == vmf->address)
 			continue;
 
-		if (WARN_ON(pgoff >= ubuf->pagecount))
-			break;
-
-		pfn = folio_pfn(ubuf->folios[pgoff]);
-		pfn += ubuf->offsets[pgoff] >> PAGE_SHIFT;
-
 		/**
-		 * If the below vmf_insert_pfn() fails, we do not return an
+		 * If the below insertion fails, we do not return an
 		 * error here during this pre-fault step. However, an error
 		 * will be returned if the failure occurs when the addr is
 		 * truly accessed.
 		 */
-		if (vmf_insert_pfn(vma, addr, pfn) & VM_FAULT_ERROR)
+		if (udmabuf_insert_pfn(vma, ubuf, addr) & VM_FAULT_ERROR)
 			break;
 	}
 
@@ -99,6 +139,8 @@ static int mmap_udmabuf(struct dma_buf *buf, struct vm_area_struct *vma)
 
 	if ((vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) == 0)
 		return -EINVAL;
+	if (udmabuf_process_page_shift(vma->vm_mm) > ubuf->page_shift)
+		return -EINVAL;
 
 	vma->vm_ops = &udmabuf_vm_ops;
 	vma->vm_private_data = ubuf;
@@ -110,26 +152,50 @@ static int vmap_udmabuf(struct dma_buf *buf, struct iosys_map *map)
 {
 	struct udmabuf *ubuf = buf->priv;
 	struct page **pages;
+	unsigned long first_offset;
+	unsigned long unit_size;
 	void *vaddr;
-	pgoff_t pg;
+	pgoff_t pagecount;
+	pgoff_t previous_page = (pgoff_t)-1;
+	pgoff_t i;
 
 	dma_resv_assert_held(buf->resv);
-
-	pages = kvmalloc_array(ubuf->pagecount, sizeof(*pages), GFP_KERNEL);
+	unit_size = 1UL << ubuf->page_shift;
+	first_offset = ubuf->offsets[0] & ~PAGE_MASK;
+	pagecount = DIV_ROUND_UP(first_offset + ubuf->size, PAGE_SIZE);
+	pages = kvmalloc_array(pagecount, sizeof(*pages), GFP_KERNEL);
 	if (!pages)
 		return -ENOMEM;
 
-	for (pg = 0; pg < ubuf->pagecount; pg++)
-		pages[pg] = folio_page(ubuf->folios[pg],
-				       ubuf->offsets[pg] >> PAGE_SHIFT);
+	for (i = 0; i < ubuf->pagecount; i++) {
+		unsigned long expected = first_offset + i * unit_size;
+		unsigned long source_offset = ubuf->offsets[i];
+		pgoff_t page_index = expected >> PAGE_SHIFT;
+		struct page *page;
 
-	vaddr = vm_map_ram(pages, ubuf->pagecount, -1);
+		if ((expected & ~PAGE_MASK) != (source_offset & ~PAGE_MASK))
+			goto err_layout;
+		page = folio_page(ubuf->folios[i], source_offset >> PAGE_SHIFT);
+		if (page_index != previous_page)
+			pages[page_index] = page;
+		else if (pages[page_index] != page)
+			goto err_layout;
+		previous_page = page_index;
+	}
+
+	vaddr = vm_map_ram(pages, pagecount, -1);
 	kvfree(pages);
 	if (!vaddr)
 		return -EINVAL;
 
-	iosys_map_set_vaddr(map, vaddr);
+	ubuf->vmap_pagecount = pagecount;
+	ubuf->vmap_offset = first_offset;
+	iosys_map_set_vaddr(map, vaddr + first_offset);
 	return 0;
+
+err_layout:
+	kvfree(pages);
+	return -EINVAL;
 }
 
 static void vunmap_udmabuf(struct dma_buf *buf, struct iosys_map *map)
@@ -138,7 +204,7 @@ static void vunmap_udmabuf(struct dma_buf *buf, struct iosys_map *map)
 
 	dma_resv_assert_held(buf->resv);
 
-	vm_unmap_ram(map->vaddr, ubuf->pagecount);
+	vm_unmap_ram(map->vaddr - ubuf->vmap_offset, ubuf->vmap_pagecount);
 }
 
 static struct sg_table *get_sg_table(struct device *dev, struct dma_buf *buf,
@@ -147,6 +213,7 @@ static struct sg_table *get_sg_table(struct device *dev, struct dma_buf *buf,
 	struct udmabuf *ubuf = buf->priv;
 	struct sg_table *sg;
 	struct scatterlist *sgl;
+	unsigned long unit_size = 1UL << ubuf->page_shift;
 	unsigned int i = 0;
 	int ret;
 
@@ -159,7 +226,7 @@ static struct sg_table *get_sg_table(struct device *dev, struct dma_buf *buf,
 		goto err_alloc;
 
 	for_each_sg(sg->sgl, sgl, ubuf->pagecount, i)
-		sg_set_folio(sgl, ubuf->folios[i], PAGE_SIZE,
+		sg_set_folio(sgl, ubuf->folios[i], unit_size,
 			     ubuf->offsets[i]);
 
 	ret = dma_map_sgtable(dev, sg, direction, 0);
@@ -315,7 +382,7 @@ static struct dma_buf *export_udmabuf(struct udmabuf *ubuf,
 
 	ubuf->device = device;
 	exp_info.ops  = &udmabuf_ops;
-	exp_info.size = ubuf->pagecount << PAGE_SHIFT;
+	exp_info.size = ubuf->size;
 	exp_info.priv = ubuf;
 	exp_info.flags = O_RDWR;
 
@@ -329,11 +396,14 @@ static long udmabuf_pin_folios(struct udmabuf *ubuf, struct file *memfd,
 	pgoff_t upgcnt = ubuf->pagecount;
 	u32 cur_folio, cur_pgcnt;
 	pgoff_t pgoff, pgcnt;
+	unsigned long unit_size;
 	long nr_folios;
 	loff_t end;
 
-	pgcnt = size >> PAGE_SHIFT;
-	end = start + (pgcnt << PAGE_SHIFT) - 1;
+	unit_size = 1UL << ubuf->page_shift;
+	pgcnt = size >> ubuf->page_shift;
+	if (check_add_overflow(start, size - 1, &end))
+		return -EOVERFLOW;
 	nr_folios = memfd_pin_folios(memfd, start, end, folios, pgcnt, &pgoff);
 	if (nr_folios <= 0)
 		return nr_folios ? nr_folios : -EINVAL;
@@ -345,7 +415,7 @@ static long udmabuf_pin_folios(struct udmabuf *ubuf, struct file *memfd,
 
 		ubuf->pinned_folios[nr_pinned++] = folios[cur_folio];
 
-		for (; subpgoff < fsize; subpgoff += PAGE_SIZE) {
+		for (; subpgoff < fsize; subpgoff += unit_size) {
 			ubuf->folios[upgcnt] = folios[cur_folio];
 			ubuf->offsets[upgcnt] = subpgoff;
 			++upgcnt;
@@ -377,6 +447,7 @@ static long udmabuf_create(struct miscdevice *device,
 	pgoff_t pgcnt = 0, pglimit;
 	struct udmabuf *ubuf;
 	struct dma_buf *dmabuf;
+	u64 total_size = 0;
 	long ret = -EINVAL;
 	u32 i, flags;
 
@@ -384,17 +455,20 @@ static long udmabuf_create(struct miscdevice *device,
 	if (!ubuf)
 		return -ENOMEM;
 
-	pglimit = ((u64)size_limit_mb * 1024 * 1024) >> PAGE_SHIFT;
+	ubuf->page_shift = udmabuf_process_page_shift(current->mm);
+	pglimit = ((u64)size_limit_mb * 1024 * 1024) >> ubuf->page_shift;
 	for (i = 0; i < head->count; i++) {
 		pgoff_t subpgcnt;
 
-		if (!PAGE_ALIGNED(list[i].offset))
+		if (!udmabuf_process_page_aligned(current->mm, list[i].offset))
 			goto err_noinit;
-		if (!PAGE_ALIGNED(list[i].size))
+		if (!udmabuf_process_page_aligned(current->mm, list[i].size))
 			goto err_noinit;
 
-		subpgcnt = list[i].size >> PAGE_SHIFT;
-		pgcnt += subpgcnt;
+		subpgcnt = list[i].size >> ubuf->page_shift;
+		if (check_add_overflow(pgcnt, subpgcnt, &pgcnt) ||
+		    check_add_overflow(total_size, list[i].size, &total_size))
+			goto err_noinit;
 		if (pgcnt > pglimit)
 			goto err_noinit;
 
@@ -407,6 +481,7 @@ static long udmabuf_create(struct miscdevice *device,
 	ret = init_udmabuf(ubuf, pgcnt);
 	if (ret)
 		goto err;
+	ubuf->size = total_size;
 
 	folios = kvmalloc_array(max_nr_folios, sizeof(*folios), GFP_KERNEL);
 	if (!folios) {
