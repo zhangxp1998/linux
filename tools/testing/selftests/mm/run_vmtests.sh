@@ -307,6 +307,7 @@ CATEGORY="mmap" run_test ./pci_mmap_ppps
 CATEGORY="mmap" run_test ./anon_vma_name_ppps
 CATEGORY="mmap" run_test ./print_vma_addr_ppps
 CATEGORY="mmap" run_test ./test_pagewalk_ppps.sh
+CATEGORY="mmap" run_test ./test_folio_within_range_ppps.sh
 CATEGORY="mmap" run_test ./remap_file_pages_ppps
 CATEGORY="mmap" run_test ./shmem_swap_usage_ppps
 CATEGORY="mmap" run_test ./trace_ring_buffer_mmap_ppps
