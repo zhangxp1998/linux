@@ -441,6 +441,7 @@ static int __access_remote_tags(struct mm_struct *mm, unsigned long addr,
 	void __user *buf = kiov->iov_base;
 	size_t len = kiov->iov_len;
 	int err = 0;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
 	int write = gup_flags & FOLL_WRITE;
 
 	if (!access_ok(buf, len))
@@ -451,7 +452,7 @@ static int __access_remote_tags(struct mm_struct *mm, unsigned long addr,
 
 	while (len) {
 		struct vm_area_struct *vma;
-		unsigned long tags, offset;
+		unsigned long tags, offset, page_offset;
 		void *maddr;
 		struct page *page = get_user_page_vma_remote(mm, addr,
 							     gup_flags, &vma);
@@ -482,9 +483,12 @@ static int __access_remote_tags(struct mm_struct *mm, unsigned long addr,
 		else
 			WARN_ON_ONCE(!page_mte_tagged(page) && !is_zero_page(page));
 
-		/* limit access to the end of the page */
-		offset = offset_in_page(addr);
-		tags = min(len, (PAGE_SIZE - offset) / MTE_GRANULE_SIZE);
+		/* Limit access to the end of the process page. */
+		page_offset = mm_offset_in_page(mm, addr);
+		offset = vma_address_to_slice(vma, addr) * page_size +
+			 page_offset;
+		tags = min(len,
+			   (page_size - page_offset) / MTE_GRANULE_SIZE);
 
 		maddr = page_address(page);
 		if (write) {
