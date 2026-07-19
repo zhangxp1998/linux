@@ -2201,6 +2201,7 @@ static int unuse_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 {
 	pte_t *pte = NULL;
 	struct swap_info_struct *si;
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
 
 	si = swap_info[type];
 	do {
@@ -2261,7 +2262,7 @@ static int unuse_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 		folio_free_swap(folio);
 		folio_unlock(folio);
 		folio_put(folio);
-	} while (addr += PAGE_SIZE, addr != end);
+	} while (addr += page_size, addr != end);
 
 	if (pte)
 		pte_unmap(pte);
@@ -3189,16 +3190,90 @@ __weak unsigned long arch_max_swapfile_size(void)
 	return generic_max_swapfile_size();
 }
 
+static int swap_badpage_cmp(const void *left, const void *right)
+{
+	const __u32 left_page = *(const __u32 *)left;
+	const __u32 right_page = *(const __u32 *)right;
+
+	return (left_page > right_page) - (left_page < right_page);
+}
+
+static __u32 *swap_header_badpages(union swap_header *swap_header)
+{
+	return (__u32 *)((char *)swap_header +
+			 offsetof(union swap_header, info.badpages));
+}
+
+static unsigned int swap_header_page_shift(union swap_header *swap_header)
+{
+	char *header = (char *)swap_header;
+
+	if (!memcmp("SWAPSPACE2", header + PAGE_SIZE - 10, 10))
+		return PAGE_SHIFT;
+
+	/*
+	 * A compat mkswap process formats the area in process-page units.  The
+	 * swapon caller need not be that process, so inspect the compat location
+	 * independently of the caller's current page size.
+	 */
+#if PAGE_SHIFT_COMPAT != PAGE_SHIFT
+	if (!memcmp("SWAPSPACE2", header + PAGE_SIZE_COMPAT - 10, 10))
+		return PAGE_SHIFT_COMPAT;
+#endif
+
+	return PAGE_SHIFT;
+}
+
+static int swap_header_to_native_pages(union swap_header *swap_header,
+				       unsigned int header_page_shift)
+{
+	__u32 *badpages = swap_header_badpages(swap_header);
+	unsigned int page_shift_delta = PAGE_SHIFT - header_page_shift;
+	unsigned int nr_badpages = swap_header->info.nr_badpages;
+	unsigned int i, nr_unique = 0;
+	u64 nr_pages = (u64)swap_header->info.last_page + 1;
+	__u32 last_page = swap_header->info.last_page;
+
+	for (i = 0; i < nr_badpages; i++) {
+		if (!badpages[i] || badpages[i] > last_page)
+			return -EINVAL;
+	}
+
+	swap_header->info.last_page = (nr_pages >> page_shift_delta) - 1;
+	for (i = 0; i < nr_badpages; i++)
+		badpages[i] >>= page_shift_delta;
+
+	sort(badpages, nr_badpages, sizeof(*badpages), swap_badpage_cmp, NULL);
+	for (i = 0; i < nr_badpages; i++) {
+		/* Header/padding fragments are not usable native swap slots. */
+		if (!badpages[i] || badpages[i] > swap_header->info.last_page)
+			continue;
+		if (nr_unique && badpages[i] == badpages[nr_unique - 1])
+			continue;
+		badpages[nr_unique++] = badpages[i];
+	}
+	swap_header->info.nr_badpages = nr_unique;
+	return 0;
+}
+
 static unsigned long read_swap_header(struct swap_info_struct *si,
 					union swap_header *swap_header,
 					struct inode *inode)
 {
+	__u32 *badpages = swap_header_badpages(swap_header);
+	unsigned int header_page_shift = swap_header_page_shift(swap_header);
+	unsigned long max_badpages =
+		(((1UL << header_page_shift) - 10 -
+		  offsetof(union swap_header, info.badpages)) /
+		 sizeof(swap_header->info.badpages[0]));
+	char *swap_magic = (char *)swap_header +
+		(1UL << header_page_shift) - 10;
 	int i;
 	unsigned long maxpages;
 	unsigned long swapfilepages;
 	unsigned long last_page;
 
-	if (memcmp("SWAPSPACE2", swap_header->magic.magic, 10)) {
+	if (memcmp("SWAPSPACE2", swap_magic, 10)) {
 		pr_err("Unable to find swap-space signature\n");
 		return 0;
 	}
@@ -3208,16 +3283,29 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
 		swab32s(&swap_header->info.version);
 		swab32s(&swap_header->info.last_page);
 		swab32s(&swap_header->info.nr_badpages);
-		if (swap_header->info.nr_badpages > MAX_SWAP_BADPAGES)
+		if (swap_header->info.nr_badpages > max_badpages)
 			return 0;
 		for (i = 0; i < swap_header->info.nr_badpages; i++)
-			swab32s(&swap_header->info.badpages[i]);
+			swab32s(&badpages[i]);
 	}
 	/* Check the swap header's sub-version */
 	if (swap_header->info.version != 1) {
 		pr_warn("Unable to handle swap header version %d\n",
 			swap_header->info.version);
 		return 0;
+	}
+	if (swap_header->info.nr_badpages > max_badpages)
+		return 0;
+
+	if (header_page_shift < PAGE_SHIFT) {
+		u64 nr_pages = (u64)swap_header->info.last_page + 1;
+
+		if (!(nr_pages >> (PAGE_SHIFT - header_page_shift))) {
+			pr_warn("Empty swap-file\n");
+			return 0;
+		}
+		if (swap_header_to_native_pages(swap_header, header_page_shift))
+			return 0;
 	}
 
 	si->lowest_bit  = 1;
@@ -3251,7 +3339,7 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
 	}
 	if (swap_header->info.nr_badpages && S_ISREG(inode->i_mode))
 		return 0;
-	if (swap_header->info.nr_badpages > MAX_SWAP_BADPAGES)
+	if (swap_header->info.nr_badpages > max_badpages)
 		return 0;
 
 	return maxpages;
@@ -3269,11 +3357,12 @@ static int setup_swap_map(struct swap_info_struct *si,
 			  unsigned char *swap_map,
 			  unsigned long maxpages)
 {
+	__u32 *badpages = swap_header_badpages(swap_header);
 	unsigned long i;
 
 	swap_map[0] = SWAP_MAP_BAD; /* omit header page */
 	for (i = 0; i < swap_header->info.nr_badpages; i++) {
-		unsigned int page_nr = swap_header->info.badpages[i];
+		unsigned int page_nr = badpages[i];
 		if (page_nr == 0 || page_nr > swap_header->info.last_page)
 			return -EINVAL;
 		if (page_nr < maxpages) {
@@ -3294,6 +3383,7 @@ static struct swap_cluster_info *setup_clusters(struct swap_info_struct *si,
 						union swap_header *swap_header,
 						unsigned long maxpages)
 {
+	__u32 *badpages = swap_header_badpages(swap_header);
 	unsigned long nr_clusters = DIV_ROUND_UP(maxpages, SWAPFILE_CLUSTER);
 	unsigned long col = si->cluster_next / SWAPFILE_CLUSTER % SWAP_CLUSTER_COLS;
 	struct swap_cluster_info *cluster_info;
@@ -3337,7 +3427,7 @@ static struct swap_cluster_info *setup_clusters(struct swap_info_struct *si,
 	 */
 	inc_cluster_info_page(si, cluster_info, 0);
 	for (i = 0; i < swap_header->info.nr_badpages; i++) {
-		unsigned int page_nr = swap_header->info.badpages[i];
+		unsigned int page_nr = badpages[i];
 
 		if (page_nr >= maxpages)
 			continue;
