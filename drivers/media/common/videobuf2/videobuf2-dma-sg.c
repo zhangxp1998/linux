@@ -237,7 +237,6 @@ static void *vb2_dma_sg_get_userptr(struct vb2_buffer *vb, struct device *dev,
 	buf->vaddr = NULL;
 	buf->dev = dev;
 	buf->dma_dir = vb->vb2_queue->dma_dir;
-	buf->offset = vaddr & ~PAGE_MASK;
 	buf->size = size;
 	buf->dma_sgt = &buf->sg_table;
 	buf->vb = vb;
@@ -247,14 +246,14 @@ static void *vb2_dma_sg_get_userptr(struct vb2_buffer *vb, struct device *dev,
 	if (IS_ERR(vec))
 		goto userptr_fail_pfnvec;
 	buf->vec = vec;
+	buf->offset = frame_vector_frame_offset(vec, 0);
 
 	buf->pages = frame_vector_pages(vec);
 	if (IS_ERR(buf->pages))
 		goto userptr_fail_sgtable;
 	buf->num_pages = frame_vector_count(vec);
 
-	if (sg_alloc_table_from_pages(buf->dma_sgt, buf->pages,
-			buf->num_pages, buf->offset, size, 0))
+	if (vb2_framevec_to_sgtable(vec, size, buf->dma_sgt))
 		goto userptr_fail_sgtable;
 
 	sgt = &buf->sg_table;
@@ -313,7 +312,8 @@ static void *vb2_dma_sg_vaddr(struct vb2_buffer *vb, void *buf_priv)
 		if (buf->db_attach) {
 			ret = dma_buf_vmap_unlocked(buf->db_attach->dmabuf, &map);
 			buf->vaddr = ret ? NULL : map.vaddr;
-		} else {
+		} else if (!buf->vec ||
+			   frame_vector_frame_size(buf->vec) == PAGE_SIZE) {
 			buf->vaddr = vm_map_ram(buf->pages, buf->num_pages, -1);
 		}
 	}
