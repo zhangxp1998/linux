@@ -194,9 +194,15 @@ static bool submit_nop(int fd, const struct io_uring_params *params,
 static int run_test(void)
 {
 	struct io_uring_params params = {};
+	struct io_uring_params user_params = {
+		.flags = IORING_SETUP_NO_MMAP,
+	};
 	struct io_uring_buf_reg reg = {};
 	struct ring_mapping map;
+	struct ring_mapping user_map = {};
 	void *pbuf = MAP_FAILED;
+	void *user_ring = MAP_FAILED;
+	void *user_sqes = MAP_FAILED;
 	off_t pbuf_offset;
 	bool mapped = false;
 	bool completed = false;
@@ -204,13 +210,15 @@ static int run_test(void)
 	bool pbuf_registered = false;
 	bool pbuf_tail_rejected = false;
 	bool user_pbuf_registered = false;
+	bool user_ring_completed = false;
 	void *user_pbuf = MAP_FAILED;
 	int fd;
+	int user_fd = -1;
 
 	ksft_print_header();
 	if (access("/proc/sys/kernel/io_uring_disabled", F_OK))
 		ksft_exit_skip("CONFIG_IO_URING is disabled\n");
-	ksft_set_plan(8);
+	ksft_set_plan(9);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	fd = setup_ring(2, &params);
@@ -264,8 +272,37 @@ static int run_test(void)
 			       strerror(errno));
 	ksft_test_result(user_pbuf_registered,
 			 "register a user-backed 4K provided-buffer ring\n");
+
+	user_ring = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	user_sqes = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (user_ring != MAP_FAILED && user_sqes != MAP_FAILED) {
+		user_params.cq_off.user_addr = (uintptr_t)user_ring;
+		user_params.sq_off.user_addr = (uintptr_t)user_sqes;
+		user_fd = setup_ring(2, &user_params);
+	}
+	if (user_fd >= 0) {
+		user_map.sq_ring = user_ring;
+		user_map.cq_ring = user_ring;
+		user_map.sqes = user_sqes;
+		user_map.single_mmap = true;
+		user_ring_completed = submit_nop(user_fd, &user_params,
+						 &user_map);
+	} else {
+		ksft_print_msg("user-backed ring setup failed: %s\n",
+			       strerror(errno));
+	}
+	ksft_test_result(user_fd >= 0 && user_ring_completed,
+			 "create and use 4K user-backed SQ/CQ/SQE regions\n");
+	if (user_fd >= 0)
+		close(user_fd);
 	if (fd >= 0)
 		close(fd);
+	if (user_sqes != MAP_FAILED)
+		munmap(user_sqes, USER_PAGE_SIZE);
+	if (user_ring != MAP_FAILED)
+		munmap(user_ring, USER_PAGE_SIZE);
 	if (user_pbuf != MAP_FAILED)
 		munmap(user_pbuf, USER_PAGE_SIZE);
 	ksft_finished();

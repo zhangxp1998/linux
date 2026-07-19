@@ -3691,7 +3691,8 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 		return -EOVERFLOW;
 
 	memset(&rd, 0, sizeof(rd));
-	rd.size = PAGE_ALIGN(size);
+	rd.size = (ctx->flags & IORING_SETUP_NO_MMAP) ?
+		  MM_PAGE_ALIGN(current->mm, size) : PAGE_ALIGN(size);
 	if (ctx->flags & IORING_SETUP_NO_MMAP) {
 		rd.user_addr = p->cq_off.user_addr;
 		rd.flags |= IORING_MEM_REGION_TYPE_USER;
@@ -3714,7 +3715,8 @@ static __cold int io_allocate_scq_urings(struct io_ring_ctx *ctx,
 	}
 
 	memset(&rd, 0, sizeof(rd));
-	rd.size = PAGE_ALIGN(size);
+	rd.size = (ctx->flags & IORING_SETUP_NO_MMAP) ?
+		  MM_PAGE_ALIGN(current->mm, size) : PAGE_ALIGN(size);
 	if (ctx->flags & IORING_SETUP_NO_MMAP) {
 		rd.user_addr = p->sq_off.user_addr;
 		rd.flags |= IORING_MEM_REGION_TYPE_USER;
