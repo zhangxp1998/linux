@@ -2698,15 +2698,29 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 static void *io_rings_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 			  size_t size)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return __io_uaddr_map(&ctx->ring_pages, &ctx->n_ring_pages, uaddr,
-				size);
+				size, &ctx->ring_map);
+#else
+	void *map_base;
+
+	return __io_uaddr_map(&ctx->ring_pages, &ctx->n_ring_pages, uaddr,
+				size, &map_base);
+#endif
 }
 
 static void *io_sqes_map(struct io_ring_ctx *ctx, unsigned long uaddr,
 			 size_t size)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return __io_uaddr_map(&ctx->sqe_pages, &ctx->n_sqe_pages, uaddr,
-				size);
+				size, &ctx->sqe_map);
+#else
+	void *map_base;
+
+	return __io_uaddr_map(&ctx->sqe_pages, &ctx->n_sqe_pages, uaddr,
+				size, &map_base);
+#endif
 }
 
 static void io_rings_free(struct io_ring_ctx *ctx)
@@ -2721,8 +2735,17 @@ static void io_rings_free(struct io_ring_ctx *ctx)
 		ctx->n_ring_pages = 0;
 		io_pages_free(&ctx->sqe_pages, ctx->n_sqe_pages);
 		ctx->n_sqe_pages = 0;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		if (ctx->ring_map)
+			vunmap(ctx->ring_map);
+		if (ctx->sqe_map)
+			vunmap(ctx->sqe_map);
+		ctx->ring_map = NULL;
+		ctx->sqe_map = NULL;
+#else
 		vunmap(ctx->rings);
 		vunmap(ctx->sq_sqes);
+#endif
 	}
 
 	ctx->rings = NULL;
