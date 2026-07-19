@@ -3897,7 +3897,7 @@ int snd_pcm_mmap_data(struct snd_pcm_substream *substream, struct file *file,
 		return -EINVAL;
 	size = area->vm_end - area->vm_start;
 	offset = vma_file_offset(area);
-	dma_bytes = PAGE_ALIGN(runtime->dma_bytes);
+	dma_bytes = ALIGN(runtime->dma_bytes, MM_PAGE_SIZE(area->vm_mm));
 	if ((size_t)size > dma_bytes)
 		return -EINVAL;
 	if (offset > dma_bytes - size)
