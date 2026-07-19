@@ -104,22 +104,23 @@ void io_free_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr)
 
 		kvfree(mr->pages);
 	}
-	if ((mr->flags & IO_REGION_F_VMAP) && mr->ptr)
-		vunmap(mr->ptr);
+	if ((mr->flags & IO_REGION_F_VMAP) && mr->map_base)
+		vunmap(mr->map_base);
 	if (mr->nr_pages && ctx->user)
 		__io_unaccount_mem(ctx->user, mr->nr_pages);
 
 	memset(mr, 0, sizeof(*mr));
 }
 
-static int io_region_init_ptr(struct io_mapped_region *mr)
+static int io_region_init_ptr(struct io_mapped_region *mr,
+			      unsigned int page_offset)
 {
 	struct io_imu_folio_data ifd;
 	void *ptr;
 
 	if (io_check_coalesce_buffer(mr->pages, mr->nr_pages, &ifd)) {
 		if (ifd.nr_folios == 1 && !PageHighMem(mr->pages[0])) {
-			mr->ptr = page_address(mr->pages[0]);
+			mr->ptr = page_address(mr->pages[0]) + page_offset;
 			return 0;
 		}
 	}
@@ -127,22 +128,55 @@ static int io_region_init_ptr(struct io_mapped_region *mr)
 	if (!ptr)
 		return -ENOMEM;
 
-	mr->ptr = ptr;
+	mr->map_base = ptr;
+	mr->ptr = ptr + page_offset;
 	mr->flags |= IO_REGION_F_VMAP;
 	return 0;
 }
 
 static int io_region_pin_pages(struct io_ring_ctx *ctx,
 				struct io_mapped_region *mr,
-				struct io_uring_region_desc *reg)
+				struct io_uring_region_desc *reg,
+				unsigned int *page_offset)
 {
 	unsigned long size = (size_t) mr->nr_pages << PAGE_SHIFT;
+	struct mm_struct *mm = current->mm;
 	struct page **pages;
 	int nr_pages;
 
-	pages = io_pin_pages(reg->user_addr, size, &nr_pages);
-	if (IS_ERR(pages))
-		return PTR_ERR(pages);
+	if (ppps_mm_is_compat(mm)) {
+		struct vm_area_struct *vma;
+		unsigned long addr = untagged_addr(reg->user_addr);
+		int ret;
+
+		pages = kvmalloc_array(1, sizeof(*pages), GFP_KERNEL_ACCOUNT);
+		if (!pages)
+			return -ENOMEM;
+
+		mmap_read_lock(mm);
+		vma = vma_lookup(mm, addr);
+		if (!vma || reg->size > vma->vm_end - addr) {
+			ret = -EFAULT;
+		} else {
+			ret = pin_user_pages(addr, 1,
+					     FOLL_WRITE | FOLL_LONGTERM, pages);
+			if (ret == 1)
+				*page_offset = vma_page_slice_offset(vma, pages[0],
+								     addr);
+		}
+		mmap_read_unlock(mm);
+		if (ret != 1) {
+			if (ret > 0)
+				unpin_user_pages(pages, ret);
+			kvfree(pages);
+			return ret < 0 ? ret : -EFAULT;
+		}
+		nr_pages = 1;
+	} else {
+		pages = io_pin_pages(reg->user_addr, size, &nr_pages);
+		if (IS_ERR(pages))
+			return PTR_ERR(pages);
+	}
 	if (WARN_ON_ONCE(nr_pages != mr->nr_pages))
 		return -EFAULT;
 
@@ -190,10 +224,12 @@ int io_create_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr,
 		     struct io_uring_region_desc *reg,
 		     unsigned long mmap_offset)
 {
+	unsigned int page_offset = 0;
+	bool user_compat;
 	int nr_pages, ret;
 	u64 end;
 
-	if (WARN_ON_ONCE(mr->pages || mr->ptr || mr->nr_pages))
+	if (WARN_ON_ONCE(mr->pages || mr->map_base || mr->ptr || mr->nr_pages))
 		return -EFAULT;
 	if (memchr_inv(&reg->__resv, 0, sizeof(reg->__resv)))
 		return -EINVAL;
@@ -204,14 +240,26 @@ int io_create_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr,
 		return -EFAULT;
 	if (!reg->size || reg->mmap_offset || reg->id)
 		return -EINVAL;
-	if ((reg->size >> PAGE_SHIFT) > INT_MAX)
-		return -E2BIG;
-	if ((reg->user_addr | reg->size) & ~PAGE_MASK)
-		return -EINVAL;
+	user_compat = (reg->flags & IORING_MEM_REGION_TYPE_USER) &&
+		      ppps_mm_is_compat(current->mm);
+	if (user_compat) {
+		if (!MM_PAGE_ALIGNED(current->mm, reg->user_addr) ||
+		    !MM_PAGE_ALIGNED(current->mm, reg->size))
+			return -EINVAL;
+		/* A native vmap cannot concatenate arbitrary process-page slices. */
+		if (reg->size != MM_PAGE_SIZE(current->mm))
+			return -EOPNOTSUPP;
+		nr_pages = 1;
+	} else {
+		if ((reg->size >> PAGE_SHIFT) > INT_MAX)
+			return -E2BIG;
+		if ((reg->user_addr | reg->size) & ~PAGE_MASK)
+			return -EINVAL;
+		nr_pages = reg->size >> PAGE_SHIFT;
+	}
 	if (check_add_overflow(reg->user_addr, reg->size, &end))
 		return -EOVERFLOW;
 
-	nr_pages = reg->size >> PAGE_SHIFT;
 	if (ctx->user) {
 		ret = __io_account_mem(ctx->user, nr_pages);
 		if (ret)
@@ -220,13 +268,13 @@ int io_create_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr,
 	mr->nr_pages = nr_pages;
 
 	if (reg->flags & IORING_MEM_REGION_TYPE_USER)
-		ret = io_region_pin_pages(ctx, mr, reg);
+		ret = io_region_pin_pages(ctx, mr, reg, &page_offset);
 	else
 		ret = io_region_allocate_pages(ctx, mr, reg, mmap_offset);
 	if (ret)
 		goto out_free;
 
-	ret = io_region_init_ptr(mr);
+	ret = io_region_init_ptr(mr, page_offset);
 	if (ret)
 		goto out_free;
 	return 0;

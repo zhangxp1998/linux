@@ -30,6 +30,7 @@ struct __kernel_timespec {
 #define USER_PAGE_SIZE 4096UL
 #define USER_DATA 0x697572696e672d34ULL
 #define PBUF_BGID 7
+#define USER_PBUF_BGID 8
 
 struct ring_mapping {
 	void *sq_ring;
@@ -202,12 +203,14 @@ static int run_test(void)
 	bool sqe_tail_rejected = false;
 	bool pbuf_registered = false;
 	bool pbuf_tail_rejected = false;
+	bool user_pbuf_registered = false;
+	void *user_pbuf = MAP_FAILED;
 	int fd;
 
 	ksft_print_header();
 	if (access("/proc/sys/kernel/io_uring_disabled", F_OK))
 		ksft_exit_skip("CONFIG_IO_URING is disabled\n");
-	ksft_set_plan(7);
+	ksft_set_plan(8);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	fd = setup_ring(2, &params);
@@ -246,8 +249,25 @@ static int run_test(void)
 		pbuf_tail_rejected = ring_tail_is_inaccessible(fd, pbuf_offset);
 	ksft_test_result(pbuf_tail_rejected,
 			 "reject or fault the provided-buffer ring's padding page\n");
+
+	user_pbuf = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	memset(&reg, 0, sizeof(reg));
+	reg.ring_addr = (uintptr_t)user_pbuf;
+	reg.ring_entries = 2;
+	reg.bgid = USER_PBUF_BGID;
+	if (fd >= 0 && user_pbuf != MAP_FAILED)
+		user_pbuf_registered =
+			register_ring(fd, IORING_REGISTER_PBUF_RING, &reg, 1) == 0;
+	if (!user_pbuf_registered)
+		ksft_print_msg("user provided-buffer registration failed: %s\n",
+			       strerror(errno));
+	ksft_test_result(user_pbuf_registered,
+			 "register a user-backed 4K provided-buffer ring\n");
 	if (fd >= 0)
 		close(fd);
+	if (user_pbuf != MAP_FAILED)
+		munmap(user_pbuf, USER_PAGE_SIZE);
 	ksft_finished();
 }
 
