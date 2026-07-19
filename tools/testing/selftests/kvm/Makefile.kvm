@@ -180,6 +180,7 @@ TEST_GEN_PROGS_arm64 += get-reg-list
 TEST_GEN_PROGS_arm64 += guest_memfd_test
 TEST_GEN_PROGS_arm64 += memslot_modification_stress_test
 TEST_GEN_PROGS_arm64 += memslot_perf_test
+TEST_GEN_PROGS_arm64 += kvm_pkvm_memlock_ppps
 TEST_GEN_PROGS_arm64 += kvm_vcpu_mmap_ppps
 TEST_GEN_PROGS_arm64 += mmu_stress_test
 TEST_GEN_PROGS_arm64 += rseq_test
