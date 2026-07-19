@@ -669,21 +669,46 @@ out:
 	return retval ? retval : sizeof(s32);
 }
 
+static int uio_mmap_mem_index(struct uio_device *idev,
+			      struct vm_area_struct *vma)
+{
+	loff_t offset = vma_file_offset(vma);
+	pgoff_t index;
+
+	/* UIO mmap offsets select regions in units of the process page size. */
+	if (offset < 0 || !IS_ALIGNED(offset, MM_PAGE_SIZE(vma->vm_mm)))
+		return -1;
+	index = offset >> MM_PAGE_SHIFT(vma->vm_mm);
+	if (index >= MAX_UIO_MAPS || idev->info->mem[index].size == 0)
+		return -1;
+	return index;
+}
+
+static struct uio_vma_data *uio_vma_data(struct vm_area_struct *vma)
+{
+	return vma->vm_private_data;
+}
+
+static struct uio_device *uio_vma_device(struct vm_area_struct *vma)
+{
+	return uio_vma_data(vma)->idev;
+}
+
 static int uio_find_mem_index(struct vm_area_struct *vma)
 {
-	struct uio_device *idev = vma->vm_private_data;
+	struct uio_vma_data *data = uio_vma_data(vma);
+	struct uio_device *idev = data->idev;
 
-	if (vma->vm_pgoff < MAX_UIO_MAPS) {
-		if (idev->info->mem[vma->vm_pgoff].size == 0)
-			return -1;
-		return (int)vma->vm_pgoff;
-	}
-	return -1;
+	if (data->index >= MAX_UIO_MAPS ||
+	    idev->info->mem[data->index].size == 0)
+		return -1;
+	return data->index;
 }
 
 static vm_fault_t uio_vma_fault(struct vm_fault *vmf)
 {
-	struct uio_device *idev = vmf->vma->vm_private_data;
+	struct vm_area_struct *vma = vmf->vma;
+	struct uio_device *idev = uio_vma_device(vma);
 	struct page *page;
 	unsigned long offset;
 	void *addr;
@@ -703,9 +728,48 @@ static vm_fault_t uio_vma_fault(struct vm_fault *vmf)
 	}
 
 	/*
-	 * We need to subtract mi because userspace uses offset = N*PAGE_SIZE
-	 * to use mem[N].
+	 * Subtract the region-selection token from the VMA file offset to get
+	 * the byte offset within mem[mi].
 	 */
+	if (ppps_mm_is_compat(vma->vm_mm)) {
+		loff_t token_offset = (loff_t)mi << MM_PAGE_SHIFT(vma->vm_mm);
+		loff_t file_offset = vma_file_offset(vma);
+		unsigned int slice;
+		int err;
+
+		if (file_offset < token_offset) {
+			ret = VM_FAULT_SIGBUS;
+			goto out;
+		}
+		offset = file_offset - token_offset;
+		if (check_add_overflow(offset, vmf->address - vma->vm_start,
+				       &offset) ||
+		    offset >= idev->info->mem[mi].size) {
+			ret = VM_FAULT_SIGBUS;
+			goto out;
+		}
+
+		addr = (void *)(unsigned long)idev->info->mem[mi].addr +
+			(offset & PAGE_MASK);
+		if (idev->info->mem[mi].memtype == UIO_MEM_LOGICAL)
+			page = virt_to_page(addr);
+		else
+			page = vmalloc_to_page(addr);
+		if (!page) {
+			ret = VM_FAULT_SIGBUS;
+			goto out;
+		}
+		slice = (offset & ~PAGE_MASK) >> MM_PAGE_SHIFT(vma->vm_mm);
+		err = vm_insert_page_slice(vma, vmf->address, page, slice);
+		if (err == -ENOMEM)
+			ret = VM_FAULT_OOM;
+		else if (err < 0 && err != -EBUSY)
+			ret = VM_FAULT_SIGBUS;
+		else
+			ret = VM_FAULT_NOPAGE;
+		goto out;
+	}
+
 	offset = (vmf->pgoff - mi) << PAGE_SHIFT;
 
 	addr = (void *)(unsigned long)idev->info->mem[mi].addr + offset;
@@ -729,6 +793,8 @@ static const struct vm_operations_struct uio_logical_vm_ops = {
 static int uio_mmap_logical(struct vm_area_struct *vma)
 {
 	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+	if (ppps_mm_is_compat(vma->vm_mm))
+		vm_flags_set(vma, VM_MIXEDMAP);
 	vma->vm_ops = &uio_logical_vm_ops;
 	return 0;
 }
@@ -741,7 +807,7 @@ static const struct vm_operations_struct uio_physical_vm_ops = {
 
 static int uio_mmap_physical(struct vm_area_struct *vma)
 {
-	struct uio_device *idev = vma->vm_private_data;
+	struct uio_device *idev = uio_vma_device(vma);
 	int mi = uio_find_mem_index(vma);
 	struct uio_mem *mem;
 
@@ -776,9 +842,11 @@ static int uio_mmap_physical(struct vm_area_struct *vma)
 
 static int uio_mmap_dma_coherent(struct vm_area_struct *vma)
 {
-	struct uio_device *idev = vma->vm_private_data;
+	struct uio_device *idev = uio_vma_device(vma);
 	struct uio_mem *mem;
 	void *addr;
+	pgoff_t saved_pgoff;
+	unsigned int saved_slice;
 	int ret = 0;
 	int mi;
 
@@ -804,7 +872,10 @@ static int uio_mmap_dma_coherent(struct vm_area_struct *vma)
 	 * UIO uses offset to index into the maps for a device.
 	 * We need to clear vm_pgoff for dma_mmap_coherent.
 	 */
+	saved_pgoff = vma->vm_pgoff;
+	saved_slice = vma_slice_off(vma);
 	vma->vm_pgoff = 0;
+	vma_set_slice_off(vma, 0);
 
 	addr = (void *)(uintptr_t)mem->addr;
 	ret = dma_mmap_coherent(mem->dma_device,
@@ -812,7 +883,8 @@ static int uio_mmap_dma_coherent(struct vm_area_struct *vma)
 				addr,
 				mem->dma_addr,
 				vma->vm_end - vma->vm_start);
-	vma->vm_pgoff = mi;
+	vma->vm_pgoff = saved_pgoff;
+	vma_set_slice_off(vma, saved_slice);
 
 	return ret;
 }
@@ -828,19 +900,18 @@ static int uio_mmap(struct file *filep, struct vm_area_struct *vma)
 	if (vma->vm_end < vma->vm_start)
 		return -EINVAL;
 
-	vma->vm_private_data = idev;
-
 	mutex_lock(&idev->info_lock);
 	if (!idev->info) {
 		ret = -EINVAL;
 		goto out;
 	}
 
-	mi = uio_find_mem_index(vma);
+	mi = uio_mmap_mem_index(idev, vma);
 	if (mi < 0) {
 		ret = -EINVAL;
 		goto out;
 	}
+	vma->vm_private_data = &idev->vma_data[mi];
 
 	requested_pages = DIV_ROUND_UP(vma->vm_end - vma->vm_start, PAGE_SIZE);
 	actual_pages = ((idev->info->mem[mi].addr & ~PAGE_MASK)
@@ -982,6 +1053,7 @@ int __uio_register_device(struct module *owner,
 {
 	struct uio_device *idev;
 	int ret = 0;
+	int i;
 
 	if (!uio_class_registered)
 		return -EPROBE_DEFER;
@@ -998,6 +1070,10 @@ int __uio_register_device(struct module *owner,
 
 	idev->owner = owner;
 	idev->info = info;
+	for (i = 0; i < MAX_UIO_MAPS; i++) {
+		idev->vma_data[i].idev = idev;
+		idev->vma_data[i].index = i;
+	}
 	mutex_init(&idev->info_lock);
 	init_waitqueue_head(&idev->wait);
 	atomic_set(&idev->event, 0);
