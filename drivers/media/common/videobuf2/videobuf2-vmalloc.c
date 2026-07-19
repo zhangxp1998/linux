@@ -339,9 +339,21 @@ static struct dma_buf *vb2_vmalloc_get_dmabuf(struct vb2_buffer *vb,
 {
 	struct vb2_vmalloc_buf *buf = buf_priv;
 	struct dma_buf *dbuf;
+	unsigned long size = 0;
+	unsigned int plane;
 	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
 
+	for (plane = 0; plane < vb->num_planes; plane++) {
+		if (vb->planes[plane].mem_priv == buf_priv) {
+			size = vb2_plane_size(vb, plane);
+			break;
+		}
+	}
+	if (WARN_ON(!size || size > buf->size))
+		return NULL;
+
 	exp_info.ops = &vb2_vmalloc_dmabuf_ops;
+	/* DMA-BUF importers require a native-page-aligned allocation size. */
 	exp_info.size = buf->size;
 	exp_info.flags = flags;
 	exp_info.priv = buf;
