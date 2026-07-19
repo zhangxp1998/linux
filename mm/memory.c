@@ -2205,12 +2205,19 @@ void zap_vma_range_batched(struct mmu_gather *tlb,
 {
 	const unsigned long end = address + size;
 	struct mmu_notifier_range range;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	VM_WARN_ON_ONCE(!tlb || tlb->mm != vma->vm_mm);
 
 	if (unlikely(!size))
 		return;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	prev_pgtable_mm = current->pgtable_mm;
+	current->pgtable_mm = vma->vm_mm;
+#endif
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma->vm_mm,
 				address, end);
 	hugetlb_zap_begin(vma, &range.start, &range.end);
@@ -2231,6 +2238,9 @@ void zap_vma_range_batched(struct mmu_gather *tlb,
 		hugetlb_zap_end(vma, details);
 		tlb_gather_mmu(tlb, vma->vm_mm);
 	}
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	current->pgtable_mm = prev_pgtable_mm;
+#endif
 }
 
 /**
