@@ -16,6 +16,8 @@
 #include <trace/events/io_uring.h>
 #endif
 
+size_t io_uring_mmap_size(struct io_ring_ctx *ctx, loff_t offset);
+
 enum {
 	IOU_OK			= 0,
 	IOU_ISSUE_SKIP_COMPLETE	= -EIOCBQUEUED,

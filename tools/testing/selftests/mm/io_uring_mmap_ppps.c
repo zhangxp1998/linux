@@ -16,6 +16,7 @@
 #include "kselftest_ppps.h"
 
 #define USER_DATA 0x697572696e672d34ULL
+#define PBUF_BGID 7
 
 struct ring_mapping {
 	void *sq_ring;
@@ -36,6 +37,43 @@ static int enter_ring(int fd, unsigned int submit, unsigned int wait_nr,
 		      unsigned int flags)
 {
 	return syscall(__NR_io_uring_enter, fd, submit, wait_nr, flags, NULL, 0);
+}
+
+static int register_ring(int fd, unsigned int opcode, void *arg,
+			 unsigned int nr_args)
+{
+	return syscall(__NR_io_uring_register, fd, opcode, arg, nr_args);
+}
+
+static void *mmap_ring_region(int fd, size_t size, off_t offset);
+
+static bool ring_tail_is_inaccessible(int fd, off_t offset)
+{
+	void *mapping;
+	ssize_t ret;
+	int pipefd[2];
+	int saved_errno;
+
+	errno = 0;
+	mapping = mmap_ring_region(fd, 2 * PROCESS_PAGE_SIZE, offset);
+	if (mapping == MAP_FAILED)
+		return errno == EINVAL;
+	if (pipe(pipefd)) {
+		munmap(mapping, 2 * PROCESS_PAGE_SIZE);
+		return false;
+	}
+	errno = 0;
+	ret = write(pipefd[1], mapping + PROCESS_PAGE_SIZE, 1);
+	saved_errno = errno;
+	close(pipefd[0]);
+	close(pipefd[1]);
+	munmap(mapping, 2 * PROCESS_PAGE_SIZE);
+	if (ret == 1)
+		ksft_print_msg("ring padding was readable\n");
+	else if (ret < 0 && saved_errno != EFAULT)
+		ksft_print_msg("padding probe failed: %s\n",
+			       strerror(saved_errno));
+	return ret < 0 && saved_errno == EFAULT;
 }
 
 static void unmap_ring(struct ring_mapping *map)
@@ -142,15 +180,21 @@ static bool submit_nop(int fd, const struct io_uring_params *params,
 static int run_test(void)
 {
 	struct io_uring_params params = {};
+	struct io_uring_buf_reg reg = {};
 	struct ring_mapping map;
+	void *pbuf = MAP_FAILED;
+	off_t pbuf_offset;
 	bool mapped = false;
 	bool completed = false;
+	bool sqe_tail_rejected = false;
+	bool pbuf_registered = false;
+	bool pbuf_tail_rejected = false;
 	int fd;
 
 	ksft_print_header();
 	if (access("/proc/sys/kernel/io_uring_disabled", F_OK))
 		ksft_exit_skip("CONFIG_IO_URING is disabled\n");
-	ksft_set_plan(3);
+	ksft_set_plan(7);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	fd = setup_ring(2, &params);
@@ -160,10 +204,37 @@ static int run_test(void)
 		if (mapped)
 			completed = submit_nop(fd, &params, &map);
 		unmap_ring(&map);
-		close(fd);
 	}
 	ksft_test_result(mapped && completed,
 			 "map 4K rings and complete a NOP\n");
+	if (fd >= 0)
+		sqe_tail_rejected = ring_tail_is_inaccessible(fd,
+							       IORING_OFF_SQES);
+	ksft_test_result(sqe_tail_rejected,
+			 "reject or fault the SQE ring's padding page\n");
+
+	reg.ring_entries = 2;
+	reg.bgid = PBUF_BGID;
+	reg.flags = IOU_PBUF_RING_MMAP;
+	if (fd >= 0)
+		pbuf_registered = register_ring(fd, IORING_REGISTER_PBUF_RING,
+						&reg, 1) == 0;
+	ksft_test_result(pbuf_registered,
+			 "register a kernel-allocated provided-buffer ring\n");
+	pbuf_offset = IORING_OFF_PBUF_RING |
+		((off_t)PBUF_BGID << IORING_OFF_PBUF_SHIFT);
+	if (pbuf_registered)
+		pbuf = mmap_ring_region(fd, PROCESS_PAGE_SIZE, pbuf_offset);
+	ksft_test_result(pbuf != MAP_FAILED,
+			 "map the provided-buffer ring's process page\n");
+	if (pbuf != MAP_FAILED)
+		munmap(pbuf, PROCESS_PAGE_SIZE);
+	if (pbuf_registered)
+		pbuf_tail_rejected = ring_tail_is_inaccessible(fd, pbuf_offset);
+	ksft_test_result(pbuf_tail_rejected,
+			 "reject or fault the provided-buffer ring's padding page\n");
+	if (fd >= 0)
+		close(fd);
 	ksft_finished();
 }
 
