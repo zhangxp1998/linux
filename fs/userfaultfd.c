@@ -1728,6 +1728,9 @@ static int userfaultfd_writeprotect(struct userfaultfd_ctx *ctx,
 	struct uffdio_writeprotect __user *user_uffdio_wp;
 	struct userfaultfd_wake_range range;
 	bool mode_wp, mode_dontwake;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	if (atomic_read(&ctx->mmap_changing))
 		return -EAGAIN;
@@ -1754,8 +1757,15 @@ static int userfaultfd_writeprotect(struct userfaultfd_ctx *ctx,
 		return -EINVAL;
 
 	if (mmget_not_zero(ctx->mm)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		prev_pgtable_mm = current->pgtable_mm;
+		current->pgtable_mm = ctx->mm;
+#endif
 		ret = mwriteprotect_range(ctx, uffdio_wp.range.start,
 					  uffdio_wp.range.len, mode_wp);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		current->pgtable_mm = prev_pgtable_mm;
+#endif
 		mmput(ctx->mm);
 	} else {
 		return -ESRCH;
