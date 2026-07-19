@@ -225,6 +225,12 @@ static int walk_pgd_range(unsigned long addr, unsigned long end,
 	unsigned long next;
 	const struct mm_walk_ops *ops = walk->ops;
 	int err = 0;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm = current->pgtable_mm;
+
+	/* Use the page-table geometry of the address space being walked. */
+	current->pgtable_mm = walk->mm;
+#endif
 
 	if (walk->pgd)
 		pgd = walk->pgd + pgd_index(addr);
@@ -250,6 +256,9 @@ static int walk_pgd_range(unsigned long addr, unsigned long end,
 			break;
 	} while (pgd++, addr = next, addr != end);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	current->pgtable_mm = prev_pgtable_mm;
+#endif
 	return err;
 }
 
