@@ -4643,7 +4643,7 @@ static int packet_mmap(struct file *file, struct socket *sock,
 	int err = -EINVAL;
 	int i;
 
-	if (vma->vm_pgoff)
+	if (vma_file_offset(vma))
 		return -EINVAL;
 
 	mutex_lock(&po->pg_vec_lock);
