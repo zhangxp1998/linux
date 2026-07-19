@@ -132,6 +132,7 @@ TEST_GEN_FILES += anon_vma_name_ppps
 ifeq ($(ARCH),arm64)
 TEST_GEN_FILES += brk_aslr_ppps
 TEST_GEN_FILES += brk_aslr_ppps_sample
+TEST_GEN_FILES += exec_stack_ppps
 TEST_GEN_FILES += uprobe_ppps
 endif
 ifneq (,$(filter $(ARCH),arm64 riscv riscv64 x86 x86_64 loongarch32 loongarch64))
