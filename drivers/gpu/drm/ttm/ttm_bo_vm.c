@@ -209,7 +209,7 @@ vm_fault_t ttm_bo_vm_fault_reserved(struct vm_fault *vmf,
 
 	page_offset = ((address - vma->vm_start) >> PAGE_SHIFT) +
 		vma->vm_pgoff - drm_vma_node_start(&bo->base.vma_node);
-	page_last = vma_pages(vma) + vma->vm_pgoff -
+	page_last = vma_native_pages(vma) + vma->vm_pgoff -
 		drm_vma_node_start(&bo->base.vma_node);
 
 	if (unlikely(page_offset >= PFN_UP(bo->base.size)))
@@ -311,7 +311,7 @@ vm_fault_t ttm_bo_vm_dummy_page(struct vm_fault *vmf, pgprot_t prot)
 
 	/* Prefault the entire VMA range right away to avoid further faults */
 	for (address = vma->vm_start; address < vma->vm_end;
-	     address += PAGE_SIZE)
+	     address += MM_PAGE_SIZE(vma->vm_mm))
 		ret = vmf_insert_pfn_prot(vma, address, pfn, prot);
 
 	return ret;
