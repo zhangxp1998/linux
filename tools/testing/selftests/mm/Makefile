@@ -182,6 +182,7 @@ TEST_GEN_FILES += shmem_swap_usage_ppps
 TEST_GEN_FILES += thuge-gen
 TEST_GEN_FILES += trace_ring_buffer_mmap_ppps
 TEST_GEN_FILES += truncate_ppps
+TEST_GEN_FILES += truncate_remote_ppps
 TEST_GEN_FILES += transhuge-stress
 TEST_GEN_FILES += uffd-stress
 TEST_GEN_FILES += uffd-unit-tests
