@@ -2493,10 +2493,10 @@ int map_kernel_pages_prepare(struct vm_area_desc *desc)
 	const unsigned long addr = action->map_kernel.start;
 	unsigned long nr_pages, end;
 
-	if (!vma_desc_test(desc, VMA_MIXEDMAP_BIT)) {
-		VM_WARN_ON_ONCE(mmap_read_trylock(desc->mm));
-		VM_WARN_ON_ONCE(vma_desc_test(desc, VMA_PFNMAP_BIT));
-		vma_desc_set_flags(desc, VMA_MIXEDMAP_BIT);
+	if (!(desc->vm_flags & VM_MIXEDMAP)) {
+		VM_WARN_ON_ONCE(mmap_read_trylock((struct mm_struct *)desc->mm));
+		VM_WARN_ON_ONCE(desc->vm_flags & VM_PFNMAP);
+		desc->vm_flags |= VM_MIXEDMAP;
 	}
 
 	nr_pages = action->map_kernel.nr_pages;
@@ -2509,7 +2509,7 @@ int map_kernel_pages_prepare(struct vm_area_desc *desc)
 		if (addr < desc->start || addr >= desc->end)
 			return -EFAULT;
 
-		start_slice = address_to_slice(desc->mm, addr, desc->start,
+		start_slice = address_to_slice((struct mm_struct *)desc->mm, addr, desc->start,
 					       action->map_kernel.pgoff &
 					       PPPS_SLICE_MASK);
 		user_pages = (desc->end - addr) >> MM_PAGE_SHIFT(desc->mm);
@@ -3215,14 +3215,11 @@ int remap_pfn_range_complete(struct vm_area_struct *vma,
 	const unsigned int slice = action->remap.slice;
 	const unsigned long size = action->remap.size;
 	const pgprot_t prot = action->remap.pgprot;
-	phys_addr_t phys_addr;
 
 	if (slice >= PPPS_SLICES_PER_PAGE ||
 	    (slice && !ppps_mm_is_compat(vma->vm_mm)))
 		return -EINVAL;
-	phys_addr = PFN_PHYS(pfn) +
-		((phys_addr_t)slice << MM_PAGE_SHIFT(vma->vm_mm));
-	return do_remap_pfn_range(vma, start, phys_addr, size, prot);
+	return remap_pfn_range_slice(vma, start, pfn, slice, size, prot);
 }
 
 static int __simple_ioremap_prep(unsigned long vm_len, pgoff_t vm_pgoff,
@@ -3259,7 +3256,7 @@ static int __simple_ioremap_prep(unsigned long vm_len, pgoff_t vm_pgoff,
 	return 0;
 }
 
-static int __simple_ioremap_prep_ppps(struct mm_struct *mm,
+static int __simple_ioremap_prep_ppps(const struct mm_struct *mm,
 				      unsigned long vm_len, u64 requested_offset,
 				      phys_addr_t start, unsigned long len,
 				      unsigned long *pfnp, unsigned int *slicep)
@@ -3308,10 +3305,13 @@ int simple_ioremap_prepare(struct vm_area_desc *desc)
 	if (err)
 		return err;
 
-	/* The I/O remap logic does the heavy lifting. */
-	mmap_action_ioremap_full(desc, pfn);
-	desc->action.remap.slice = slice;
-	return io_remap_pfn_range_prepare(desc);
+	action->type = MMAP_IO_REMAP_PFN;
+	action->remap.start = desc->start;
+	action->remap.start_pfn = pfn;
+	action->remap.slice = slice;
+	action->remap.size = vma_desc_size(desc);
+	action->remap.pgprot = desc->page_prot;
+	return 0;
 }
 /**
  * vm_iomap_memory - remap memory to userspace

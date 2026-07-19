@@ -3683,6 +3683,12 @@ static inline unsigned long vma_desc_pages(const struct vm_area_desc *desc)
 	return vma_desc_size(desc) >> PAGE_SHIFT;
 }
 
+static inline bool range_in_vma_desc(const struct vm_area_desc *desc,
+				     unsigned long start, unsigned long end)
+{
+	return start >= desc->start && end <= desc->end;
+}
+
 /**
  * mmap_action_remap - helper for mmap_prepare hook to specify that a pure PFN
  * remap is required.
@@ -3857,9 +3863,9 @@ static inline void vma_set_page_prot(struct vm_area_struct *vma)
 }
 #endif
 
-static inline pgprot_t vma_get_page_prot(vma_flags_t vma_flags)
+static inline pgprot_t vma_get_page_prot(vm_flags_t vma_flags)
 {
-	return vm_get_page_prot(vma_flags_to_legacy(vma_flags));
+	return vm_get_page_prot(vma_flags);
 }
 
 void vma_set_file(struct vm_area_struct *vma, struct file *file);
