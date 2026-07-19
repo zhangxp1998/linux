@@ -2261,7 +2261,7 @@ static int unuse_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 		folio_free_swap(folio);
 		folio_unlock(folio);
 		folio_put(folio);
-	} while (addr += PAGE_SIZE, addr != end);
+	} while (addr += MM_PAGE_SIZE(vma->vm_mm), addr != end);
 
 	if (pte)
 		pte_unmap(pte);
