@@ -126,6 +126,10 @@ TEST_GEN_FILES += mincore_ppps
 TEST_GEN_FILES += mmap_action_cleanup_ppps
 TEST_GEN_FILES += mmap_hint_ppps
 TEST_GEN_FILES += anon_vma_name_ppps
+ifeq ($(ARCH),arm64)
+TEST_GEN_FILES += brk_aslr_ppps
+TEST_GEN_FILES += brk_aslr_ppps_sample
+endif
 ifneq (,$(filter $(ARCH),arm64 riscv riscv64 x86 x86_64 loongarch32 loongarch64))
 TEST_GEN_FILES += memfd_secret
 endif
@@ -254,6 +258,9 @@ TEST_FILES += $(VB2_USERPTR_PPPS_MODULE)
 TEST_FILES += write_hugetlb_memory.sh
 
 include ../lib.mk
+
+$(OUTPUT)/brk_aslr_ppps_sample: brk_aslr_ppps_sample.S
+	$(CC) -nostdlib -static -no-pie $< -o $@
 
 ifneq ($(GUP_RETRY_PPPS_MODULE),)
 all: $(GUP_RETRY_PPPS_MODULE)
