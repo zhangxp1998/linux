@@ -97,6 +97,7 @@ endif
 TEST_GEN_FILES += elf_core_ppps
 TEST_GEN_FILES += taskstats_ppps
 TEST_GEN_FILES += rusage_ppps
+TEST_GEN_FILES += oom_score_ppps
 TEST_GEN_FILES += sysv_shm_ppps
 TEST_GEN_FILES += io_uring_mmap_ppps
 TEST_GEN_FILES += io_uring_fixed_buffer_ppps
