@@ -3747,7 +3747,8 @@ static int snd_pcm_mmap_status(struct snd_pcm_substream *substream, struct file 
 	if (!(area->vm_flags & VM_READ))
 		return -EINVAL;
 	size = area->vm_end - area->vm_start;
-	if (size != PAGE_ALIGN(sizeof(struct snd_pcm_mmap_status)))
+	if (size != ALIGN(sizeof(struct snd_pcm_mmap_status),
+			  MM_PAGE_SIZE(area->vm_mm)))
 		return -EINVAL;
 	area->vm_ops = &snd_pcm_vm_ops_status;
 	area->vm_private_data = substream;
@@ -3785,7 +3786,8 @@ static int snd_pcm_mmap_control(struct snd_pcm_substream *substream, struct file
 	if (!(area->vm_flags & VM_READ))
 		return -EINVAL;
 	size = area->vm_end - area->vm_start;
-	if (size != PAGE_ALIGN(sizeof(struct snd_pcm_mmap_control)))
+	if (size != ALIGN(sizeof(struct snd_pcm_mmap_control),
+			  MM_PAGE_SIZE(area->vm_mm)))
 		return -EINVAL;
 	area->vm_ops = &snd_pcm_vm_ops_control;
 	area->vm_private_data = substream;
@@ -3992,7 +3994,7 @@ int snd_pcm_mmap_data(struct snd_pcm_substream *substream, struct file *file,
 		return -EINVAL;
 	size = area->vm_end - area->vm_start;
 	offset = vma_file_offset(area);
-	dma_bytes = PAGE_ALIGN(runtime->dma_bytes);
+	dma_bytes = ALIGN(runtime->dma_bytes, MM_PAGE_SIZE(area->vm_mm));
 	if ((size_t)size > dma_bytes)
 		return -EINVAL;
 	if (offset > dma_bytes - size)
