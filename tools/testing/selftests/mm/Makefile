@@ -63,6 +63,10 @@ FOLIO_WITHIN_RANGE_PPPS_MODULE := \
 	folio_within_range_ppps_module/folio_within_range_ppps_test.ko
 ifneq (,$(shell grep -s '^CONFIG_VIDEOBUF2_VMALLOC=y$$' $(KDIR)/.config))
 VB2_MMAP_PPPS_MODULE := vb2_mmap_ppps_module/vb2_mmap_ppps_test.ko
+ifneq (,$(shell grep -s '^CONFIG_VIDEOBUF2_DMA_SG=y$$' $(KDIR)/.config))
+VB2_USERPTR_PPPS_MODULE := \
+	vb2_userptr_ppps_module/vb2_userptr_ppps_test.ko
+endif
 endif
 endif
 
@@ -159,6 +163,7 @@ TEST_GEN_FILES += userfaultfd_shmem_ppps
 TEST_GEN_FILES += userfaultfd_zeropage_ppps
 TEST_GEN_FILES += vm_map_pages_ppps
 TEST_GEN_FILES += vb2_mmap_ppps
+TEST_GEN_FILES += vb2_userptr_ppps
 TEST_GEN_FILES += split_huge_page_test
 TEST_GEN_FILES += ksm_tests
 TEST_GEN_FILES += ksm_functional_tests
@@ -243,6 +248,8 @@ TEST_FILES += test_vm_map_pages_ppps.sh
 TEST_FILES += $(VM_MAP_PAGES_PPPS_MODULE)
 TEST_FILES += test_vb2_mmap_ppps.sh
 TEST_FILES += $(VB2_MMAP_PPPS_MODULE)
+TEST_FILES += test_vb2_userptr_ppps.sh
+TEST_FILES += $(VB2_USERPTR_PPPS_MODULE)
 
 # required by charge_reserved_hugetlb.sh
 TEST_FILES += write_hugetlb_memory.sh
@@ -409,6 +416,21 @@ clean_vb2_mmap_ppps_module:
 	+$(MAKE) -C vb2_mmap_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_vb2_mmap_ppps_module
+endif
+
+ifneq ($(VB2_USERPTR_PPPS_MODULE),)
+all: $(VB2_USERPTR_PPPS_MODULE)
+
+$(VB2_USERPTR_PPPS_MODULE): \
+	vb2_userptr_ppps_module/vb2_userptr_ppps_test.c \
+	vb2_userptr_ppps_module/Makefile
+	+$(MAKE) -C vb2_userptr_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_vb2_userptr_ppps_module
+clean_vb2_userptr_ppps_module:
+	+$(MAKE) -C vb2_userptr_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_vb2_userptr_ppps_module
 endif
 
 $(TEST_GEN_PROGS): vm_util.c thp_settings.c

@@ -18,6 +18,8 @@
 #include <linux/mm.h>
 #include <linux/refcount.h>
 
+struct sg_table;
+
 /**
  * struct vb2_vmarea_handler - common vma refcount tracking handler.
  *

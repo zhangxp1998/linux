@@ -600,7 +600,6 @@ static void *vb2_dc_get_userptr(struct vb2_buffer *vb, struct device *dev,
 	buf->dma_dir = vb->vb2_queue->dma_dir;
 	buf->vb = vb;
 
-	offset = lower_32_bits(offset_in_page(vaddr));
 	vec = vb2_create_framevec(vaddr, size, buf->dma_dir == DMA_FROM_DEVICE ||
 					       buf->dma_dir == DMA_BIDIRECTIONAL);
 	if (IS_ERR(vec)) {
@@ -608,6 +607,7 @@ static void *vb2_dc_get_userptr(struct vb2_buffer *vb, struct device *dev,
 		goto fail_buf;
 	}
 	buf->vec = vec;
+	offset = frame_vector_frame_offset(vec, 0);
 	n_pages = frame_vector_count(vec);
 	ret = frame_vector_to_pages(vec);
 	if (ret < 0) {

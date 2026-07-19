@@ -30,7 +30,7 @@ int get_vaddr_frames_range(unsigned long start, size_t length, bool write,
 
 	if (write)
 		gup_flags |= FOLL_WRITE;
-	frame_vector_set_frame_size(vec, PAGE_SIZE);
+	frame_vector_set_frame_size(vec, MM_PAGE_SIZE(mm));
 	ret = pin_user_pages_range(mm, start, length, vec->nr_allocated,
 				   gup_flags, (struct page **)vec->ptrs,
 				   frame_vector_spans(vec));
@@ -45,6 +45,7 @@ EXPORT_SYMBOL(get_vaddr_frames_range);
 int get_vaddr_frames(unsigned long start, unsigned int nr_frames, bool write,
 		     struct frame_vector *vec)
 {
+	struct mm_struct *mm = current->mm;
 	size_t length;
 	int ret;
 
@@ -54,10 +55,10 @@ int get_vaddr_frames(unsigned long start, unsigned int nr_frames, bool write,
 		nr_frames = vec->nr_allocated;
 	if (!nr_frames)
 		return -EFAULT;
-	if (nr_frames > (ULONG_MAX >> PAGE_SHIFT))
+	if (nr_frames > (ULONG_MAX >> MM_PAGE_SHIFT(mm)))
 		return -EOVERFLOW;
-	length = ((size_t)nr_frames << PAGE_SHIFT) -
-		 offset_in_page(start);
+	length = ((size_t)nr_frames << MM_PAGE_SHIFT(mm)) -
+		 mm_offset_in_page(mm, start);
 	ret = get_vaddr_frames_range(start, length, write, vec);
 	return ret ? ret : -EFAULT;
 }
