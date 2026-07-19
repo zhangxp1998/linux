@@ -132,13 +132,59 @@ static int io_region_init_ptr(struct io_mapped_region *mr)
 	return 0;
 }
 
-static int io_region_pin_pages(struct io_ring_ctx *ctx,
-				struct io_mapped_region *mr,
-				struct io_uring_region_desc *reg)
+static int io_region_pin_compat_page(struct io_mapped_region *mr,
+				     struct io_uring_region_desc *reg)
+{
+	struct mm_struct *mm = current->mm;
+	unsigned long addr = untagged_addr(reg->user_addr);
+	struct vm_area_struct *vma;
+	struct page **pages;
+	long pinned;
+
+	/*
+	 * A native kernel mapping cannot concatenate arbitrary 4K slices from
+	 * different native pages. A single process page has no such gap and is
+	 * sufficient for registered wait arguments.
+	 */
+	if (reg->size != MM_PAGE_SIZE(mm))
+		return -EOPNOTSUPP;
+
+	pages = kvmalloc_array(1, sizeof(struct page *), GFP_KERNEL_ACCOUNT);
+	if (!pages)
+		return -ENOMEM;
+
+	mmap_read_lock(mm);
+	vma = vma_lookup(mm, addr);
+	if (!vma || reg->size > vma->vm_end - addr) {
+		pinned = -EFAULT;
+	} else {
+		mr->page_offset = vma_address_to_slice(vma, addr) *
+				  MM_PAGE_SIZE(mm);
+		pinned = pin_user_pages(addr, 1, FOLL_WRITE | FOLL_LONGTERM,
+					pages);
+	}
+	mmap_read_unlock(mm);
+	if (pinned != 1) {
+		if (pinned > 0)
+			unpin_user_pages(pages, pinned);
+		kvfree(pages);
+		return pinned < 0 ? pinned : -EFAULT;
+	}
+
+	mr->pages = pages;
+	mr->flags |= IO_REGION_F_USER_PROVIDED;
+	return 0;
+}
+
+static int io_region_pin_pages(struct io_mapped_region *mr,
+			       struct io_uring_region_desc *reg)
 {
 	unsigned long size = (size_t) mr->nr_pages << PAGE_SHIFT;
 	struct page **pages;
 	int nr_pages;
+
+	if (ppps_mm_is_compat(current->mm))
+		return io_region_pin_compat_page(mr, reg);
 
 	pages = io_pin_pages(reg->user_addr, size, &nr_pages);
 	if (IS_ERR(pages))
@@ -186,14 +232,15 @@ done:
 	return 0;
 }
 
+/* Track the userspace-visible size separately from native backing pages. */
 int io_create_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr,
 		     struct io_uring_region_desc *reg,
 		     unsigned long mmap_offset)
 {
-	int nr_pages, ret;
-	u64 end;
+	u64 end, aligned_end, nr_pages;
+	int ret;
 
-	if (WARN_ON_ONCE(mr->pages || mr->ptr || mr->nr_pages))
+	if (WARN_ON_ONCE(mr->pages || mr->ptr || mr->size || mr->nr_pages))
 		return -EFAULT;
 	if (memchr_inv(&reg->__resv, 0, sizeof(reg->__resv)))
 		return -EINVAL;
@@ -204,23 +251,31 @@ int io_create_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr,
 		return -EFAULT;
 	if (!reg->size || reg->mmap_offset || reg->id)
 		return -EINVAL;
-	if ((reg->size >> PAGE_SHIFT) > INT_MAX)
+	if (reg->size > SIZE_MAX || reg->user_addr > ULONG_MAX)
 		return -E2BIG;
-	if ((reg->user_addr | reg->size) & ~PAGE_MASK)
+	if (!MM_PAGE_ALIGNED(current->mm, reg->user_addr) ||
+	    !MM_PAGE_ALIGNED(current->mm, reg->size))
 		return -EINVAL;
 	if (check_add_overflow(reg->user_addr, reg->size, &end))
 		return -EOVERFLOW;
+	if (check_add_overflow(end, PAGE_SIZE - 1, &aligned_end))
+		return -EOVERFLOW;
+	aligned_end &= PAGE_MASK;
+	nr_pages = (aligned_end - (reg->user_addr & PAGE_MASK)) >>
+		   PAGE_SHIFT;
+	if (!nr_pages || nr_pages > INT_MAX)
+		return -E2BIG;
 
-	nr_pages = reg->size >> PAGE_SHIFT;
 	if (ctx->user) {
 		ret = __io_account_mem(ctx->user, nr_pages);
 		if (ret)
 			return ret;
 	}
 	mr->nr_pages = nr_pages;
+	mr->size = reg->size;
 
 	if (reg->flags & IORING_MEM_REGION_TYPE_USER)
-		ret = io_region_pin_pages(ctx, mr, reg);
+		ret = io_region_pin_pages(mr, reg);
 	else
 		ret = io_region_allocate_pages(ctx, mr, reg, mmap_offset);
 	if (ret)
