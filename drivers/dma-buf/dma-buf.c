@@ -26,6 +26,7 @@
 #include <linux/dma-resv.h>
 #include <linux/mm.h>
 #include <linux/mount.h>
+#include <linux/overflow.h>
 #include <linux/pseudo_fs.h>
 
 #include <uapi/linux/dma-buf.h>
@@ -144,10 +145,23 @@ static struct file_system_type dma_buf_fs_type = {
 	.kill_sb = kill_anon_super,
 };
 
+static int dma_buf_mmap_size(struct dma_buf *dmabuf,
+			     struct vm_area_struct *vma, u64 *mmap_size)
+{
+	u64 page_size = MM_PAGE_SIZE(vma->vm_mm);
+
+	if (check_add_overflow((u64)dmabuf->size, page_size - 1, mmap_size))
+		return -EOVERFLOW;
+	*mmap_size &= ~(page_size - 1);
+	return 0;
+}
+
 static int dma_buf_mmap_internal(struct file *file, struct vm_area_struct *vma)
 {
 	struct dma_buf *dmabuf;
+	u64 mmap_size;
 	u64 offset;
+	int ret;
 
 	if (!is_dma_buf_file(file))
 		return -EINVAL;
@@ -157,11 +171,14 @@ static int dma_buf_mmap_internal(struct file *file, struct vm_area_struct *vma)
 	/* check if buffer supports mmap */
 	if (!dmabuf->ops->mmap)
 		return -EINVAL;
+	ret = dma_buf_mmap_size(dmabuf, vma, &mmap_size);
+	if (ret)
+		return ret;
 
 	offset = vma_file_offset(vma);
 	/* check for overflowing the buffer's size */
-	if (offset > dmabuf->size ||
-	    vma->vm_end - vma->vm_start > dmabuf->size - offset)
+	if (offset > mmap_size ||
+	    vma->vm_end - vma->vm_start > mmap_size - offset)
 		return -EINVAL;
 
 	return dmabuf->ops->mmap(dmabuf, vma);
@@ -1474,7 +1491,9 @@ EXPORT_SYMBOL_NS_GPL(dma_buf_end_cpu_access, DMA_BUF);
 int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 		 unsigned long pgoff)
 {
+	u64 mmap_size;
 	u64 offset;
+	int ret;
 
 	if (WARN_ON(!dmabuf || !vma))
 		return -EINVAL;
@@ -1482,6 +1501,9 @@ int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 	/* check if buffer supports mmap */
 	if (!dmabuf->ops->mmap)
 		return -EINVAL;
+	ret = dma_buf_mmap_size(dmabuf, vma, &mmap_size);
+	if (ret)
+		return ret;
 
 	/* @pgoff is expressed in native pages, not process pages. */
 	if (pgoff > U64_MAX >> PAGE_SHIFT)
@@ -1489,8 +1511,8 @@ int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 	offset = (u64)pgoff << PAGE_SHIFT;
 
 	/* check for overflowing the buffer's size */
-	if (offset > dmabuf->size ||
-	    vma->vm_end - vma->vm_start > dmabuf->size - offset)
+	if (offset > mmap_size ||
+	    vma->vm_end - vma->vm_start > mmap_size - offset)
 		return -EINVAL;
 
 	/* readjust the vma */
