@@ -177,6 +177,7 @@ TEST_GEN_FILES += uffd-unit-tests
 TEST_GEN_FILES += userfaultfd_eof_ppps
 TEST_GEN_FILES += userfaultfd_remote_ppps
 TEST_GEN_FILES += userfaultfd_wp_remote_ppps
+TEST_GEN_FILES += userfaultfd_continue_remote_ppps
 TEST_GEN_FILES += exec_user_args_ppps
 TEST_GEN_FILES += userfaultfd_retry_ppps
 TEST_GEN_FILES += userfaultfd_shmem_ppps
