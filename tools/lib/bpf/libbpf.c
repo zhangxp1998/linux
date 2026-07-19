@@ -7182,7 +7182,7 @@ static int bpf_object__relocate(struct bpf_object *obj, const char *targ_btf_pat
 	bpf_object__init_arena_page_sz(obj);
 
 	/* place globals at the end of the arena (if supported) */
-	if (obj->arena_map_idx >= 0 && kernel_supports(obj, FEAT_LDIMM64_FULL_RANGE_OFF)) {
+	if (obj->arena_map_idx >= 0) {
 		struct bpf_map *arena_map = &obj->maps[obj->arena_map_idx];
 		size_t arena_data_sz;
 
