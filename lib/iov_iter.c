@@ -1150,6 +1150,11 @@ static struct page *first_bvec_segment(const struct iov_iter *i,
 	return page;
 }
 
+/*
+ * A compat process page is one slice of a native page, so a page array with a
+ * single initial offset can describe at most one process page.  Extract one
+ * process page per call; *@start is its byte offset within the native page.
+ */
 static ssize_t iov_iter_extract_compat_page(struct iov_iter *i,
 					    unsigned long addr,
 					    struct page ***pages,
