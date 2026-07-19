@@ -24263,6 +24263,7 @@ T:	git git://git.kernel.org/pub/scm/linux/kernel/git/gregkh/char-misc.git
 F:	Documentation/driver-api/uio-howto.rst
 F:	drivers/uio/
 F:	include/linux/uio_driver.h
+F:	tools/testing/selftests/drivers/uio/
 
 UTIL-LINUX PACKAGE
 M:	Karel Zak <kzak@redhat.com>
