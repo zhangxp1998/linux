@@ -14,7 +14,10 @@
 
 #undef PAGE_SIZE
 #undef PAGE_MASK
-#define PAGE_SIZE (1UL << CONFIG_PAGE_SHIFT)
+#ifndef VGETRANDOM_PAGE_SHIFT
+#define VGETRANDOM_PAGE_SHIFT CONFIG_PAGE_SHIFT
+#endif
+#define PAGE_SIZE (1UL << VGETRANDOM_PAGE_SHIFT)
 #define PAGE_MASK (~(PAGE_SIZE - 1))
 
 #define MEMCPY_AND_ZERO_SRC(type, dst, src, len) do {				\
@@ -87,8 +90,13 @@ __cvdso_getrandom_data(const struct vdso_rng_data *rng_info, void *buffer, size_
 	}
 
 	/* The state must not straddle a page, since pages can be zeroed at any time. */
-	if (unlikely(((unsigned long)opaque_state & ~PAGE_MASK) + sizeof(*state) > PAGE_SIZE))
+	if (unlikely(((unsigned long)opaque_state & ~PAGE_MASK) + sizeof(*state) > PAGE_SIZE)) {
+#ifdef VGETRANDOM_FALLBACK_ON_CROSS_PAGE
+		goto fallback_syscall;
+#else
 		return -EFAULT;
+#endif
+	}
 
 	/* Handle unexpected flags by falling back to the kernel. */
 	if (unlikely(flags & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)))
