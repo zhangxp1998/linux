@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -130,6 +131,64 @@ static void vgetrandom_init(void)
 		ksft_exit_fail_msg("Failed to fetch vgetrandom params: %zd\n", ret);
 }
 
+static void test_state_page_boundary(void)
+{
+	size_t page_size = getpagesize();
+	uintptr_t state_addr;
+	uint8_t output[32];
+	void *mapping;
+	ssize_t ret;
+
+	mapping = mmap(NULL, page_size * 2, vgrnd.params.mmap_prot,
+		       vgrnd.params.mmap_flags, -1, 0);
+	ksft_assert(mapping != MAP_FAILED);
+
+	state_addr = (uintptr_t)mapping + page_size -
+		(vgrnd.params.size_of_opaque_state / 2);
+	state_addr &= ~(uintptr_t)7;
+	memset((void *)state_addr, 0, vgrnd.params.size_of_opaque_state);
+
+	ret = VDSO_CALL(vgrnd.fn, 5, output, sizeof(output), 0,
+			(void *)state_addr, vgrnd.params.size_of_opaque_state);
+	munmap(mapping, page_size * 2);
+	if (ret != -EFAULT)
+		ksft_exit_fail_msg("vgetrandom accepted state crossing a page: %zd\n", ret);
+
+	ksft_test_result_pass("getrandom state page boundary: PASS\n");
+}
+
+static void test_state_page_geometry(void)
+{
+	size_t page_size = getpagesize();
+	size_t state_size = vgrnd.params.size_of_opaque_state;
+	uintptr_t state_addr;
+	uint8_t output[32];
+	void *mapping;
+	ssize_t ret;
+
+	mapping = mmap(NULL, page_size, vgrnd.params.mmap_prot,
+		       vgrnd.params.mmap_flags, -1, 0);
+	ksft_assert(mapping != MAP_FAILED);
+	ksft_assert(state_size <= page_size);
+
+	/* A native page may contain several smaller supported page sizes. */
+	state_addr = (uintptr_t)mapping;
+	if (page_size > 4096 && state_size > 8) {
+		state_addr += 4096 - state_size / 2;
+		state_addr &= ~(uintptr_t)7;
+	}
+	ksft_assert(state_addr + state_size <= (uintptr_t)mapping + page_size);
+	memset((void *)state_addr, 0, state_size);
+	ret = VDSO_CALL(vgrnd.fn, 5, output, sizeof(output), 0,
+			(void *)state_addr, state_size);
+	munmap(mapping, page_size);
+	if (ret != sizeof(output))
+		ksft_exit_fail_msg("vgetrandom rejected state within a %zu-byte page: %zd\n",
+				   page_size, ret);
+
+	ksft_test_result_pass("getrandom state within process page: PASS\n");
+}
+
 static ssize_t vgetrandom(void *buf, size_t len, unsigned long flags)
 {
 	static __thread void *state;
@@ -243,7 +302,7 @@ static void kselftest(void)
 
 	ksft_print_header();
 	vgetrandom_init();
-	ksft_set_plan(2);
+	ksft_set_plan(4);
 
 	for (size_t i = 0; i < 1000; ++i) {
 		ssize_t ret = vgetrandom(weird_size, sizeof(weird_size), 0);
@@ -251,6 +310,8 @@ static void kselftest(void)
 	}
 
 	ksft_test_result_pass("getrandom: PASS\n");
+	test_state_page_boundary();
+	test_state_page_geometry();
 
 	unshare(CLONE_NEWUSER);
 	ksft_assert(unshare(CLONE_NEWTIME) == 0);
