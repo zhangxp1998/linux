@@ -2410,15 +2410,23 @@ EXPORT_SYMBOL_GPL(vhost_dev_ioctl);
 static int set_bit_to_user(int nr, void __user *addr)
 {
 	unsigned long log = (unsigned long)addr;
+	struct mm_struct *mm = current->mm;
+	unsigned int page_offset = 0;
 	struct page *page;
 	void *base;
-	int bit = nr + (log % PAGE_SIZE) * 8;
+	int bit;
 	int r;
 
-	r = pin_user_pages_fast(log, 1, FOLL_WRITE, &page);
-	if (r < 0)
-		return r;
-	BUG_ON(r != 1);
+	if (!mm)
+		return -EFAULT;
+
+	/* Offset of the process page in its native page, plus that of @log. */
+	r = pin_user_pages_with_offsets(mm, log, 1, FOLL_WRITE, &page,
+					&page_offset);
+	if (r != 1)
+		return r < 0 ? r : -EFAULT;
+
+	bit = nr + (page_offset + mm_offset_in_page(mm, log)) * 8;
 	base = kmap_atomic(page);
 	set_bit(bit, base);
 	kunmap_atomic(base);

@@ -3540,6 +3540,81 @@ int get_user_pages_fast_only(unsigned long start, int nr_pages,
 EXPORT_SYMBOL_GPL(get_user_pages_fast_only);
 
 /**
+ * mm_user_slice_offset() - byte offset of the process page at @addr within
+ * its native page
+ * @mm:   target mm
+ * @addr: user address
+ *
+ * Takes and releases mmap_read_lock(@mm).  Returns 0 for a native mm and for
+ * an unmapped @addr.
+ */
+unsigned long mm_user_slice_offset(struct mm_struct *mm, unsigned long addr)
+{
+	struct vm_area_struct *vma;
+	unsigned long offset = 0;
+
+	if (!ppps_mm_is_compat(mm))
+		return 0;
+
+	mmap_read_lock(mm);
+	addr = untagged_addr_remote(mm, addr);
+	vma = vma_lookup(mm, addr);
+	if (vma)
+		offset = vma_page_slice_offset(vma, NULL, addr);
+	mmap_read_unlock(mm);
+	return offset;
+}
+EXPORT_SYMBOL_GPL(mm_user_slice_offset);
+
+/**
+ * pin_user_pages_with_offsets() - pin process pages and locate each within
+ * its native page
+ * @mm:        target mm
+ * @start:     starting user address
+ * @nr_pages:  number of process pages from start to pin
+ * @gup_flags: flags modifying pin behaviour
+ * @pages:     receives the native page backing each process page
+ * @offsets:   receives the byte offset of each process page within its
+ *             native page (all 0 for a native mm)
+ *
+ * Takes and releases mmap_read_lock(@mm) itself; otherwise behaves like
+ * pin_user_pages_remote().  In a compat mm consecutive entries may name the
+ * same native page at different offsets.
+ *
+ * Returns the number of pages pinned, whose @offsets are filled in, or -errno.
+ */
+long pin_user_pages_with_offsets(struct mm_struct *mm, unsigned long start,
+				 unsigned long nr_pages, unsigned int gup_flags,
+				 struct page **pages, unsigned int *offsets)
+{
+	struct vm_area_struct *vma = NULL;
+	unsigned long addr;
+	long ret, i;
+
+	if (!ppps_mm_is_compat(mm)) {
+		memset(offsets, 0, nr_pages * sizeof(*offsets));
+		/* Native callers keep the lockless fast path. */
+		if (mm == current->mm)
+			return pin_user_pages_fast(start, nr_pages, gup_flags,
+						   pages);
+	}
+
+	mmap_read_lock(mm);
+	ret = pin_user_pages_remote(mm, start, nr_pages, gup_flags, pages, NULL);
+	if (ppps_mm_is_compat(mm)) {
+		addr = untagged_addr_remote(mm, start);
+		for (i = 0; i < ret; i++, addr += MM_PAGE_SIZE(mm)) {
+			if (!vma || addr >= vma->vm_end)
+				vma = vma_lookup(mm, addr);
+			offsets[i] = vma ? vma_page_slice_offset(vma, pages[i], addr) : 0;
+		}
+	}
+	mmap_read_unlock(mm);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pin_user_pages_with_offsets);
+
+/**
  * get_user_pages_fast() - pin user pages in memory
  * @start:      starting user address
  * @nr_pages:   number of pages from start to pin
