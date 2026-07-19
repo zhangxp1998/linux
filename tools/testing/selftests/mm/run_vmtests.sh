@@ -304,6 +304,7 @@ CATEGORY="mmap" run_test ./elf_core_ppps
 CATEGORY="mmap" run_test ./taskstats_ppps
 CATEGORY="mmap" run_test ./rusage_ppps
 CATEGORY="mmap" run_test ./sysv_shm_ppps
+CATEGORY="mlock" run_test ./sysv_shm_lock_ppps
 CATEGORY="mmap" run_test ./io_uring_mmap_ppps
 CATEGORY="mmap" run_test ./io_uring_fixed_buffer_ppps
 CATEGORY="mmap" run_test ./mglru_ppps
