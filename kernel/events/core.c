@@ -7423,6 +7423,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct perf_event *event = file->private_data;
 	unsigned long vma_size, nr_pages;
+	u64 mmap_offset;
 	mapped_f mapped;
 	int ret;
 
@@ -7443,6 +7444,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 
 	vma_size = vma->vm_end - vma->vm_start;
 	nr_pages = vma_size / PAGE_SIZE;
+	mmap_offset = vma_file_offset(vma);
 
 	/*
 	 * A main ring can use the native pages which fit in a process-page
@@ -7450,7 +7452,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 	 * An AUX ring has an externally supplied offset and size, so it cannot be
 	 * truncated to fit a partial native page.
 	 */
-	if (vma->vm_pgoff && (!nr_pages || vma_size != PAGE_SIZE * nr_pages))
+	if (mmap_offset && (!nr_pages || vma_size != PAGE_SIZE * nr_pages))
 		return -EINVAL;
 	if (!nr_pages)
 		nr_pages = 1;
@@ -7467,7 +7469,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 		if (event->state <= PERF_EVENT_STATE_REVOKED)
 			return -ENODEV;
 
-		if (vma->vm_pgoff == 0)
+		if (!mmap_offset)
 			ret = perf_mmap_rb(vma, event, nr_pages);
 		else
 			ret = perf_mmap_aux(vma, event, nr_pages);
