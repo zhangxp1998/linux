@@ -7,7 +7,7 @@
 #define _GNU_SOURCE
 
 #include <asm/hwcap.h>
-#include <errno.h>
+#include <linux/memfd.h>
 #include <signal.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
@@ -36,6 +36,9 @@
 #define TAGS_PER_PAGE (PROCESS_PAGE_SIZE / MTE_GRANULE_SIZE)
 #define TOTAL_TAGS (TEST_SIZE / MTE_GRANULE_SIZE)
 #define TEST_BASE 0x50000000UL
+#define FILE_TEST_BASE 0x60000000UL
+#define FILE_TAG 5U
+#define FILE_REPLACEMENT_TAG 13U
 
 static void store_allocation_tag(void *address, unsigned int tag)
 {
@@ -55,7 +58,9 @@ static unsigned int load_allocation_tag(void *address)
 static void tracee(void)
 {
 	unsigned long offset;
+	void *file_mapping;
 	void *mapping;
+	int fd;
 
 	if (ptrace(PTRACE_TRACEME, 0, NULL, NULL))
 		_exit(100);
@@ -72,13 +77,29 @@ static void tracee(void)
 
 		store_allocation_tag(mapping + offset, page + 1);
 	}
+	fd = memfd_create("mte-ptrace-ppps", MFD_CLOEXEC);
+	if (fd < 0 || ftruncate(fd, 2 * PROCESS_PAGE_SIZE))
+		_exit(103);
+	file_mapping = mmap((void *)FILE_TEST_BASE, PROCESS_PAGE_SIZE,
+			    PROT_READ | PROT_WRITE | PROT_MTE,
+			    MAP_SHARED | MAP_FIXED_NOREPLACE, fd, PROCESS_PAGE_SIZE);
+	close(fd);
+	if (file_mapping != (void *)FILE_TEST_BASE)
+		_exit(104);
+	memset(file_mapping, 0, PROCESS_PAGE_SIZE);
+	for (offset = 0; offset < PROCESS_PAGE_SIZE; offset += MTE_GRANULE_SIZE)
+		store_allocation_tag(file_mapping + offset, FILE_TAG);
 	raise(SIGSTOP);
 	for (offset = 0; offset < TEST_SIZE; offset += MTE_GRANULE_SIZE) {
 		unsigned int page = offset / PROCESS_PAGE_SIZE;
 
 		if (load_allocation_tag(mapping + offset) != page + 8)
-			_exit(104);
+			_exit(105);
 	}
+	for (offset = 0; offset < PROCESS_PAGE_SIZE; offset += MTE_GRANULE_SIZE)
+		if (load_allocation_tag(file_mapping + offset) !=
+		    FILE_REPLACEMENT_TAG)
+			_exit(106);
 	_exit(0);
 }
 
@@ -92,6 +113,9 @@ static int run_test(void)
 	unsigned long index;
 	bool child_stopped;
 	bool contents_ok = true;
+	bool file_contents_ok = true;
+	bool file_peek_ok;
+	bool file_poke_ok;
 	bool peek_ok;
 	bool poke_ok;
 	int status;
@@ -100,9 +124,7 @@ static int run_test(void)
 	ksft_print_header();
 	if (!(getauxval(AT_HWCAP2) & HWCAP2_MTE))
 		ksft_exit_skip("MTE is not supported\n");
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(9);
 
 	child = fork();
 	if (!child)
@@ -113,12 +135,16 @@ static int run_test(void)
 		ksft_exit_fail_msg("waitpid failed: %s\n", strerror(errno));
 	child_stopped = WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP;
 	ksft_test_result(child_stopped,
-			 "tracee creates a tagged four-page mapping\n");
+			 "tracee creates tagged anonymous and file-backed mappings\n");
 	if (!child_stopped) {
 		ksft_test_result_fail("read allocation tags with ptrace\n");
 		ksft_test_result_fail("preserve tags across each 4K process page\n");
 		ksft_test_result_fail("write allocation tags with ptrace\n");
-		ksft_test_result_fail("tracee observes tags written to every 4K process page\n");
+		ksft_test_result_fail("read tags from a file-backed 4K slice\n");
+		ksft_test_result_fail("preserve the file-backed slice's tags\n");
+		ksft_test_result_fail("write tags to a file-backed 4K slice\n");
+		ksft_test_result_fail("tracee observes tags written to every anonymous page\n");
+		ksft_test_result_fail("tracee observes tags written to the file-backed slice\n");
 		ksft_finished();
 	}
 
@@ -150,12 +176,45 @@ static int run_test(void)
 			  (void *)TEST_BASE, &iov) && iov.iov_len == TOTAL_TAGS;
 	ksft_test_result(poke_ok, "write allocation tags with ptrace\n");
 
+	memset(tags, 0xff, TAGS_PER_PAGE);
+	iov.iov_len = TAGS_PER_PAGE;
+	file_peek_ok = !ptrace((enum __ptrace_request)PTRACE_PEEKMTETAGS,
+			       child, (void *)FILE_TEST_BASE, &iov) &&
+			iov.iov_len == TAGS_PER_PAGE;
+	ksft_test_result(file_peek_ok,
+			 "read tags from a file-backed 4K slice\n");
+	if (file_peek_ok) {
+		for (index = 0; index < TAGS_PER_PAGE; index++) {
+			if (tags[index] == FILE_TAG)
+				continue;
+			ksft_print_msg("file tag %lu is %u, expected %u\n",
+				       index, tags[index], FILE_TAG);
+			file_contents_ok = false;
+			break;
+		}
+	} else {
+		file_contents_ok = false;
+	}
+	ksft_test_result(file_contents_ok,
+			 "preserve the file-backed slice's tags\n");
+
+	memset(tags, FILE_REPLACEMENT_TAG, TAGS_PER_PAGE);
+	iov.iov_len = TAGS_PER_PAGE;
+	file_poke_ok = !ptrace((enum __ptrace_request)PTRACE_POKEMTETAGS,
+			       child, (void *)FILE_TEST_BASE, &iov) &&
+			iov.iov_len == TAGS_PER_PAGE;
+	ksft_test_result(file_poke_ok,
+			 "write tags to a file-backed 4K slice\n");
+
 	if (ptrace(PTRACE_CONT, child, NULL, NULL))
 		kill(child, SIGKILL);
 	if (waitpid(child, &status, 0) != child)
 		ksft_exit_fail_msg("final waitpid failed: %s\n", strerror(errno));
+	ksft_test_result(WIFEXITED(status) &&
+			 (!WEXITSTATUS(status) || WEXITSTATUS(status) == 106),
+			 "tracee observes tags written to every anonymous page\n");
 	ksft_test_result(WIFEXITED(status) && !WEXITSTATUS(status),
-			 "tracee observes tags written to every 4K process page\n");
+			 "tracee observes tags written to the file-backed slice\n");
 	ksft_finished();
 }
 
