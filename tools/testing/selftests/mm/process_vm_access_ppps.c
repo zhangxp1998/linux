@@ -107,7 +107,7 @@ static bool buffer_is_value(const unsigned char *buffer, size_t length,
 	return true;
 }
 
-static int exec_compat(void)
+static int exec_native(void)
 {
 	int persona = personality(0xffffffffUL);
 
@@ -115,12 +115,12 @@ static int exec_compat(void)
 		perror("personality(get)");
 		return EXIT_FAILURE;
 	}
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0) {
-		perror("personality(set 4K flag)");
+	if (personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0) {
+		perror("personality(clear 4K flag)");
 		return EXIT_FAILURE;
 	}
 	execl("/proc/self/exe", "process_vm_access_ppps", "--run", NULL);
-	perror("exec compat test");
+	perror("exec native test");
 	return EXIT_FAILURE;
 }
 
@@ -208,9 +208,21 @@ static int run_parent(void)
 	if (child < 0)
 		ksft_exit_fail_msg("fork failed: %s\n", strerror(errno));
 	if (!child) {
+		char command_fd[16];
+		char info_fd[16];
+		int persona;
+
 		close(info_pipe[0]);
 		close(command_pipe[1]);
-		_exit(run_child(info_pipe[1], command_pipe[0]));
+		persona = personality(0xffffffffUL);
+		if (persona < 0 ||
+		    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
+			_exit(127);
+		snprintf(info_fd, sizeof(info_fd), "%d", info_pipe[1]);
+		snprintf(command_fd, sizeof(command_fd), "%d", command_pipe[0]);
+		execl("/proc/self/exe", "process_vm_access_ppps", "--child",
+		      info_fd, command_fd, NULL);
+		_exit(127);
 	}
 
 	close(info_pipe[1]);
@@ -301,8 +313,10 @@ static int run_parent(void)
 int main(int argc, char **argv)
 {
 	if (argc == 1)
-		return exec_compat();
+		return exec_native();
 	if (argc == 2 && !strcmp(argv[1], "--run"))
 		return run_parent();
+	if (argc == 4 && !strcmp(argv[1], "--child"))
+		return run_child(atoi(argv[2]), atoi(argv[3]));
 	return EXIT_FAILURE;
 }
