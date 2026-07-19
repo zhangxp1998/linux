@@ -764,7 +764,8 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 			   new_slice_off, &need_rmap_locks);
 	if (!new_vma) {
 		if (vm_flags & VM_ACCOUNT)
-			vm_unacct_memory(to_account >> MM_PAGE_SHIFT(mm));
+			vm_unacct_memory_mm(mm,
+					   to_account >> MM_PAGE_SHIFT(mm));
 		return -ENOMEM;
 	}
 
@@ -841,7 +842,7 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	if (do_vmi_munmap(&vmi, mm, old_addr, old_len, uf_unmap, false) < 0) {
 		/* OOM: unable to split vma, just get accounts right */
 		if (vm_flags & VM_ACCOUNT && !(flags & MREMAP_DONTUNMAP))
-			vm_acct_memory(old_len >> MM_PAGE_SHIFT(mm));
+			vm_acct_memory_mm(mm, old_len >> MM_PAGE_SHIFT(mm));
 		account_start = account_end = false;
 	}
 
@@ -1226,7 +1227,7 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			 */
 			vma = vma_merge_extend(&vmi, vma, delta);
 			if (!vma) {
-				vm_unacct_memory(charged);
+				vm_unacct_memory_mm(mm, charged);
 				ret = -ENOMEM;
 				goto out;
 			}
