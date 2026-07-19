@@ -4448,7 +4448,7 @@ int remap_vmalloc_range_partial(struct vm_area_struct *vma, unsigned long uaddr,
 
 	size = PAGE_ALIGN(size);
 
-	if (!PAGE_ALIGNED(uaddr) || !PAGE_ALIGNED(kaddr))
+	if (!MM_PAGE_ALIGNED(vma->vm_mm, uaddr) || !PAGE_ALIGNED(kaddr))
 		return -EINVAL;
 
 	area = find_vm_area(kaddr);
@@ -4465,9 +4465,10 @@ int remap_vmalloc_range_partial(struct vm_area_struct *vma, unsigned long uaddr,
 
 	do {
 		struct page *page = vmalloc_to_page(kaddr);
+		unsigned long nr_pages = 1;
 		int ret;
 
-		ret = vm_insert_page(vma, uaddr, page);
+		ret = vm_insert_pages(vma, uaddr, &page, &nr_pages);
 		if (ret)
 			return ret;
 
