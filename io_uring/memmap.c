@@ -10,6 +10,7 @@
 #include <linux/io_uring_types.h>
 #include <asm/shmparam.h>
 
+#include "io_uring.h"
 #include "memmap.h"
 #include "kbuf.h"
 #include "rsrc.h"
@@ -308,9 +309,14 @@ static void *io_uring_validate_mmap_request(struct file *file, loff_t offset)
 static int io_region_mmap(struct io_ring_ctx *ctx,
 			  struct io_mapped_region *mr,
 			  struct vm_area_struct *vma,
-			  unsigned max_pages)
+			  unsigned int max_pages, size_t mmap_size)
 {
+	size_t allowed_size = MM_PAGE_ALIGN(vma->vm_mm, mmap_size);
 	unsigned long nr_pages = min(mr->nr_pages, max_pages);
+
+	if (!mmap_size || allowed_size < mmap_size ||
+	    vma->vm_end - vma->vm_start > allowed_size)
+		return -EINVAL;
 
 	vm_flags_set(vma, VM_DONTEXPAND);
 	return vm_insert_pages(vma, vma->vm_start, mr->pages, &nr_pages);
@@ -323,6 +329,7 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 	loff_t offset = vma_file_offset(vma);
 	unsigned int page_limit = UINT_MAX;
 	struct io_mapped_region *region;
+	size_t mmap_size;
 	void *ptr;
 
 	guard(mutex)(&ctx->mmap_lock);
@@ -330,16 +337,27 @@ __cold int io_uring_mmap(struct file *file, struct vm_area_struct *vma)
 	ptr = io_uring_validate_mmap_request(file, offset);
 	if (IS_ERR(ptr))
 		return PTR_ERR(ptr);
+	region = io_mmap_get_region(ctx, offset);
 
 	switch (offset & IORING_OFF_MMAP_MASK) {
 	case IORING_OFF_SQ_RING:
 	case IORING_OFF_CQ_RING:
+		mmap_size = io_uring_mmap_size(ctx, offset);
 		page_limit = (sz + PAGE_SIZE - 1) >> PAGE_SHIFT;
+		break;
+	case IORING_OFF_SQES:
+		mmap_size = io_uring_mmap_size(ctx, offset);
+		break;
+	case IORING_OFF_PBUF_RING:
+		mmap_size = io_pbuf_mmap_size(ctx,
+			(offset & ~IORING_OFF_MMAP_MASK) >> IORING_OFF_PBUF_SHIFT);
+		break;
+	default:
+		mmap_size = (size_t)region->nr_pages << PAGE_SHIFT;
 		break;
 	}
 
-	region = io_mmap_get_region(ctx, offset);
-	return io_region_mmap(ctx, region, vma, page_limit);
+	return io_region_mmap(ctx, region, vma, page_limit, mmap_size);
 }
 
 unsigned long io_uring_get_unmapped_area(struct file *filp, unsigned long addr,

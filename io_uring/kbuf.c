@@ -761,3 +761,15 @@ struct io_mapped_region *io_pbuf_get_region(struct io_ring_ctx *ctx,
 		return NULL;
 	return &bl->region;
 }
+
+size_t io_pbuf_mmap_size(struct io_ring_ctx *ctx, unsigned int bgid)
+{
+	struct io_buffer_list *bl;
+
+	lockdep_assert_held(&ctx->mmap_lock);
+	bl = xa_load(&ctx->io_bl_xa, bgid);
+	if (!bl || !(bl->flags & IOBL_BUF_RING))
+		return 0;
+
+	return flex_array_size(bl->buf_ring, bufs, bl->mask + 1);
+}

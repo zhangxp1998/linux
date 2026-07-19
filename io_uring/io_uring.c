@@ -2862,6 +2862,32 @@ unsigned long rings_size(unsigned int flags, unsigned int sq_entries,
 	return off;
 }
 
+size_t io_uring_mmap_size(struct io_ring_ctx *ctx, loff_t offset)
+{
+	size_t sq_offset;
+	size_t size;
+
+	switch (offset & IORING_OFF_MMAP_MASK) {
+	case IORING_OFF_SQ_RING:
+	case IORING_OFF_CQ_RING:
+		size = rings_size(ctx->flags, ctx->sq_entries, ctx->cq_entries,
+				  &sq_offset);
+		break;
+	case IORING_OFF_SQES:
+		if (ctx->flags & IORING_SETUP_SQE128)
+			size = array_size(2 * sizeof(struct io_uring_sqe),
+					  ctx->sq_entries);
+		else
+			size = array_size(sizeof(struct io_uring_sqe),
+					  ctx->sq_entries);
+		break;
+	default:
+		return 0;
+	}
+
+	return size == SIZE_MAX ? 0 : size;
+}
+
 static __cold void __io_req_caches_free(struct io_ring_ctx *ctx)
 {
 	struct io_kiocb *req;
