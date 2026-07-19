@@ -4,6 +4,7 @@
 LOCAL_HDRS += $(selfdir)/mm/local_config.h $(top_srcdir)/mm/gup_test.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
 LOCAL_HDRS += $(selfdir)/mm/pagewalk_ppps.h
+LOCAL_HDRS += $(selfdir)/mm/folio_within_range_ppps.h
 
 include local_config.mk
 
@@ -56,6 +57,8 @@ IOMMU_DMA_MMAP_PPPS_MODULE := iommu_dma_mmap_ppps_module/iommu_dma_mmap_ppps_mod
 ifneq (,$(shell grep -s '^CONFIG_MAPPING_DIRTY_HELPERS=y$$' $(KDIR)/.config))
 PAGEWALK_PPPS_MODULE := pagewalk_ppps_module/pagewalk_ppps_module.ko
 endif
+FOLIO_WITHIN_RANGE_PPPS_MODULE := \
+	folio_within_range_ppps_module/folio_within_range_ppps_test.ko
 endif
 
 TEST_GEN_FILES = cow
@@ -96,6 +99,7 @@ TEST_GEN_FILES += khugepaged
 TEST_GEN_FILES += madv_populate
 TEST_GEN_FILES += madvise_remove_ppps
 TEST_GEN_FILES += madvise_willneed_ppps
+TEST_GEN_FILES += folio_within_range_ppps
 TEST_GEN_FILES += map_fixed_noreplace
 TEST_GEN_FILES += map_hugetlb
 TEST_GEN_FILES += map_populate
@@ -218,6 +222,8 @@ TEST_FILES += $(IOMMU_DMA_MMAP_PPPS_MODULE)
 TEST_FILES += test_v9fs_mmap_close_ppps.sh
 TEST_FILES += test_pagewalk_ppps.sh
 TEST_FILES += $(PAGEWALK_PPPS_MODULE)
+TEST_FILES += test_folio_within_range_ppps.sh
+TEST_FILES += $(FOLIO_WITHIN_RANGE_PPPS_MODULE)
 TEST_FILES += test_vm_map_pages_ppps.sh
 TEST_FILES += $(VM_MAP_PAGES_PPPS_MODULE)
 
@@ -342,6 +348,21 @@ clean_pagewalk_ppps_module:
 	+$(MAKE) -C pagewalk_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_pagewalk_ppps_module
+endif
+
+ifneq ($(FOLIO_WITHIN_RANGE_PPPS_MODULE),)
+all: $(FOLIO_WITHIN_RANGE_PPPS_MODULE)
+
+$(FOLIO_WITHIN_RANGE_PPPS_MODULE): \
+	folio_within_range_ppps_module/folio_within_range_ppps_test.c \
+	folio_within_range_ppps_module/Makefile folio_within_range_ppps.h
+	+$(MAKE) -C folio_within_range_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_folio_within_range_ppps_module
+clean_folio_within_range_ppps_module:
+	+$(MAKE) -C folio_within_range_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_folio_within_range_ppps_module
 endif
 
 $(TEST_GEN_PROGS): vm_util.c thp_settings.c
