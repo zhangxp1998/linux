@@ -982,6 +982,7 @@ folio_within_range(struct folio *folio, struct vm_area_struct *vma,
 {
 	pgoff_t pgoff, addr;
 	unsigned long vma_pglen = vma_pages(vma);
+	loff_t file_start, file_end, folio_start;
 
 	VM_WARN_ON_FOLIO(folio_test_ksm(folio), folio);
 	if (start > end)
@@ -992,6 +993,14 @@ folio_within_range(struct folio *folio, struct vm_area_struct *vma,
 
 	if (end > vma->vm_end)
 		end = vma->vm_end;
+	if (ppps_mm_is_compat(vma->vm_mm) && !vma_is_anonymous(vma)) {
+		file_start = vma_file_offset(vma) + start - vma->vm_start;
+		file_end = file_start + end - start;
+		folio_start = folio_pos(folio);
+		if (folio_start < file_start || folio_start >= file_end)
+			return false;
+		return file_end - folio_start >= folio_size(folio);
+	}
 
 	pgoff = folio_pgoff(folio);
 
