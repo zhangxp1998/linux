@@ -6915,7 +6915,7 @@ static int map_range_ppps(struct perf_buffer *rb, struct vm_area_struct *vma)
 out:
 #ifdef CONFIG_MMU
 	if (err)
-		zap_vma_range(vma, vma->vm_start,
+		zap_vma_ptes(vma, vma->vm_start,
 			      vma->vm_end - vma->vm_start);
 #endif
 	return err;
@@ -6945,7 +6945,7 @@ static int map_aux_range_ppps(struct perf_buffer *rb,
 
 #ifdef CONFIG_MMU
 	if (err)
-		zap_vma_range(vma, vma->vm_start, size);
+		zap_vma_ptes(vma, vma->vm_start, size);
 #endif
 	return err;
 }
@@ -7073,7 +7073,7 @@ static void perf_mmap_account(struct vm_area_struct *vma, long user_extra, long 
 	atomic64_add(extra, &vma->vm_mm->pinned_vm);
 }
 
-static void perf_mmap_unaccount(struct vm_area_struct *vma, struct perf_buffer *rb)
+static void __attribute__((unused)) perf_mmap_unaccount(struct vm_area_struct *vma, struct perf_buffer *rb)
 {
 	struct user_struct *user = rb->mmap_user;
 
