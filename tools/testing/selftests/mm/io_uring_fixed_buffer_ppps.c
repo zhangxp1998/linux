@@ -179,6 +179,54 @@ static int make_file(char *path, size_t size)
 	return fd;
 }
 
+static long read_status_kb(const char *name)
+{
+	char line[256];
+	FILE *file;
+	long value = -1;
+
+	file = fopen("/proc/self/status", "re");
+	if (!file)
+		return -1;
+	while (fgets(line, sizeof(line), file)) {
+		if (!strncmp(line, name, strlen(name)) &&
+		    sscanf(line, "%*[^:]: %ld kB", &value) == 1)
+			break;
+		value = -1;
+	}
+	fclose(file);
+	return value;
+}
+
+static unsigned long mapping_kernel_page_size(uintptr_t address)
+{
+	char *line = NULL;
+	size_t line_size = 0;
+	unsigned long page_size = 0;
+	bool in_mapping = false;
+	FILE *file;
+
+	file = fopen("/proc/self/smaps", "re");
+	if (!file)
+		return 0;
+	while (getline(&line, &line_size, file) >= 0) {
+		unsigned long start, end, size_kb;
+
+		if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
+			in_mapping = address >= start && address < end;
+			continue;
+		}
+		if (in_mapping &&
+		    sscanf(line, "KernelPageSize: %lu kB", &size_kb) == 1) {
+			page_size = size_kb * 1024;
+			break;
+		}
+	}
+	free(line);
+	fclose(file);
+	return page_size;
+}
+
 int main(void)
 {
 	unsigned char input_data[TEST_LENGTH];
@@ -188,17 +236,24 @@ int main(void)
 	char input_path[] = "/tmp/io-fixed-input-XXXXXX";
 	void *reservation = MAP_FAILED;
 	unsigned char *mapping = MAP_FAILED;
+	unsigned long kernel_page_size;
+	unsigned long expected_pin_kb;
+	unsigned long pin_span;
 	struct iovec iov;
 	unsigned char adjacent = 0;
 	bool ring_mapped = false;
+	long vmpin_before;
+	long vmpin_after;
+	long vmpin_released;
 	int registered = -1;
+	int unregistered = -1;
 	int io_result = -1;
 	int backing_fd;
 	int input_fd;
 	int ring_fd;
 
 	ksft_print_header();
-	ksft_set_plan(7);
+	ksft_set_plan(9);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -229,12 +284,25 @@ int main(void)
 
 	iov.iov_base = mapping;
 	iov.iov_len = TEST_LENGTH;
+	vmpin_before = read_status_kb("VmPin");
 	if (ring_mapped)
 		registered = register_ring(ring_fd, IORING_REGISTER_BUFFERS,
 					   &iov, 1);
 	ksft_test_result(registered == 0,
 			 "register the mismatched 4K fixed buffer (ret=%d errno=%d)\n",
 			 registered, registered < 0 ? errno : 0);
+	vmpin_after = read_status_kb("VmPin");
+	kernel_page_size = mapping_kernel_page_size((uintptr_t)mapping);
+	pin_span = kernel_page_size ?
+		((uintptr_t)mapping & (kernel_page_size - 1)) + TEST_LENGTH : 0;
+	expected_pin_kb = kernel_page_size ?
+		((pin_span + kernel_page_size - 1) / kernel_page_size) *
+		kernel_page_size / 1024 : 0;
+	ksft_print_msg("VmPin=%ld->%ldkB kernel_page_size=%lu expected_delta=%lu\n",
+		       vmpin_before, vmpin_after, kernel_page_size, expected_pin_kb);
+	ksft_test_result(vmpin_before >= 0 &&
+			 vmpin_after - vmpin_before == (long)expected_pin_kb,
+			 "report fixed buffers in native pinned bytes\n");
 
 	if (registered == 0)
 		io_result = submit_read_fixed(ring_fd, input_fd, &params, &ring,
@@ -249,6 +317,12 @@ int main(void)
 		adjacent = 0;
 	ksft_test_result(adjacent == 0x5c,
 			 "READ_FIXED leaves the adjacent file slice unchanged\n");
+	if (registered == 0)
+		unregistered = register_ring(ring_fd, IORING_UNREGISTER_BUFFERS,
+					     NULL, 0);
+	vmpin_released = read_status_kb("VmPin");
+	ksft_test_result(unregistered == 0 && vmpin_released == vmpin_before,
+			 "unaccount fixed-buffer pins after unregister\n");
 
 	if (ring_mapped)
 		unmap_ring(&ring);
