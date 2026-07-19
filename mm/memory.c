@@ -1926,6 +1926,12 @@ void zap_page_range_single(struct vm_area_struct *vma, unsigned long address,
 	const unsigned long end = address + size;
 	struct mmu_notifier_range range;
 	struct mmu_gather tlb;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm = current->pgtable_mm;
+
+	/* Zap page tables using the mapped address space's geometry. */
+	current->pgtable_mm = vma->vm_mm;
+#endif
 
 	lru_add_drain();
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma->vm_mm,
@@ -1942,6 +1948,9 @@ void zap_page_range_single(struct vm_area_struct *vma, unsigned long address,
 	mmu_notifier_invalidate_range_end(&range);
 	tlb_finish_mmu(&tlb);
 	hugetlb_zap_end(vma, details);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	current->pgtable_mm = prev_pgtable_mm;
+#endif
 }
 
 /**
