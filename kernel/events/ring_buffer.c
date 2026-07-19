@@ -240,10 +240,13 @@ __perf_output_begin(struct perf_output_handle *handle,
 
 	page_shift = PAGE_SHIFT + page_order(rb);
 
-	handle->page = (offset >> page_shift) & (rb->nr_pages - 1);
+	offset &= perf_data_size(rb) - 1;
+	handle->page = offset >> page_shift;
 	offset &= (1UL << page_shift) - 1;
 	handle->addr = rb->data_pages[handle->page] + offset;
-	handle->size = (1UL << page_shift) - offset;
+	handle->size = min((1UL << page_shift) - offset,
+			   perf_data_size(rb) -
+			   ((handle->page << page_shift) + offset));
 
 	if (unlikely(have_lost)) {
 		lost_event.header.size = sizeof(lost_event);
@@ -835,7 +838,8 @@ static void perf_mmap_free_page(void *addr)
 	__free_page(page);
 }
 
-struct perf_buffer *rb_alloc(int nr_pages, long watermark, int cpu, int flags)
+struct perf_buffer *rb_alloc(int nr_pages, unsigned long data_size,
+			     long watermark, int cpu, int flags)
 {
 	struct perf_buffer *rb;
 	unsigned long size;
@@ -863,6 +867,7 @@ struct perf_buffer *rb_alloc(int nr_pages, long watermark, int cpu, int flags)
 	}
 
 	rb->nr_pages = nr_pages;
+	rb->data_size = data_size;
 
 	ring_buffer_init(rb, watermark, flags);
 
@@ -917,7 +922,8 @@ void rb_free(struct perf_buffer *rb)
 	schedule_work(&rb->work);
 }
 
-struct perf_buffer *rb_alloc(int nr_pages, long watermark, int cpu, int flags)
+struct perf_buffer *rb_alloc(int nr_pages, unsigned long data_size,
+			     long watermark, int cpu, int flags)
 {
 	struct perf_buffer *rb;
 	unsigned long size;
@@ -944,6 +950,7 @@ struct perf_buffer *rb_alloc(int nr_pages, long watermark, int cpu, int flags)
 		rb->nr_pages = 1;
 		rb->page_order = ilog2(nr_pages);
 	}
+	rb->data_size = data_size;
 
 	ring_buffer_init(rb, watermark, flags);
 
