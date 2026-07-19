@@ -11,11 +11,11 @@
 #define PAGE_SHIFT_COMPAT	12
 #define VA_BITS_COMPAT		39
 #define _MM_PAGE_SHIFT_HELPER(mm) \
-	((mm) && (mm)->page_shift ? (mm)->page_shift : PAGE_SHIFT)
+	(((struct mm_struct *)(mm)) && ((struct mm_struct *)(mm))->page_shift ? ((struct mm_struct *)(mm))->page_shift : PAGE_SHIFT)
 #define _MM_VA_BITS_HELPER(mm) \
-	(((mm) && (mm)->page_shift == PAGE_SHIFT_COMPAT) ? VA_BITS_COMPAT : VA_BITS)
+	((((struct mm_struct *)(mm)) && ((struct mm_struct *)(mm))->page_shift == PAGE_SHIFT_COMPAT) ? VA_BITS_COMPAT : VA_BITS)
 #define ppps_mm_is_compat(mm)						\
-	((mm) && (mm)->page_shift == PAGE_SHIFT_COMPAT)
+	(((struct mm_struct *)(mm)) && ((struct mm_struct *)(mm))->page_shift == PAGE_SHIFT_COMPAT)
 
 unsigned long mm_task_size64(void);
 unsigned long mm_task_size64_of(struct mm_struct *mm);
@@ -247,135 +247,3 @@ static inline void mm_init_pagesize(struct mm_struct *mm, struct linux_binprm *b
 #endif /* __ASSEMBLY__ */
 
 #endif /* _LINUX_PPPS_H */
-
-#if defined(_LINUX_MMAP_LOCK_H) && !defined(_LINUX_PPPS_VMA_INDEX_H)
-#define _LINUX_PPPS_VMA_INDEX_H
-#ifndef __ASSEMBLY__
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
-					     unsigned long address)
-{
-	if (!ppps_mm_is_compat(vma->vm_mm))
-		return vma->vm_pgoff + ((address - vma->vm_start) >> PAGE_SHIFT);
-
-	/* For anonymous VMAs, there is no page cache layout to conform to. */
-	if (!vma->vm_ops) {
-		return vma->vm_pgoff +
-		       ((address - vma->vm_start) >> PAGE_SHIFT_COMPAT);
-	}
-
-	/*
-	 * For file-backed VMAs in compat processes, the VMA offset starts at a
-	 * host page boundary (vm_pgoff) but may be offset internally by a
-	 * number of subpage slices (vm_slice_off).
-	 *
-	 * Convert the virtual address offset to compat slices, add the starting
-	 * slice offset, and scale the result back to native host pages to align
-	 * with page cache indexing.
-	 *
-	 * Translation of virtual address to page cache index (vm_pgoff) with PPPS_SLICE_SHIFT = 2:
-	 *
-	 * Original VMA (starts at vm_pgoff = 10, vm_slice_off = 1):
-	 *
-	 *              Native Page 10                 Native Page 11
-	 *        +----+----+----+----+          +----+----+----+----+
-	 *        | -  | S0 | S1 | S2 |          | S3 | S4 | S5 | -  |
-	 *        +----+----+----+----+          +----+----+----+----+
-	 *               ^
-	 *               |
-	 *               +-- vma->vm_start (starts at slice 1 of Page 10)
-	 *
-	 * Address translation (address at +3 slices, pointing to S3):
-	 *
-	 *              Native Page 10                 Native Page 11
-	 *        +----+----+----+----+          +----+----+----+----+
-	 *        | -  | S0 | S1 | S2 |          | S3 | S4 | S5 | -  |
-	 *        +----+----+----+----+          +----+----+----+----+
-	 *                                         ^
-	 *                                         |
-	 *                                         +-- Address (slice 3 of Page 10
-	 *                                             relative to start)
-	 *
-	 * Resulting indices:
-	 * - slice_offset = (1 + 3) & 3 = 0 (slice 0 of Page 11)
-	 * - page_cache_index (pgoff) = 10 + ((1 + 3) >> 2) = 11
-	 */
-	pgoff_t temp = (address - vma->vm_start) >> PAGE_SHIFT_COMPAT;
-
-	temp += vma_slice_off(vma);
-	return vma->vm_pgoff + (temp >> PPPS_SLICE_SHIFT);
-}
-
-static inline unsigned int address_to_slice(struct mm_struct *mm,
-					    unsigned long address,
-					    unsigned long vm_start,
-					    unsigned int vm_slice_off)
-{
-	if (!ppps_mm_is_compat(mm))
-		return 0;
-
-	return (((address - vm_start) >> PAGE_SHIFT_COMPAT) + vm_slice_off) & PPPS_SLICE_MASK;
-}
-
-static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma,
-						unsigned long address)
-{
-	/* Anonymous VMAs have no subpage slices */
-	if (!vma->vm_ops)
-		return 0;
-
-	return address_to_slice(vma->vm_mm, address, vma->vm_start, vma_slice_off(vma));
-}
-
-static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
-{
-	if (vma->vm_mm && vma->vm_mm->page_shift == PAGE_SHIFT_COMPAT) {
-		return (((loff_t)vma->vm_pgoff) << PAGE_SHIFT) +
-		       (((loff_t)vma_slice_off(vma)) << MM_PAGE_SHIFT(vma->vm_mm));
-	}
-	return ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
-}
-
-static inline bool ppps_vma_validate_uffd_alignment(const struct vm_area_struct *vma,
-						    unsigned long start, unsigned long end)
-{
-	if (vma->vm_mm && vma->vm_mm->page_shift == PAGE_SHIFT_COMPAT) {
-		return IS_ALIGNED(start, PAGE_SIZE_COMPAT) &&
-		       IS_ALIGNED(end, PAGE_SIZE_COMPAT);
-	}
-	return true;
-}
-#else
-static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
-					     unsigned long address)
-{
-	return vma->vm_pgoff + ((address - vma->vm_start) >> PAGE_SHIFT);
-}
-
-static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma,
-						unsigned long address)
-{
-	return 0;
-}
-
-static inline unsigned int address_to_slice(struct mm_struct *mm,
-					    unsigned long address,
-					    unsigned long vm_start,
-					    unsigned int vm_slice_off)
-{
-	return 0;
-}
-
-static inline loff_t vma_file_offset(const struct vm_area_struct *vma)
-{
-	return ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
-}
-
-static inline bool ppps_vma_validate_uffd_alignment(const struct vm_area_struct *vma,
-						    unsigned long start, unsigned long end)
-{
-	return true;
-}
-#endif
-#endif /* __ASSEMBLY__ */
-#endif /* _LINUX_MMAP_LOCK_H && !_LINUX_PPPS_VMA_INDEX_H */
