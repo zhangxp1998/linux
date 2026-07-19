@@ -424,6 +424,9 @@ static int copy_user_to_folio(struct folio *folio, size_t folio_offset,
 	unsigned long offset;
 	void *kaddr;
 	int ret;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	if (!is_anon)
 		slice_idx = address_to_slice(mm, dst_addr, vm_start, vm_slice_off);
@@ -437,7 +440,14 @@ static int copy_user_to_folio(struct folio *folio, size_t folio_offset,
 	if (avoid_pagefault)
 		pagefault_disable();
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	prev_pgtable_mm = current->pgtable_mm;
+	current->pgtable_mm = current->mm;
+#endif
 	ret = copy_from_user(kaddr + offset, (const void __user *) src_addr, MM_PAGE_SIZE(mm));
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	current->pgtable_mm = prev_pgtable_mm;
+#endif
 
 	if (avoid_pagefault)
 		pagefault_enable();
