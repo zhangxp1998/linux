@@ -24,6 +24,9 @@ struct io_buffer_list {
 		struct {
 			struct page **buf_pages;
 			struct io_uring_buf_ring *buf_ring;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			void *buf_ring_map;
+#endif
 		};
 		struct rcu_head rcu;
 	};
@@ -39,6 +42,23 @@ struct io_buffer_list {
 
 	atomic_t refs;
 };
+
+static inline void *io_buffer_list_ring_map(struct io_buffer_list *bl)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return bl->buf_ring_map;
+#else
+	return bl->buf_ring;
+#endif
+}
+
+static inline void io_buffer_list_set_ring_map(struct io_buffer_list *bl,
+					       void *map)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	bl->buf_ring_map = map;
+#endif
+}
 
 struct io_buffer {
 	struct list_head list;
