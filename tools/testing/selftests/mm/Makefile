@@ -176,6 +176,7 @@ TEST_GEN_FILES += uffd-stress
 TEST_GEN_FILES += uffd-unit-tests
 TEST_GEN_FILES += userfaultfd_eof_ppps
 TEST_GEN_FILES += userfaultfd_remote_ppps
+TEST_GEN_FILES += exec_user_args_ppps
 TEST_GEN_FILES += userfaultfd_retry_ppps
 TEST_GEN_FILES += userfaultfd_shmem_ppps
 TEST_GEN_FILES += userfaultfd_zeropage_ppps
