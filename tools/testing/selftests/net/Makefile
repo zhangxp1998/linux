@@ -170,6 +170,7 @@ TEST_GEN_FILES := \
 TEST_GEN_PROGS := \
 	bind_timewait \
 	bind_wildcard \
+	packet_mmap_ppps \
 	epoll_busy_poll \
 	ipv6_fragmentation \
 	proc_net_pktgen \
