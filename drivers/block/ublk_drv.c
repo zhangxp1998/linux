@@ -44,12 +44,19 @@
 #include <linux/task_work.h>
 #include <linux/namei.h>
 #include <linux/kref.h>
+#include <linux/idr.h>
+#include <linux/maple_tree.h>
 #include <uapi/linux/ublk_cmd.h>
 
 #define UBLK_MINORS		(1U << MINORBITS)
 
 /* private ioctl command mirror */
 #define UBLK_CMD_DEL_DEV_ASYNC	_IOC_NR(UBLK_U_CMD_DEL_DEV_ASYNC)
+#define UBLK_CMD_REG_BUF	_IOC_NR(UBLK_U_CMD_REG_BUF)
+#define UBLK_CMD_UNREG_BUF	_IOC_NR(UBLK_U_CMD_UNREG_BUF)
+
+/* Default maximum registered buffer size: 4 GiB. */
+#define UBLK_SHMEM_BUF_SIZE_MAX	(1ULL << 32)
 
 /* All UBLK_F_* have to be included into UBLK_F_ALL */
 #define UBLK_F_ALL (UBLK_F_SUPPORT_ZERO_COPY \
@@ -60,7 +67,8 @@
 		| UBLK_F_UNPRIVILEGED_DEV \
 		| UBLK_F_CMD_IOCTL_ENCODE \
 		| UBLK_F_USER_COPY \
-		| UBLK_F_ZONED)
+		| UBLK_F_ZONED \
+		| UBLK_F_SHMEM_ZC)
 
 /* All UBLK_PARAM_TYPE_* should be included here */
 #define UBLK_PARAM_TYPE_ALL                                \
@@ -149,6 +157,15 @@ struct ublk_queue {
 	struct ublk_io ios[];
 };
 
+/* Maple-tree value mapping a native PFN range to a registered buffer. */
+struct ublk_buf_range {
+	unsigned short buf_index;
+	unsigned short flags;
+	u64 base_offset;
+	u64 valid_start;
+	u64 valid_end;
+};
+
 struct ublk_device {
 	struct gendisk		*ub_disk;
 
@@ -181,6 +198,9 @@ struct ublk_device {
 
 	struct work_struct	quiesce_work;
 	struct work_struct	stop_work;
+
+	struct maple_tree	buf_tree;
+	struct ida		buf_ida;
 };
 
 /* header of ublk_params */
@@ -190,6 +210,9 @@ struct ublk_params_header {
 };
 
 static bool ublk_abort_requests(struct ublk_device *ub, struct ublk_queue *ubq);
+static bool ublk_try_buf_match(struct ublk_device *ub, struct request *rq,
+			       u32 *buf_idx, u32 *buf_off);
+static void ublk_buf_cleanup(struct ublk_device *ub);
 
 static inline unsigned int ublk_req_build_flags(struct request *req);
 static inline struct ublksrv_io_desc *ublk_get_iod(struct ublk_queue *ubq,
@@ -207,6 +230,23 @@ static inline bool ublk_dev_is_zoned(const struct ublk_device *ub)
 static inline bool ublk_queue_is_zoned(struct ublk_queue *ubq)
 {
 	return ubq->flags & UBLK_F_ZONED;
+}
+
+static inline bool ublk_support_shmem_zc(const struct ublk_queue *ubq)
+{
+	return ubq->flags & UBLK_F_SHMEM_ZC;
+}
+
+static inline bool ublk_dev_support_shmem_zc(const struct ublk_device *ub)
+{
+	return ub->dev_info.flags & UBLK_F_SHMEM_ZC;
+}
+
+static inline bool ublk_iod_is_shmem_zc(const struct ublk_queue *ubq,
+					unsigned int tag)
+{
+	return ublk_get_iod((struct ublk_queue *)ubq, tag)->op_flags &
+		UBLK_IO_F_SHMEM_ZC;
 }
 
 #ifdef CONFIG_BLK_DEV_ZONED
@@ -900,7 +940,8 @@ static int ublk_map_io(const struct ublk_queue *ubq, const struct request *req,
 {
 	const unsigned int rq_bytes = blk_rq_bytes(req);
 
-	if (ublk_support_user_copy(ubq))
+	if (ublk_support_user_copy(ubq) ||
+	    ublk_iod_is_shmem_zc(ubq, req->tag))
 		return rq_bytes;
 
 	/*
@@ -924,7 +965,8 @@ static int ublk_unmap_io(const struct ublk_queue *ubq,
 {
 	const unsigned int rq_bytes = blk_rq_bytes(req);
 
-	if (ublk_support_user_copy(ubq))
+	if (ublk_support_user_copy(ubq) ||
+	    ublk_iod_is_shmem_zc(ubq, req->tag))
 		return rq_bytes;
 
 	if (ublk_need_unmap_req(req)) {
@@ -1004,6 +1046,17 @@ static blk_status_t ublk_setup_iod(struct ublk_queue *ubq, struct request *req)
 	iod->op_flags = ublk_op | ublk_req_build_flags(req);
 	iod->nr_sectors = blk_rq_sectors(req);
 	iod->start_sector = blk_rq_pos(req);
+
+	if (ublk_support_shmem_zc(ubq) && ublk_rq_has_data(req)) {
+		u32 buf_idx, buf_off;
+
+		if (ublk_try_buf_match(ubq->dev, req, &buf_idx, &buf_off)) {
+			iod->op_flags |= UBLK_IO_F_SHMEM_ZC;
+			iod->addr = ublk_shmem_zc_addr(buf_idx, buf_off);
+			return BLK_STS_OK;
+		}
+	}
+
 	iod->addr = io->addr;
 
 	return BLK_STS_OK;
@@ -2208,6 +2261,7 @@ static void ublk_cdev_rel(struct device *dev)
 {
 	struct ublk_device *ub = container_of(dev, struct ublk_device, cdev_dev);
 
+	ublk_buf_cleanup(ub);
 	blk_mq_free_tag_set(&ub->tag_set);
 	ublk_deinit_queues(ub);
 	ublk_free_dev_number(ub);
@@ -2548,6 +2602,8 @@ static int ublk_ctrl_add_dev(struct io_uring_cmd *cmd)
 		goto out_unlock;
 	mutex_init(&ub->mutex);
 	spin_lock_init(&ub->lock);
+	mt_init(&ub->buf_tree);
+	ida_init(&ub->buf_ida);
 	INIT_WORK(&ub->quiesce_work, ublk_quiesce_work_fn);
 	INIT_WORK(&ub->stop_work, ublk_stop_work_fn);
 
@@ -2915,6 +2971,329 @@ static int ublk_ctrl_get_features(struct io_uring_cmd *cmd)
 	return 0;
 }
 
+static bool ublk_lock_buf_tree(struct ublk_device *ub)
+{
+	bool frozen = false;
+
+	mutex_lock(&ub->mutex);
+	if (ub->ub_disk) {
+		blk_mq_freeze_queue(ub->ub_disk->queue);
+		frozen = true;
+	}
+
+	return frozen;
+}
+
+static void ublk_unlock_buf_tree(struct ublk_device *ub, bool frozen)
+{
+	if (frozen)
+		blk_mq_unfreeze_queue(ub->ub_disk->queue);
+	mutex_unlock(&ub->mutex);
+}
+
+static void ublk_buf_erase_ranges(struct ublk_device *ub, int buf_index)
+{
+	MA_STATE(mas, &ub->buf_tree, 0, ULONG_MAX);
+	struct ublk_buf_range *range;
+
+	mas_lock(&mas);
+	mas_for_each(&mas, range, ULONG_MAX) {
+		if (range->buf_index == buf_index) {
+			mas_erase(&mas);
+			kfree(range);
+		}
+	}
+	mas_unlock(&mas);
+}
+
+static int __ublk_ctrl_reg_buf(struct ublk_device *ub, struct page **pages,
+			       unsigned long nr_pages, int index,
+			       unsigned short flags, u64 valid_start,
+			       u64 valid_end)
+{
+	unsigned long i;
+	int ret;
+
+	for (i = 0; i < nr_pages; i++) {
+		unsigned long pfn = page_to_pfn(pages[i]);
+		unsigned long start = i;
+		struct ublk_buf_range *range;
+
+		while (i + 1 < nr_pages &&
+		       page_to_pfn(pages[i + 1]) == pfn + (i - start) + 1)
+			i++;
+
+		range = kzalloc(sizeof(*range), GFP_KERNEL);
+		if (!range) {
+			ret = -ENOMEM;
+			goto unwind;
+		}
+		range->buf_index = index;
+		range->flags = flags;
+		range->base_offset = (u64)start << PAGE_SHIFT;
+		range->valid_start = valid_start;
+		range->valid_end = valid_end;
+
+		ret = mtree_insert_range(&ub->buf_tree, pfn,
+					 pfn + i - start, range, GFP_KERNEL);
+		if (ret) {
+			kfree(range);
+			goto unwind;
+		}
+	}
+
+	return 0;
+unwind:
+	ublk_buf_erase_ranges(ub, index);
+	return ret;
+}
+
+/*
+ * GUP returns one pin for each process page. With PPPS, adjacent process
+ * pages may refer to the same native page, so retain one native-page pin.
+ */
+static unsigned long ublk_compact_pinned_pages(struct page **pages,
+					       unsigned long nr_pages)
+{
+	unsigned long in, out = 0;
+
+	for (in = 0; in < nr_pages; in++) {
+		if (out && pages[in] == pages[out - 1]) {
+			unpin_user_page(pages[in]);
+			continue;
+		}
+		pages[out++] = pages[in];
+	}
+
+	return out;
+}
+
+static int ublk_ctrl_reg_buf(struct ublk_device *ub,
+			     struct io_uring_cmd *cmd)
+{
+	const struct ublksrv_ctrl_cmd *header = io_uring_sqe_cmd(cmd->sqe);
+	void __user *argp = (void __user *)(unsigned long)header->addr;
+	struct ublk_shmem_buf_reg buf_reg = {};
+	u64 addr_end, valid_start, valid_end;
+	unsigned long nr_process_pages, nr_pages;
+	struct page **pages;
+	unsigned int gup_flags = FOLL_LONGTERM;
+	bool frozen;
+	long pinned;
+	int index;
+	int ret;
+
+	if (!ublk_dev_support_shmem_zc(ub))
+		return -EOPNOTSUPP;
+
+	if (copy_from_user(&buf_reg, argp,
+			   min_t(size_t, header->len, sizeof(buf_reg))))
+		return -EFAULT;
+	if (buf_reg.flags & ~UBLK_SHMEM_BUF_READ_ONLY || buf_reg.reserved)
+		return -EINVAL;
+	if (!buf_reg.len || buf_reg.len > UBLK_SHMEM_BUF_SIZE_MAX ||
+	    buf_reg.addr > ULONG_MAX ||
+	    check_add_overflow(buf_reg.addr, buf_reg.len, &addr_end) ||
+	    addr_end > ULONG_MAX ||
+	    !MM_PAGE_ALIGNED(current->mm, buf_reg.addr) ||
+	    !MM_PAGE_ALIGNED(current->mm, buf_reg.len))
+		return -EINVAL;
+
+	nr_process_pages = buf_reg.len >> MM_PAGE_SHIFT(current->mm);
+	valid_start = offset_in_page(buf_reg.addr);
+	valid_end = valid_start + buf_reg.len;
+	pages = kvmalloc_array(nr_process_pages, sizeof(*pages), GFP_KERNEL);
+	if (!pages)
+		return -ENOMEM;
+
+	if (!(buf_reg.flags & UBLK_SHMEM_BUF_READ_ONLY))
+		gup_flags |= FOLL_WRITE;
+	pinned = pin_user_pages_fast(buf_reg.addr, nr_process_pages,
+				     gup_flags, pages);
+	if (pinned < 0) {
+		ret = pinned;
+		goto free_pages;
+	}
+	if (pinned != nr_process_pages) {
+		ret = -EFAULT;
+		goto unpin;
+	}
+	nr_pages = ublk_compact_pinned_pages(pages, pinned);
+	pinned = nr_pages;
+
+	frozen = ublk_lock_buf_tree(ub);
+	index = ida_alloc_max(&ub->buf_ida, USHRT_MAX, GFP_KERNEL);
+	if (index < 0) {
+		ret = index;
+		goto unlock;
+	}
+
+	ret = __ublk_ctrl_reg_buf(ub, pages, nr_pages, index, buf_reg.flags,
+				  valid_start, valid_end);
+	if (ret) {
+		ida_free(&ub->buf_ida, index);
+		goto unlock;
+	}
+
+	ublk_unlock_buf_tree(ub, frozen);
+	kvfree(pages);
+	return index;
+unlock:
+	ublk_unlock_buf_tree(ub, frozen);
+unpin:
+	unpin_user_pages(pages, pinned);
+free_pages:
+	kvfree(pages);
+	return ret;
+}
+
+static void ublk_unpin_range_pages(unsigned long base_pfn,
+				   unsigned long nr_pages)
+{
+#define UBLK_UNPIN_BATCH	32
+	struct page *pages[UBLK_UNPIN_BATCH];
+	unsigned long off;
+
+	for (off = 0; off < nr_pages;) {
+		unsigned int batch = min_t(unsigned long, nr_pages - off,
+					   UBLK_UNPIN_BATCH);
+		unsigned int i;
+
+		for (i = 0; i < batch; i++)
+			pages[i] = pfn_to_page(base_pfn + off + i);
+		unpin_user_pages(pages, batch);
+		off += batch;
+	}
+}
+
+#define UBLK_REMOVE_BATCH	64
+
+static bool __ublk_shmem_remove_ranges(struct ublk_device *ub, int buf_index,
+				       int *ret)
+{
+	MA_STATE(mas, &ub->buf_tree, 0, ULONG_MAX);
+	struct ublk_buf_range *range;
+	struct xarray to_unpin;
+	unsigned long index;
+	unsigned int count = 0;
+	bool done = false;
+	void *entry;
+
+	xa_init(&to_unpin);
+	mas_lock(&mas);
+	mas_for_each(&mas, range, ULONG_MAX) {
+		unsigned long nr_pages;
+
+		if (buf_index >= 0 && range->buf_index != buf_index)
+			continue;
+
+		*ret = 0;
+		nr_pages = mas.last - mas.index + 1;
+		if (xa_err(xa_store(&to_unpin, mas.index,
+				    xa_mk_value(nr_pages), GFP_ATOMIC)))
+			goto unlock;
+		mas_erase(&mas);
+		kfree(range);
+		if (++count >= UBLK_REMOVE_BATCH)
+			goto unlock;
+	}
+	done = true;
+unlock:
+	mas_unlock(&mas);
+	xa_for_each(&to_unpin, index, entry)
+		ublk_unpin_range_pages(index, xa_to_value(entry));
+	xa_destroy(&to_unpin);
+	return done;
+}
+
+static int ublk_shmem_remove_ranges(struct ublk_device *ub, int buf_index)
+{
+	int ret = -ENOENT;
+
+	while (!__ublk_shmem_remove_ranges(ub, buf_index, &ret))
+		cond_resched();
+	return ret;
+}
+
+static int ublk_ctrl_unreg_buf(struct ublk_device *ub,
+			       struct io_uring_cmd *cmd)
+{
+	const struct ublksrv_ctrl_cmd *header = io_uring_sqe_cmd(cmd->sqe);
+	int index = (int)header->data[0];
+	bool frozen;
+	int ret;
+
+	if (!ublk_dev_support_shmem_zc(ub))
+		return -EOPNOTSUPP;
+	if (index < 0 || index > USHRT_MAX)
+		return -EINVAL;
+
+	frozen = ublk_lock_buf_tree(ub);
+	ret = ublk_shmem_remove_ranges(ub, index);
+	if (!ret)
+		ida_free(&ub->buf_ida, index);
+	ublk_unlock_buf_tree(ub, frozen);
+	return ret;
+}
+
+static void ublk_buf_cleanup(struct ublk_device *ub)
+{
+	ublk_shmem_remove_ranges(ub, -1);
+	mtree_destroy(&ub->buf_tree);
+	ida_destroy(&ub->buf_ida);
+}
+
+static bool ublk_try_buf_match(struct ublk_device *ub, struct request *rq,
+			       u32 *buf_idx, u32 *buf_off)
+{
+	struct req_iterator iter;
+	struct bio_vec bv;
+	int index = -1;
+	u64 expected_offset = 0;
+	bool first = true;
+
+	rq_for_each_bvec(bv, rq, iter) {
+		unsigned long pfn = page_to_pfn(bv.bv_page);
+		unsigned long end_pfn = pfn +
+			((bv.bv_offset + bv.bv_len - 1) >> PAGE_SHIFT);
+		struct ublk_buf_range *range;
+		u64 physical_off, physical_end, off;
+		MA_STATE(mas, &ub->buf_tree, pfn, pfn);
+
+		range = mas_walk(&mas);
+		if (!range || end_pfn > mas.last)
+			return false;
+
+		physical_off = range->base_offset +
+			(pfn - mas.index) * PAGE_SIZE + bv.bv_offset;
+		if (check_add_overflow(physical_off, (u64)bv.bv_len,
+				       &physical_end) ||
+		    physical_off < range->valid_start ||
+		    physical_end > range->valid_end)
+			return false;
+		off = physical_off - range->valid_start;
+
+		if (first) {
+			if ((range->flags & UBLK_SHMEM_BUF_READ_ONLY) &&
+			    req_op(rq) != REQ_OP_WRITE)
+				return false;
+			index = range->buf_index;
+			expected_offset = off;
+			*buf_off = off;
+			first = false;
+		} else if (range->buf_index != index ||
+			   off != expected_offset) {
+			return false;
+		}
+		expected_offset += bv.bv_len;
+	}
+
+	if (first)
+		return false;
+	*buf_idx = index;
+	return true;
+}
+
 /*
  * All control commands are sent via /dev/ublk-control, so we have to check
  * the destination device's permission
@@ -3000,6 +3379,8 @@ static int ublk_ctrl_uring_cmd_permission(struct ublk_device *ub,
 	case UBLK_CMD_SET_PARAMS:
 	case UBLK_CMD_START_USER_RECOVERY:
 	case UBLK_CMD_END_USER_RECOVERY:
+	case UBLK_CMD_REG_BUF:
+	case UBLK_CMD_UNREG_BUF:
 		mask = MAY_READ | MAY_WRITE;
 		break;
 	default:
@@ -3090,6 +3471,12 @@ static int ublk_ctrl_uring_cmd(struct io_uring_cmd *cmd,
 		break;
 	case UBLK_CMD_END_USER_RECOVERY:
 		ret = ublk_ctrl_end_recovery(ub, cmd);
+		break;
+	case UBLK_CMD_REG_BUF:
+		ret = ublk_ctrl_reg_buf(ub, cmd);
+		break;
+	case UBLK_CMD_UNREG_BUF:
+		ret = ublk_ctrl_unreg_buf(ub, cmd);
 		break;
 	default:
 		ret = -EOPNOTSUPP;
