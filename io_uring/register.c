@@ -523,7 +523,7 @@ static int io_register_resize_rings(struct io_ring_ctx *ctx, void __user *arg)
 		return ret;
 
 	memset(&rd, 0, sizeof(rd));
-	rd.size = PAGE_ALIGN(rl->rings_size);
+	rd.size = MM_PAGE_ALIGN(current->mm, rl->rings_size);
 	if (p->flags & IORING_SETUP_NO_MMAP) {
 		rd.user_addr = p->cq_off.user_addr;
 		rd.flags |= IORING_MEM_REGION_TYPE_USER;
@@ -553,7 +553,7 @@ static int io_register_resize_rings(struct io_ring_ctx *ctx, void __user *arg)
 	}
 
 	memset(&rd, 0, sizeof(rd));
-	rd.size = PAGE_ALIGN(rl->sq_size);
+	rd.size = MM_PAGE_ALIGN(current->mm, rl->sq_size);
 	if (p->flags & IORING_SETUP_NO_MMAP) {
 		rd.user_addr = p->sq_off.user_addr;
 		rd.flags |= IORING_MEM_REGION_TYPE_USER;
