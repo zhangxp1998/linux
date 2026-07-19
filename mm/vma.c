@@ -1206,7 +1206,7 @@ void vms_complete_munmap_vmas(struct vma_munmap_struct *vms,
 	mas_for_each(mas_detach, vma, ULONG_MAX)
 		remove_vma(vma);
 
-	vm_unacct_memory(vms->nr_accounted);
+	vm_unacct_memory_mm(mm, vms->nr_accounted);
 	validate_mm(mm);
 	if (vms->unlock)
 		mmap_read_unlock(mm);

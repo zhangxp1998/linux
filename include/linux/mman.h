@@ -74,15 +74,49 @@ static inline void mm_compute_batch(int overcommit_policy)
 #endif
 
 unsigned long vm_memory_committed(void);
+unsigned long vm_memory_committed_kb(void);
+
+/*
+ * vm_committed_as is shared by native and PPPS-compatible processes. Keep it
+ * in PAGE_SIZE_COMPAT units so that both process page sizes can be represented
+ * without rounding.  A "commit unit" is therefore one PAGE_SIZE_COMPAT-sized
+ * block; the helpers below convert page counts into it.
+ */
+static inline long vm_commit_units_from_mm_pages(const struct mm_struct *mm,
+						 long pages)
+{
+	return pages * (long)(MM_PAGE_SIZE(mm) / PAGE_SIZE_COMPAT);
+}
+
+static inline long vm_commit_units_from_native_pages(long pages)
+{
+	return pages * (long)(PAGE_SIZE / PAGE_SIZE_COMPAT);
+}
+
+static inline void vm_acct_memory_units(long units)
+{
+	percpu_counter_add_batch(&vm_committed_as, units,
+				 vm_committed_as_batch);
+}
 
 static inline void vm_acct_memory(long pages)
 {
-	percpu_counter_add_batch(&vm_committed_as, pages, vm_committed_as_batch);
+	vm_acct_memory_units(vm_commit_units_from_native_pages(pages));
 }
 
 static inline void vm_unacct_memory(long pages)
 {
-	vm_acct_memory(-pages);
+	vm_acct_memory_units(-vm_commit_units_from_native_pages(pages));
+}
+
+static inline void vm_acct_memory_mm(const struct mm_struct *mm, long pages)
+{
+	vm_acct_memory_units(vm_commit_units_from_mm_pages(mm, pages));
+}
+
+static inline void vm_unacct_memory_mm(const struct mm_struct *mm, long pages)
+{
+	vm_acct_memory_units(-vm_commit_units_from_mm_pages(mm, pages));
 }
 
 /*
@@ -164,6 +198,7 @@ __calc_vm_flag_bits(struct file *file, unsigned long flags)
 }
 
 unsigned long vm_commit_limit(void);
+unsigned long vm_commit_limit_kb(void);
 
 #ifndef arch_memory_deny_write_exec_supported
 static inline bool arch_memory_deny_write_exec_supported(void)
