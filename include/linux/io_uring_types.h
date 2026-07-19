@@ -443,6 +443,10 @@ struct io_ring_ctx {
 	unsigned short			n_sqe_pages;
 	struct page			**ring_pages;
 	struct page			**sqe_pages;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	void				*ring_map;
+	void				*sqe_map;
+#endif
 };
 
 struct io_tw_state {
