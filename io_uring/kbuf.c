@@ -657,7 +657,8 @@ int io_register_pbuf_ring(struct io_ring_ctx *ctx, void __user *arg)
 	ring_size = flex_array_size(br, bufs, reg.ring_entries);
 
 	memset(&rd, 0, sizeof(rd));
-	rd.size = PAGE_ALIGN(ring_size);
+	rd.size = (reg.flags & IOU_PBUF_RING_MMAP) ?
+		  PAGE_ALIGN(ring_size) : MM_PAGE_ALIGN(current->mm, ring_size);
 	if (!(reg.flags & IOU_PBUF_RING_MMAP)) {
 		rd.user_addr = reg.ring_addr;
 		rd.flags |= IORING_MEM_REGION_TYPE_USER;
