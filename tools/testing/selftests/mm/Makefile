@@ -63,6 +63,7 @@ endif
 endif
 
 TEST_GEN_FILES = cow
+TEST_GEN_FILES += kcov_ppps
 TEST_GEN_FILES += selinux_status_mmap_ppps
 TEST_GEN_FILES += vm_iomap_memory_ppps
 TEST_GEN_FILES += dma_mmap_attrs_ppps

@@ -502,10 +502,13 @@ static int kcov_mmap(struct file *filep, struct vm_area_struct *vma)
 	spin_unlock_irqrestore(&kcov->lock, flags);
 	vm_flags_set(vma, VM_DONTEXPAND);
 	for (off = 0; off < size; off += PAGE_SIZE) {
+		unsigned long nr_pages = 1;
+
 		page = vmalloc_to_page(kcov->area + off);
-		res = vm_insert_page(vma, vma->vm_start + off, page);
+		res = vm_insert_pages(vma, vma->vm_start + off, &page,
+				      &nr_pages);
 		if (res) {
-			pr_warn_once("kcov: vm_insert_page() failed\n");
+			pr_warn_once("kcov: vm_insert_pages() failed\n");
 			return res;
 		}
 	}
