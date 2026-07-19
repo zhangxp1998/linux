@@ -3386,8 +3386,9 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
 	struct pglist_data *pgdat = lruvec_pgdat(walk->lruvec);
 	DEFINE_MAX_SEQ(walk->lruvec);
 	int old_gen, new_gen = lru_gen_from_seq(max_seq);
+	struct mm_struct *mm = args->mm;
 
-	pte = pte_offset_map_nolock(args->mm, pmd, start & PMD_MASK, &ptl);
+	pte = pte_offset_map_nolock(mm, pmd, start & MM_PMD_MASK(mm), &ptl);
 	if (!pte)
 		return false;
 	if (!spin_trylock(ptl)) {
@@ -3397,7 +3398,8 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
 
 	arch_enter_lazy_mmu_mode();
 restart:
-	for (i = pte_index(start), addr = start; addr != end; i++, addr += PAGE_SIZE) {
+	for (i = pte_index(start), addr = start; addr != end;
+	     i++, addr += MM_PAGE_SIZE(mm)) {
 		unsigned long pfn;
 		struct folio *folio;
 		pte_t ptent = ptep_get(pte + i);
@@ -3429,7 +3431,9 @@ restart:
 			update_batch_size(walk, folio, old_gen, new_gen);
 	}
 
-	if (i < PTRS_PER_PTE && get_next_vma(PMD_MASK, PAGE_SIZE, args, &start, &end))
+	if (i < MM_PTRS_PER_PTE(mm) &&
+	    get_next_vma(MM_PMD_MASK(mm), MM_PAGE_SIZE(mm),
+			 args, &start, &end))
 		goto restart;
 
 	arch_leave_lazy_mmu_mode();
@@ -3478,7 +3482,8 @@ static void walk_pmd_range_locked(pud_t *pud, unsigned long addr, struct vm_area
 		struct folio *folio;
 
 		/* don't round down the first address */
-		addr = i ? (*first & PMD_MASK) + i * PMD_SIZE : *first;
+		addr = i ? (*first & MM_PMD_MASK(args->mm)) +
+			   i * MM_PMD_SIZE(args->mm) : *first;
 
 		if (!pmd_present(pmd[i]))
 			goto next;
@@ -3541,7 +3546,7 @@ static void walk_pmd_range(pud_t *pud, unsigned long start, unsigned long end,
 	 * tables to avoid taking the PMD lock; the second, if necessary, takes
 	 * the PMD lock to clear the accessed bit in PMD entries.
 	 */
-	pmd = pmd_offset(pud, start & PUD_MASK);
+	pmd = pmd_offset(pud, start & MM_PUD_MASK(args->mm));
 restart:
 	/* walk_pte_range() may call get_next_vma() */
 	vma = args->vma;
@@ -3590,7 +3595,9 @@ restart:
 
 	walk_pmd_range_locked(pud, -1, vma, args, bitmap, &first);
 
-	if (i < PTRS_PER_PMD && get_next_vma(PUD_MASK, PMD_SIZE, args, &start, &end))
+	if (i < MM_PTRS_PER_PMD(args->mm) &&
+	    get_next_vma(MM_PUD_MASK(args->mm), MM_PMD_SIZE(args->mm),
+			 args, &start, &end))
 		goto restart;
 }
 
@@ -3605,7 +3612,7 @@ static int walk_pud_range(p4d_t *p4d, unsigned long start, unsigned long end,
 
 	VM_WARN_ON_ONCE(p4d_leaf(*p4d));
 
-	pud = pud_offset(p4d, start & P4D_MASK);
+	pud = pud_offset(p4d, start & MM_P4D_MASK(args->mm));
 restart:
 	for (i = pud_index(start), addr = start; addr != end; i++, addr = next) {
 		pud_t val = READ_ONCE(pud[i]);
@@ -3618,15 +3625,17 @@ restart:
 		walk_pmd_range(&val, addr, next, args);
 
 		if (need_resched() || walk->batched >= MAX_LRU_BATCH) {
-			end = (addr | ~PUD_MASK) + 1;
+			end = (addr | ~MM_PUD_MASK(args->mm)) + 1;
 			goto done;
 		}
 	}
 
-	if (i < PTRS_PER_PUD && get_next_vma(P4D_MASK, PUD_SIZE, args, &start, &end))
+	if (i < MM_PTRS_PER_PUD(args->mm) &&
+	    get_next_vma(MM_P4D_MASK(args->mm), MM_PUD_SIZE(args->mm),
+			 args, &start, &end))
 		goto restart;
 
-	end = round_up(end, P4D_SIZE);
+	end = round_up(end, MM_P4D_SIZE(args->mm));
 done:
 	if (!end || !args->vma)
 		return 1;
@@ -3645,6 +3654,9 @@ static void walk_mm(struct mm_struct *mm, struct lru_gen_mm_walk *walk)
 	};
 
 	int err;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 	struct lruvec *lruvec = walk->lruvec;
 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
 
@@ -3665,7 +3677,14 @@ static void walk_mm(struct mm_struct *mm, struct lru_gen_mm_walk *walk)
 
 		/* the caller might be holding the lock for write */
 		if (mmap_read_trylock(mm)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			prev_pgtable_mm = current->pgtable_mm;
+			current->pgtable_mm = mm;
+#endif
 			err = walk_page_range(mm, walk->next_addr, ULONG_MAX, &mm_walk_ops, walk);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			current->pgtable_mm = prev_pgtable_mm;
+#endif
 
 			mmap_read_unlock(mm);
 		}
@@ -4059,6 +4078,9 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
 	struct lru_gen_mm_state *mm_state = get_mm_state(lruvec);
 	DEFINE_MAX_SEQ(lruvec);
 	int old_gen, new_gen = lru_gen_from_seq(max_seq);
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
+	unsigned int page_shift = MM_PAGE_SHIFT(mm);
 
 	lockdep_assert_held(pvmw->ptl);
 	VM_WARN_ON_ONCE_FOLIO(folio_test_lru(folio), folio);
@@ -4076,20 +4098,20 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
 	/* avoid taking the LRU lock under the PTL when possible */
 	walk = current->reclaim_state ? current->reclaim_state->mm_walk : NULL;
 
-	start = max(addr & PMD_MASK, vma->vm_start);
-	end = min(addr | ~PMD_MASK, vma->vm_end - 1) + 1;
+	start = max(addr & MM_PMD_MASK(mm), vma->vm_start);
+	end = min(addr | ~MM_PMD_MASK(mm), vma->vm_end - 1) + 1;
 
-	if (end - start == PAGE_SIZE)
+	if (end - start == page_size)
 		return true;
 
-	if (end - start > MIN_LRU_BATCH * PAGE_SIZE) {
-		if (addr - start < MIN_LRU_BATCH * PAGE_SIZE / 2)
-			end = start + MIN_LRU_BATCH * PAGE_SIZE;
-		else if (end - addr < MIN_LRU_BATCH * PAGE_SIZE / 2)
-			start = end - MIN_LRU_BATCH * PAGE_SIZE;
+	if (end - start > MIN_LRU_BATCH * page_size) {
+		if (addr - start < MIN_LRU_BATCH * page_size / 2)
+			end = start + MIN_LRU_BATCH * page_size;
+		else if (end - addr < MIN_LRU_BATCH * page_size / 2)
+			start = end - MIN_LRU_BATCH * page_size;
 		else {
-			start = addr - MIN_LRU_BATCH * PAGE_SIZE / 2;
-			end = addr + MIN_LRU_BATCH * PAGE_SIZE / 2;
+			start = addr - MIN_LRU_BATCH * page_size / 2;
+			end = addr + MIN_LRU_BATCH * page_size / 2;
 		}
 	}
 
@@ -4099,9 +4121,9 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
 
 	arch_enter_lazy_mmu_mode();
 
-	pte -= (addr - start) / PAGE_SIZE;
+	pte -= (addr - start) >> page_shift;
 
-	for (i = 0, addr = start; addr != end; i++, addr += PAGE_SIZE) {
+	for (i = 0, addr = start; addr != end; i++, addr += page_size) {
 		unsigned long pfn;
 		pte_t ptent = ptep_get(pte + i);
 
