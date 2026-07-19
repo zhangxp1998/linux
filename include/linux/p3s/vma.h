@@ -78,6 +78,12 @@ static inline void vma_set_slice_off(struct vm_area_struct *vma,
 }
 #endif
 
+/* Native-page insertion must not shift the first backing page. */
+static inline bool vma_starts_at_kernel_page(const struct vm_area_struct *vma)
+{
+	return PAGE_ALIGNED_KERNEL(vma->vm_start) && !vma_slice_off(vma);
+}
+
 /*
  * vma_slice_offset - Slice of the 16KB page that backs @addr
  * @vma: Pointer to struct vm_area_struct
