@@ -1856,6 +1856,9 @@ static inline int userfaultfd_poison(struct userfaultfd_ctx *ctx, unsigned long 
 	struct uffdio_poison uffdio_poison;
 	struct uffdio_poison __user *user_uffdio_poison;
 	struct userfaultfd_wake_range range;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	user_uffdio_poison = (struct uffdio_poison __user *)arg;
 
@@ -1879,8 +1882,15 @@ static inline int userfaultfd_poison(struct userfaultfd_ctx *ctx, unsigned long 
 		goto out;
 
 	if (mmget_not_zero(ctx->mm)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		prev_pgtable_mm = current->pgtable_mm;
+		current->pgtable_mm = ctx->mm;
+#endif
 		ret = mfill_atomic_poison(ctx, uffdio_poison.range.start,
 					  uffdio_poison.range.len, 0);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		current->pgtable_mm = prev_pgtable_mm;
+#endif
 		mmput(ctx->mm);
 	} else {
 		return -ESRCH;
