@@ -425,6 +425,8 @@ struct io_ring_ctx {
 	unsigned short			n_sqe_pages;
 	struct page			**ring_pages;
 	struct page			**sqe_pages;
+	void				*ring_map;
+	void				*sqe_map;
 };
 
 struct io_tw_state {

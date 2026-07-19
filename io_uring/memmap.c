@@ -166,27 +166,71 @@ struct page **io_pin_pages(unsigned long uaddr, unsigned long len, int *npages)
 }
 
 void *__io_uaddr_map(struct page ***pages, unsigned short *npages,
-		     unsigned long uaddr, size_t size)
+		     unsigned long uaddr, size_t size, void **map_base)
 {
+	struct mm_struct *mm = current->mm;
 	struct page **page_array;
+	unsigned int page_offset = 0;
 	unsigned int nr_pages;
 	void *page_addr;
+	int ret;
 
 	*npages = 0;
+	*map_base = NULL;
+	uaddr = untagged_addr(uaddr);
+	size = MM_PAGE_ALIGN(mm, size);
 
-	if (uaddr & (PAGE_SIZE - 1) || !size)
+	if (!MM_PAGE_ALIGNED(mm, uaddr) || !size)
 		return ERR_PTR(-EINVAL);
 
-	nr_pages = 0;
-	page_array = io_pin_pages(uaddr, size, &nr_pages);
-	if (IS_ERR(page_array))
-		return page_array;
+	if (ppps_mm_is_compat(mm)) {
+		struct vm_area_struct *vma;
+
+		/*
+		 * Older io_uring stores these regions as a contiguous native
+		 * vmap. Support one compat process page, matching the limitation
+		 * of the newer registered-memory implementation.
+		 */
+		if (size != MM_PAGE_SIZE(mm))
+			return ERR_PTR(-EOPNOTSUPP);
+
+		page_array = kvmalloc_array(1, sizeof(*page_array),
+					    GFP_KERNEL_ACCOUNT);
+		if (!page_array)
+			return ERR_PTR(-ENOMEM);
+
+		mmap_read_lock(mm);
+		vma = vma_lookup(mm, uaddr);
+		if (!vma || size > vma->vm_end - uaddr) {
+			ret = -EFAULT;
+		} else {
+			page_offset = vma_address_to_slice(vma, uaddr) *
+				      MM_PAGE_SIZE(mm);
+			ret = pin_user_pages(uaddr, 1,
+					     FOLL_WRITE | FOLL_LONGTERM,
+					     page_array);
+		}
+		mmap_read_unlock(mm);
+		if (ret != 1) {
+			if (ret > 0)
+				unpin_user_pages(page_array, ret);
+			kvfree(page_array);
+			return ERR_PTR(ret < 0 ? ret : -EFAULT);
+		}
+		nr_pages = 1;
+	} else {
+		nr_pages = 0;
+		page_array = io_pin_pages(uaddr, size, &nr_pages);
+		if (IS_ERR(page_array))
+			return page_array;
+	}
 
 	page_addr = vmap(page_array, nr_pages, VM_MAP, PAGE_KERNEL);
 	if (page_addr) {
 		*pages = page_array;
 		*npages = nr_pages;
-		return page_addr;
+		*map_base = page_addr;
+		return page_addr + page_offset;
 	}
 
 	io_pages_free(&page_array, nr_pages);
