@@ -23,15 +23,20 @@
 #endif
 
 #define USER_PAGE_SIZE	4096UL
-#define RESERVE_SIZE	(3 * USER_PAGE_SIZE)
+#define TEST_SIZE	(2 * USER_PAGE_SIZE)
+#define RESERVE_SIZE	(TEST_SIZE + 2 * USER_PAGE_SIZE)
+#define OWNER_RESERVE_ADDRESS	((1UL << 28) + 3 * USER_PAGE_SIZE)
 #define NATIVE_SOURCE_ADDRESS	(1UL << 40)
 #define TEST_VALUE	0x5a
 
 struct handler_report {
 	long page_size;
 	long long copied;
+	long long zeroed;
 	int result;
 	int error;
+	int zero_result;
+	int zero_error;
 };
 
 static bool write_full(int fd, const void *buffer, size_t size)
@@ -85,10 +90,16 @@ static int run_native_handler(int uffd, unsigned long destination,
 {
 	struct handler_report report = {
 		.page_size = sysconf(_SC_PAGESIZE),
+		.result = -1,
+		.zero_result = -1,
 	};
 	struct uffdio_copy copy = {
 		.dst = destination,
 		.len = USER_PAGE_SIZE,
+	};
+	struct uffdio_zeropage zeropage = {
+		.range.start = destination + USER_PAGE_SIZE,
+		.range.len = USER_PAGE_SIZE,
 	};
 	int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
 	void *mmap_address = NULL;
@@ -106,6 +117,12 @@ static int run_native_handler(int uffd, unsigned long destination,
 		report.result = ioctl(uffd, UFFDIO_COPY, &copy);
 		report.error = errno;
 		report.copied = copy.copy;
+		if (!report.result) {
+			report.zero_result = ioctl(uffd, UFFDIO_ZEROPAGE,
+						   &zeropage);
+			report.zero_error = errno;
+			report.zeroed = zeropage.zeropage;
+		}
 		munmap(source, USER_PAGE_SIZE);
 	} else {
 		report.result = -1;
@@ -113,7 +130,8 @@ static int run_native_handler(int uffd, unsigned long destination,
 	}
 	if (!write_full(report_fd, &report, sizeof(report)))
 		return EXIT_FAILURE;
-	return report.result == 0 && report.copied == USER_PAGE_SIZE ?
+	return report.result == 0 && report.copied == USER_PAGE_SIZE &&
+	       report.zero_result == 0 && report.zeroed == USER_PAGE_SIZE ?
 		EXIT_SUCCESS : EXIT_FAILURE;
 }
 
@@ -145,25 +163,28 @@ static int run_compat_owner(void)
 	struct handler_report report = {};
 	unsigned char *destination;
 	unsigned char *reservation;
-	unsigned char residency = 0;
+	unsigned char residency[2] = {};
 	int report_pipe[2];
 	int handler_status = 0;
 	bool handler_reported;
 	bool setup_ok;
-	bool resident;
-	bool contents_ok = false;
+	bool copy_resident;
+	bool copy_contents_ok = false;
+	bool zero_resident;
+	bool zero_contents_ok = false;
 	pid_t handler;
 	int uffd;
 
 	ksft_print_header();
-	ksft_set_plan(6);
+	ksft_set_plan(8);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "owner process uses 4K pages\n");
 
-	reservation = mmap(NULL, RESERVE_SIZE, PROT_NONE,
-			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	reservation = mmap((void *)OWNER_RESERVE_ADDRESS, RESERVE_SIZE, PROT_NONE,
+			   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+			   -1, 0);
 	destination = reservation == MAP_FAILED ? MAP_FAILED :
-		mmap(reservation + USER_PAGE_SIZE, USER_PAGE_SIZE,
+		mmap(reservation + USER_PAGE_SIZE, TEST_SIZE,
 		     PROT_READ | PROT_WRITE,
 		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 	uffd = syscall(SYS_userfaultfd, O_NONBLOCK);
@@ -171,11 +192,11 @@ static int run_compat_owner(void)
 		   !ioctl(uffd, UFFDIO_API, &api);
 	if (setup_ok) {
 		registration.range.start = (unsigned long)destination;
-		registration.range.len = USER_PAGE_SIZE;
+		registration.range.len = TEST_SIZE;
 		registration.mode = UFFDIO_REGISTER_MODE_MISSING;
 		setup_ok = !ioctl(uffd, UFFDIO_REGISTER, &registration);
 	}
-	ksft_test_result(setup_ok, "register an isolated missing 4K range\n");
+	ksft_test_result(setup_ok, "register two isolated missing 4K pages\n");
 	if (!setup_ok) {
 		if (uffd < 0 && errno == EPERM)
 			ksft_exit_skip("userfaultfd unavailable: %s\n",
@@ -210,16 +231,31 @@ static int run_compat_owner(void)
 			 report.copied,
 			 report.result ? strerror(report.error) : "ok");
 
-	resident = !mincore(destination, USER_PAGE_SIZE, &residency) &&
-		   (residency & 1);
-	ksft_test_result(resident,
+	if (mincore(destination, TEST_SIZE, residency)) {
+		residency[0] = 0;
+		residency[1] = 0;
+	}
+	copy_resident = residency[0] & 1;
+	zero_resident = residency[1] & 1;
+	ksft_test_result(copy_resident,
 			 "UFFDIO_COPY populates the owner address\n");
-	if (resident)
-		contents_ok = buffer_is_value(destination, USER_PAGE_SIZE,
-					      TEST_VALUE);
-	ksft_test_result(contents_ok && WIFEXITED(handler_status) &&
-			 WEXITSTATUS(handler_status) == EXIT_SUCCESS,
+	if (copy_resident)
+		copy_contents_ok = buffer_is_value(destination, USER_PAGE_SIZE,
+						   TEST_VALUE);
+	ksft_test_result(copy_contents_ok,
 			 "owner reads the copied 4K page contents\n");
+	ksft_test_result(handler_reported && report.zero_result == 0 &&
+			 report.zeroed == USER_PAGE_SIZE,
+			 "native handler zeroes one 4K page (%lld, %s)\n",
+			 report.zeroed,
+			 report.zero_result ? strerror(report.zero_error) : "ok");
+	if (zero_resident)
+		zero_contents_ok = buffer_is_value(destination + USER_PAGE_SIZE,
+						   USER_PAGE_SIZE, 0);
+	ksft_test_result(zero_resident && zero_contents_ok &&
+			 WIFEXITED(handler_status) &&
+			 WEXITSTATUS(handler_status) == EXIT_SUCCESS,
+			 "owner reads the zeroed 4K page contents\n");
 
 	close(uffd);
 	munmap(reservation, RESERVE_SIZE);
