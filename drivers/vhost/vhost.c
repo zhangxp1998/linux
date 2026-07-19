@@ -2417,15 +2417,37 @@ EXPORT_SYMBOL_GPL(vhost_dev_ioctl);
 static int set_bit_to_user(int nr, void __user *addr)
 {
 	unsigned long log = (unsigned long)addr;
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	unsigned long page_offset = 0;
 	struct page *page;
 	void *base;
-	int bit = nr + (log % PAGE_SIZE) * 8;
+	int bit;
 	int r;
 
-	r = pin_user_pages_fast(log, 1, FOLL_WRITE, &page);
-	if (r < 0)
-		return r;
-	BUG_ON(r != 1);
+	if (!mm)
+		return -EFAULT;
+
+	/*
+	 * Keep the VMA stable while translating the process-page offset to
+	 * its native backing-page slice and pinning that page.
+	 */
+	mmap_read_lock(mm);
+	vma = vma_lookup(mm, log);
+	if (!vma) {
+		r = -EFAULT;
+		goto unlock;
+	}
+	r = pin_user_pages(log, 1, FOLL_WRITE, &page);
+	if (r == 1)
+		page_offset = vma_page_slice_offset(vma, page, log) +
+			      mm_offset_in_page(mm, log);
+unlock:
+	mmap_read_unlock(mm);
+	if (r != 1)
+		return r < 0 ? r : -EFAULT;
+
+	bit = nr + page_offset * 8;
 	base = kmap_atomic(page);
 	set_bit(bit, base);
 	kunmap_atomic(base);

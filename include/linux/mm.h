@@ -1990,6 +1990,15 @@ static inline bool folio_has_pincount(const struct folio *folio)
 	return folio_order(folio) > 1;
 }
 
+/* Byte offset within the native page for the process page at @addr. */
+static inline unsigned long vma_page_slice_offset(struct vm_area_struct *vma,
+						  struct page *page,
+						  unsigned long addr)
+{
+	return (unsigned long)vma_address_to_slice(vma, addr) <<
+		PAGE_SHIFT_COMPAT;
+}
+
 /**
  * folio_maybe_dma_pinned - Report if a folio may be pinned for DMA.
  * @folio: The folio.
