@@ -3382,7 +3382,9 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 		 */
 		struct vm_area_struct *vma = vmf->vma;
 		unsigned long start = vma->vm_pgoff;
-		unsigned long end = start + vma_pages(vma);
+		unsigned long len = vma->vm_end - vma->vm_start;
+		unsigned long end = start + DIV_ROUND_UP(
+			offset_in_page(vma_file_offset(vma)) + len, PAGE_SIZE);
 		unsigned long ra_end;
 
 		ra->order = exec_folio_order();
