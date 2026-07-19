@@ -2786,9 +2786,9 @@ mm_user_range_pages(struct mm_struct *mm, unsigned long start, size_t length)
 
 	if (!length)
 		return 0;
-	tail = offset_in_page(start) + offset_in_page(length);
-	return (length >> PAGE_SHIFT) +
-	       DIV_ROUND_UP(tail, PAGE_SIZE);
+	tail = mm_offset_in_page(mm, start) + mm_offset_in_page(mm, length);
+	return (length >> MM_PAGE_SHIFT(mm)) +
+	       DIV_ROUND_UP(tail, MM_PAGE_SIZE(mm));
 }
 
 long pin_user_pages_range(struct mm_struct *mm, unsigned long start,
