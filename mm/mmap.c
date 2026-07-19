@@ -1310,7 +1310,7 @@ struct vm_area_struct *find_extend_vma_locked(struct mm_struct *mm, unsigned lon
 {
 	struct vm_area_struct *vma, *prev;
 
-	addr &= PAGE_MASK;
+	addr &= MM_PAGE_MASK(mm);
 	vma = find_vma_prev(mm, addr, &prev);
 	if (vma && (vma->vm_start <= addr))
 		return vma;
@@ -1333,7 +1333,7 @@ struct vm_area_struct *find_extend_vma_locked(struct mm_struct *mm, unsigned lon
 	struct vm_area_struct *vma;
 	unsigned long start;
 
-	addr &= PAGE_MASK;
+	addr &= MM_PAGE_MASK(mm);
 	vma = find_vma(mm, addr);
 	if (!vma)
 		return NULL;
