@@ -2110,7 +2110,7 @@ static int tcp_zerocopy_receive(struct sock *sk,
 	zc->copybuf_len = 0;
 	zc->msg_flags = 0;
 
-	if (address & (PAGE_SIZE - 1) || address != zc->address)
+	if (!MM_PAGE_ALIGNED(current->mm, address) || address != zc->address)
 		return -EINVAL;
 
 	if (sk->sk_state == TCP_LISTEN)
