@@ -1324,7 +1324,7 @@ void exit_mmap(struct mm_struct *mm)
 destroy:
 	__mt_destroy(&mm->mm_mt);
 	mmap_write_unlock(mm);
-	vm_unacct_memory(nr_accounted);
+	vm_unacct_memory_mm(mm, nr_accounted);
 	mm_clear_pgtable_mm();
 }
 
@@ -1897,6 +1897,6 @@ fail_nomem_policy:
 	vm_area_free(tmp);
 fail_nomem:
 	retval = -ENOMEM;
-	vm_unacct_memory(charge);
+	vm_unacct_memory_mm(mm, charge);
 	goto loop_out;
 }
