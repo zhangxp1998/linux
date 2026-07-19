@@ -115,6 +115,7 @@ TARGETS += tty
 TARGETS += uevent
 TARGETS += user_events
 TARGETS += vDSO
+TARGETS += vfio
 TARGETS += mm
 TARGETS += x86
 TARGETS += x86/bugs
