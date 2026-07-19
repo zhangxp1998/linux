@@ -31,10 +31,16 @@ static void show_val_kb(struct seq_file *m, const char *s, unsigned long num)
 	seq_write(m, " kB\n", 4);
 }
 
+static void show_kb(struct seq_file *m, const char *s, unsigned long kb)
+{
+	seq_put_decimal_ull_width(m, s, kb, 8);
+	seq_write(m, " kB\n", 4);
+}
+
 static int meminfo_proc_show(struct seq_file *m, void *v)
 {
 	struct sysinfo i;
-	unsigned long committed;
+	unsigned long committed_kb;
 	long cached;
 	long available;
 	unsigned long pages[NR_LRU_LISTS];
@@ -43,7 +49,7 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 
 	si_meminfo(&i);
 	si_swapinfo(&i);
-	committed = vm_memory_committed();
+	committed_kb = vm_memory_committed_kb();
 
 	cached = global_node_page_state(NR_FILE_PAGES) -
 			total_swapcache_pages() - i.bufferram;
@@ -124,8 +130,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		    global_zone_page_state(NR_BOUNCE));
 	show_val_kb(m, "WritebackTmp:   ",
 		    global_node_page_state(NR_WRITEBACK_TEMP));
-	show_val_kb(m, "CommitLimit:    ", vm_commit_limit());
-	show_val_kb(m, "Committed_AS:   ", committed);
+	show_kb(m, "CommitLimit:    ", vm_commit_limit_kb());
+	show_kb(m, "Committed_AS:   ", committed_kb);
 	seq_printf(m, "VmallocTotal:   %8lu kB\n",
 		   (unsigned long)VMALLOC_TOTAL >> 10);
 	show_val_kb(m, "VmallocUsed:    ", vmalloc_nr_pages());

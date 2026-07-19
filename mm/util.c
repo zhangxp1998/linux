@@ -978,18 +978,30 @@ int overcommit_kbytes_handler(const struct ctl_table *table, int write, void *bu
 /*
  * Committed memory limit enforced when OVERCOMMIT_NEVER policy is used
  */
-unsigned long vm_commit_limit(void)
+static unsigned long vm_commit_limit_units(void)
 {
 	unsigned long allowed;
 
 	if (sysctl_overcommit_kbytes)
-		allowed = sysctl_overcommit_kbytes >> (PAGE_SHIFT - 10);
+		allowed = sysctl_overcommit_kbytes >>
+			  (PAGE_SHIFT_COMPAT - 10);
 	else
 		allowed = ((totalram_pages() - hugetlb_total_pages())
-			   * sysctl_overcommit_ratio / 100);
-	allowed += total_swap_pages;
+			   * sysctl_overcommit_ratio / 100) *
+			  PPPS_SLICES_PER_PAGE;
+	allowed += total_swap_pages * PPPS_SLICES_PER_PAGE;
 
 	return allowed;
+}
+
+unsigned long vm_commit_limit(void)
+{
+	return vm_commit_limit_units() / PPPS_SLICES_PER_PAGE;
+}
+
+unsigned long vm_commit_limit_kb(void)
+{
+	return vm_commit_limit_units() << (PAGE_SHIFT_COMPAT - 10);
 }
 
 /*
@@ -1011,11 +1023,22 @@ struct percpu_counter vm_committed_as ____cacheline_aligned_in_smp;
  * vm_committed_as's spinlock is under severe contention, the time cost
  * could be about 30~40 microseconds.
  */
-unsigned long vm_memory_committed(void)
+static unsigned long vm_memory_committed_units(void)
 {
 	return percpu_counter_sum_positive(&vm_committed_as);
 }
+
+unsigned long vm_memory_committed(void)
+{
+	return DIV_ROUND_UP(vm_memory_committed_units(),
+			    PPPS_SLICES_PER_PAGE);
+}
 EXPORT_SYMBOL_GPL(vm_memory_committed);
+
+unsigned long vm_memory_committed_kb(void)
+{
+	return vm_memory_committed_units() << (PAGE_SHIFT_COMPAT - 10);
+}
 
 /*
  * Check that a process has enough memory to allocate a new virtual
@@ -1035,10 +1058,13 @@ EXPORT_SYMBOL_GPL(vm_memory_committed);
  */
 int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 {
+	long committed;
 	long allowed;
 	unsigned long bytes_failed;
 
-	vm_acct_memory(pages);
+	committed = mm ? vm_commit_units_from_mm_pages(mm, pages) :
+			 vm_commit_units_from_native_pages(pages);
+	vm_acct_memory_units(committed);
 
 	/*
 	 * Sometimes we want to use more memory than we have
@@ -1047,34 +1073,41 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 		return 0;
 
 	if (sysctl_overcommit_memory == OVERCOMMIT_GUESS) {
-		if (pages > totalram_pages() + total_swap_pages)
+		long available = vm_commit_units_from_native_pages(totalram_pages() +
+							    total_swap_pages);
+
+		if (committed > available)
 			goto error;
 		return 0;
 	}
 
-	allowed = vm_commit_limit();
+	allowed = vm_commit_limit_units();
 	/*
 	 * Reserve some for root
 	 */
 	if (!cap_sys_admin)
-		allowed -= sysctl_admin_reserve_kbytes >> (PAGE_SHIFT - 10);
+		allowed -= sysctl_admin_reserve_kbytes >>
+			   (PAGE_SHIFT_COMPAT - 10);
 
 	/*
 	 * Don't let a single process grow so big a user can't recover
 	 */
 	if (mm) {
-		long reserve = sysctl_user_reserve_kbytes >> (PAGE_SHIFT - 10);
+		long reserve = sysctl_user_reserve_kbytes >>
+			       (PAGE_SHIFT_COMPAT - 10);
+		long total_vm = vm_commit_units_from_mm_pages(mm,
+							 mm->total_vm);
 
-		allowed -= min_t(long, mm->total_vm / 32, reserve);
+		allowed -= min_t(long, total_vm / 32, reserve);
 	}
 
 	if (percpu_counter_read_positive(&vm_committed_as) < allowed)
 		return 0;
 error:
-	bytes_failed = pages << PAGE_SHIFT;
+	bytes_failed = (unsigned long)committed << PAGE_SHIFT_COMPAT;
 	pr_warn_ratelimited("%s: pid: %d, comm: %s, bytes: %lu not enough memory for the allocation\n",
 			    __func__, current->pid, current->comm, bytes_failed);
-	vm_unacct_memory(pages);
+	vm_acct_memory_units(-committed);
 
 	return -ENOMEM;
 }
