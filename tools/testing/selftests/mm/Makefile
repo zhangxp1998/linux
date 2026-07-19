@@ -185,6 +185,7 @@ TEST_GEN_FILES += mseal_test
 TEST_GEN_FILES += on-fault-limit
 TEST_GEN_FILES += pagemap_ioctl
 TEST_GEN_FILES += pagewalk_ppps
+TEST_GEN_FILES += proc_pagewalk_ppps
 TEST_GEN_FILES += perf_mmap_offset_ppps
 TEST_GEN_FILES += pci_mmap_ppps
 TEST_GEN_FILES += pfnmap
