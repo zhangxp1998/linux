@@ -6,7 +6,7 @@
 #include <linux/sizes.h>
 #include <sound/pcm.h>
 
-#define TEST_DMA_BYTES SZ_16K
+#define TEST_DMA_BYTES (6 * SZ_1K)
 
 static struct snd_pcm_substream test_substream;
 static struct snd_pcm_runtime test_runtime;
