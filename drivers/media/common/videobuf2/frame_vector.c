@@ -40,8 +40,10 @@
 int get_vaddr_frames(unsigned long start, unsigned int nr_frames, bool write,
 		     struct frame_vector *vec)
 {
+	struct mm_struct *mm = current->mm;
 	int ret;
 	unsigned int gup_flags = FOLL_LONGTERM;
+	unsigned int i;
 
 	if (nr_frames == 0)
 		return 0;
@@ -54,8 +56,38 @@ int get_vaddr_frames(unsigned long start, unsigned int nr_frames, bool write,
 	if (write)
 		gup_flags |= FOLL_WRITE;
 
-	ret = pin_user_pages_fast(start, nr_frames, gup_flags,
-				  (struct page **)(vec->ptrs));
+	frame_vector_set_frame_size(vec, MM_PAGE_SIZE(mm));
+	if (ppps_mm_is_compat(mm)) {
+		unsigned long first_offset = mm_offset_in_page(mm, start);
+		unsigned long addr = start - first_offset;
+		unsigned int *offsets = frame_vector_offsets(vec);
+
+		mmap_read_lock(mm);
+		for (i = 0; i < nr_frames;
+		     i++, addr += frame_vector_frame_size(vec)) {
+			struct vm_area_struct *vma = vma_lookup(mm, addr);
+
+			if (!vma || addr >= vma->vm_end) {
+				ret = -EFAULT;
+				goto unlock;
+			}
+			offsets[i] = vma_address_to_slice(vma, addr) *
+				     frame_vector_frame_size(vec);
+			if (!i)
+				offsets[i] += first_offset;
+		}
+		ret = pin_user_pages(start, nr_frames, gup_flags,
+				     (struct page **)(vec->ptrs));
+unlock:
+		mmap_read_unlock(mm);
+	} else {
+		unsigned int *offsets = frame_vector_offsets(vec);
+
+		memset(offsets, 0, nr_frames * sizeof(*offsets));
+		offsets[0] = offset_in_page(start);
+		ret = pin_user_pages_fast(start, nr_frames, gup_flags,
+					  (struct page **)(vec->ptrs));
+	}
 	vec->got_ref = true;
 	vec->is_pfns = false;
 	vec->nr_frames = ret;
@@ -159,7 +191,9 @@ EXPORT_SYMBOL(frame_vector_to_pfns);
 struct frame_vector *frame_vector_create(unsigned int nr_frames)
 {
 	struct frame_vector *vec;
-	int size = struct_size(vec, ptrs, nr_frames);
+	size_t ptrs_size = struct_size(vec, ptrs, nr_frames);
+	size_t offsets_size;
+	size_t size;
 
 	if (WARN_ON_ONCE(nr_frames == 0))
 		return NULL;
@@ -168,6 +202,10 @@ struct frame_vector *frame_vector_create(unsigned int nr_frames)
 	 * arithmetics overflows.
 	 */
 	if (WARN_ON_ONCE(nr_frames > INT_MAX / sizeof(void *) / 2))
+		return NULL;
+	if (check_mul_overflow((size_t)nr_frames, sizeof(unsigned int),
+			       &offsets_size) ||
+	    check_add_overflow(ptrs_size, offsets_size, &size))
 		return NULL;
 	/*
 	 * Avoid higher order allocations, use vmalloc instead. It should
@@ -178,6 +216,10 @@ struct frame_vector *frame_vector_create(unsigned int nr_frames)
 		return NULL;
 	vec->nr_allocated = nr_frames;
 	vec->nr_frames = 0;
+	frame_vector_set_frame_size(vec, PAGE_SIZE);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	vec->offsets = (unsigned int *)((char *)vec + ptrs_size);
+#endif
 	return vec;
 }
 EXPORT_SYMBOL(frame_vector_create);
