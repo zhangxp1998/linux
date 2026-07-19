@@ -2773,6 +2773,7 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 	struct address_space *mapping;
 	struct inode *inode;
 	struct filename *pathname;
+	long process_pages;
 	int err, found = 0;
 	bool hibernation_swap = false;
 
@@ -2805,7 +2806,8 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 		spin_unlock(&swap_lock);
 		goto out_dput;
 	}
-	if (!security_vm_enough_memory_mm(current->mm, p->pages))
+	process_pages = vm_native_pages_to_mm_pages(current->mm, p->pages);
+	if (!security_vm_enough_memory_mm(current->mm, process_pages))
 		vm_unacct_memory(p->pages);
 	else {
 		err = -ENOMEM;
