@@ -95,6 +95,7 @@ bool io_kbuf_commit(struct io_kiocb *req,
 
 struct io_mapped_region *io_pbuf_get_region(struct io_ring_ctx *ctx,
 					    unsigned int bgid);
+size_t io_pbuf_mmap_size(struct io_ring_ctx *ctx, unsigned int bgid);
 
 static inline bool io_kbuf_recycle_ring(struct io_kiocb *req,
 					struct io_buffer_list *bl)
