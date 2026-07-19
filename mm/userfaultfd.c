@@ -252,6 +252,9 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 	void *kaddr;
 	int ret;
 	struct folio *folio;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	if (!*foliop) {
 		ret = -ENOMEM;
@@ -263,62 +266,33 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 		kaddr = kmap_local_folio(folio, 0);
 		memset(kaddr, 0, PAGE_SIZE);
 
-		/*
-		 * The read mmap_lock is held here.  Despite the
-		 * mmap_lock being read recursive a deadlock is still
-		 * possible if a writer has taken a lock.  For example:
-		 *
-		 * process A thread 1 takes read lock on own mmap_lock
-		 * process A thread 2 calls mmap, blocks taking write lock
-		 * process B thread 1 takes page fault, read lock on own mmap lock
-		 * process B thread 2 calls mmap, blocks taking write lock
-		 * process A thread 1 blocks taking read lock on process B
-		 * process B thread 1 blocks taking read lock on process A
-		 *
-		 * Disable page faults to prevent potential deadlock
-		 * and retry the copy outside the mmap_lock.
-		 */
-		pagefault_disable();
-		ret = copy_from_user(kaddr + offset, (const void __user *) src_addr,
-				     pgsize);
-		pagefault_enable();
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		prev_pgtable_mm = current->pgtable_mm;
+		current->pgtable_mm = current->mm;
+#endif
+		ret = copy_from_user(kaddr + offset, (const void __user *) src_addr, pgsize);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		current->pgtable_mm = prev_pgtable_mm;
+#endif
+
 		kunmap_local(kaddr);
-
-		/* fallback to copy_from_user outside mmap_lock */
 		if (unlikely(ret)) {
-			ret = -ENOENT;
-			*foliop = folio;
-			/* don't free the page */
-			goto out;
+			ret = -EFAULT;
+			goto out_release;
 		}
-
-		flush_dcache_folio(folio);
 	} else {
 		folio = *foliop;
 		*foliop = NULL;
 	}
 
-	/*
-	 * The memory barrier inside __folio_mark_uptodate makes sure that
-	 * preceding stores to the page contents become visible before
-	 * the set_pte_at() write.
-	 */
-	__folio_mark_uptodate(folio);
-
-	ret = -ENOMEM;
-	if (mem_cgroup_charge(folio, dst_vma->vm_mm, GFP_KERNEL))
-		goto out_release;
-
-	ret = mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr,
-				       &folio->page, true, slice_idx, flags);
-	if (ret)
-		goto out_release;
-out:
-	return ret;
+	return mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr,
+					&folio->page, true, slice_idx, flags);
 out_release:
 	folio_put(folio);
-	goto out;
+out:
+	return ret;
 }
+
 
 static int mfill_atomic_pte_zeroed_folio(pmd_t *dst_pmd,
 					 struct vm_area_struct *dst_vma,
