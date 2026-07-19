@@ -190,11 +190,45 @@ static void bpf_obj_unpin_uptrs(struct btf_record *rec, void *obj)
 	__bpf_obj_unpin_uptrs(rec, rec->cnt, obj);
 }
 
+static int bpf_pin_uptr_page(unsigned long start, unsigned long end,
+			     struct page **page, unsigned long *page_offset)
+{
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	long pinned;
+	int err = 0;
+
+	/* A directly accessed uptr must fit in one process page. */
+	if ((start & MM_PAGE_MASK(mm)) != (end & MM_PAGE_MASK(mm)))
+		return -EOPNOTSUPP;
+
+	/*
+	 * Keep the VMA and the page being pinned stable while translating a
+	 * process-page offset to its native-page backing slice.
+	 */
+	mmap_read_lock(mm);
+	vma = vma_lookup(mm, start);
+	if (!vma || end >= vma->vm_end) {
+		err = -EFAULT;
+		goto unlock;
+	}
+
+	*page_offset = ((unsigned long)vma_address_to_slice(vma, start) <<
+			MM_PAGE_SHIFT(mm)) + mm_offset_in_page(mm, start);
+	pinned = pin_user_pages(start, 1, FOLL_LONGTERM | FOLL_WRITE, page);
+	if (pinned != 1)
+		err = pinned < 0 ? pinned : -EFAULT;
+unlock:
+	mmap_read_unlock(mm);
+	return err;
+}
+
 static int bpf_obj_pin_uptrs(struct btf_record *rec, void *obj)
 {
 	const struct btf_field *field;
 	const struct btf_type *t;
 	unsigned long start, end;
+	unsigned long page_offset;
 	struct page *page;
 	void **uptr_addr;
 	int i, err;
@@ -218,14 +252,8 @@ static int bpf_obj_pin_uptrs(struct btf_record *rec, void *obj)
 			goto unpin_all;
 		}
 
-		/* The uptr's struct cannot span across two pages */
-		if ((start & PAGE_MASK) != (end & PAGE_MASK)) {
-			err = -EOPNOTSUPP;
-			goto unpin_all;
-		}
-
-		err = pin_user_pages_fast(start, 1, FOLL_LONGTERM | FOLL_WRITE, &page);
-		if (err != 1)
+		err = bpf_pin_uptr_page(start, end, &page, &page_offset);
+		if (err)
 			goto unpin_all;
 
 		if (PageHighMem(page)) {
@@ -234,7 +262,7 @@ static int bpf_obj_pin_uptrs(struct btf_record *rec, void *obj)
 			goto unpin_all;
 		}
 
-		*uptr_addr = page_address(page) + offset_in_page(start);
+		*uptr_addr = page_address(page) + page_offset;
 	}
 
 	return 0;

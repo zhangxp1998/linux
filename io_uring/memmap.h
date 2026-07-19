@@ -36,4 +36,9 @@ static inline bool io_region_is_set(struct io_mapped_region *mr)
 	return !!mr->nr_pages;
 }
 
+static inline size_t io_region_size(struct io_mapped_region *mr)
+{
+	return (size_t)mr->nr_pages << PAGE_SHIFT;
+}
+
 #endif
