@@ -93,6 +93,7 @@ void xdp_put_umem(struct xdp_umem *umem, bool defer_cleanup)
 
 static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 {
+	struct mm_struct *mm = current->mm;
 	unsigned int gup_flags = FOLL_WRITE;
 	long npgs;
 	int err;
@@ -101,10 +102,20 @@ static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 	if (!umem->pgs)
 		return -ENOMEM;
 
-	mmap_read_lock(current->mm);
+	mmap_read_lock(mm);
+	if (ppps_mm_is_compat(mm)) {
+		struct vm_area_struct *vma = vma_lookup(mm, address);
+
+		/* vmap() cannot compensate for a subpage backing offset. */
+		if (!vma || vma_address_to_slice(vma, address)) {
+			npgs = -EOPNOTSUPP;
+			goto unlock;
+		}
+	}
 	npgs = pin_user_pages(address, umem->npgs,
 			      gup_flags | FOLL_LONGTERM, &umem->pgs[0]);
-	mmap_read_unlock(current->mm);
+unlock:
+	mmap_read_unlock(mm);
 
 	if (npgs != umem->npgs) {
 		if (npgs >= 0) {
@@ -156,14 +167,16 @@ static int xdp_umem_account_pages(struct xdp_umem *umem)
 
 static int xdp_umem_reg(struct xdp_umem *umem, struct xdp_umem_reg *mr)
 {
+	struct mm_struct *mm = current->mm;
 	bool unaligned_chunks = mr->flags & XDP_UMEM_UNALIGNED_CHUNK_FLAG;
 	u32 chunk_size = mr->chunk_size, headroom = mr->headroom;
+	u32 page_size = MM_PAGE_SIZE(mm);
 	u64 addr = mr->addr, size = mr->len;
 	u32 chunks_rem, npgs_rem;
 	u64 chunks, npgs;
 	int err;
 
-	if (chunk_size < XDP_UMEM_MIN_CHUNK_SIZE || chunk_size > PAGE_SIZE) {
+	if (chunk_size < XDP_UMEM_MIN_CHUNK_SIZE || chunk_size > page_size) {
 		/* Strictly speaking we could support this, if:
 		 * - huge pages, or*
 		 * - using an IOMMU, or
@@ -179,7 +192,7 @@ static int xdp_umem_reg(struct xdp_umem *umem, struct xdp_umem_reg *mr)
 	if (!unaligned_chunks && !is_power_of_2(chunk_size))
 		return -EINVAL;
 
-	if (!PAGE_ALIGNED(addr)) {
+	if (!IS_ALIGNED(addr, page_size)) {
 		/* Memory area has to be page size aligned. For
 		 * simplicity, this might change.
 		 */
@@ -189,7 +202,14 @@ static int xdp_umem_reg(struct xdp_umem *umem, struct xdp_umem_reg *mr)
 	if ((addr + size) < addr)
 		return -EINVAL;
 
-	npgs = div_u64_rem(size, PAGE_SIZE, &npgs_rem);
+	/*
+	 * vmap() lays out entries at native PAGE_SIZE intervals, so it cannot
+	 * create a contiguous view of multiple independent compat pages.
+	 */
+	if (ppps_mm_is_compat(mm) && size > page_size)
+		return -EOPNOTSUPP;
+
+	npgs = div_u64_rem(size, page_size, &npgs_rem);
 	if (npgs_rem)
 		npgs++;
 	if (npgs > U32_MAX)
