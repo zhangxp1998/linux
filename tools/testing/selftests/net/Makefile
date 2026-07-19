@@ -90,6 +90,7 @@ TEST_GEN_FILES += ip_local_port_range
 TEST_GEN_PROGS += bind_wildcard
 TEST_GEN_PROGS += bind_timewait
 TEST_GEN_PROGS += packet_mmap_ppps
+TEST_GEN_PROGS += tcp_zerocopy_ppps
 TEST_GEN_PROGS += xsk_vmalloc_mmap_ppps
 TEST_PROGS += test_vxlan_mdb.sh
 TEST_PROGS += test_bridge_neigh_suppress.sh
