@@ -72,12 +72,45 @@ int vb2_framevec_to_sgtable(struct frame_vector *vec, unsigned long size,
 			    struct sg_table *sgt, gfp_t gfp)
 {
 	struct page **pages = frame_vector_pages(vec);
+	unsigned int frame_size = frame_vector_frame_size(vec);
+	unsigned int i;
+	struct scatterlist *sg;
+	int ret;
 
 	if (IS_ERR(pages))
 		return PTR_ERR(pages);
-	return sg_alloc_table_from_pages(sgt, pages, frame_vector_count(vec),
-					 frame_vector_frame_offset(vec, 0), size,
-					 gfp);
+	/* Native frames are whole pages: keep the coalescing sg builder. */
+	if (frame_size == PAGE_SIZE)
+		return sg_alloc_table_from_pages(sgt, pages,
+						 frame_vector_count(vec),
+						 frame_vector_frame_offset(vec, 0),
+						 size, gfp);
+	ret = sg_alloc_table(sgt, frame_vector_count(vec), gfp);
+	if (ret)
+		return ret;
+
+	for_each_sgtable_sg(sgt, sg, i) {
+		unsigned int offset = frame_vector_frame_offset(vec, i);
+		unsigned int frame_offset = offset % frame_size;
+		unsigned int len = min_t(unsigned long, size,
+					 frame_size - frame_offset);
+
+		if (!len || offset + len > PAGE_SIZE) {
+			ret = -EINVAL;
+			goto out_free;
+		}
+		sg_set_page(sg, pages[i], len, offset);
+		size -= len;
+	}
+	if (size) {
+		ret = -EINVAL;
+		goto out_free;
+	}
+	return 0;
+
+out_free:
+	sg_free_table(sgt);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(vb2_framevec_to_sgtable);
 

@@ -3610,7 +3610,8 @@ static long gup_user_range(struct mm_struct *mm, unsigned long start,
 			   bool pin)
 {
 	unsigned long nr_pages = mm_user_range_pages(mm, start, length);
-	unsigned long addr, end, page_size = PAGE_SIZE;
+	unsigned long addr, end, page_size = MM_PAGE_SIZE(mm);
+	struct vm_area_struct *vma = NULL;
 	bool locked = false;
 	size_t remaining = length;
 	long ret, i;
@@ -3625,7 +3626,7 @@ static long gup_user_range(struct mm_struct *mm, unsigned long start,
 		return -EINVAL;
 
 	/* The native local-mm path retains fast GUP. */
-	if (mm == current->mm) {
+	if (!ppps_mm_is_compat(mm) && mm == current->mm) {
 		start = untagged_addr(start);
 	} else {
 		mmap_read_lock(mm);
@@ -3649,11 +3650,25 @@ static long gup_user_range(struct mm_struct *mm, unsigned long start,
 
 	addr = start;
 	for (i = 0; i < ret; i++) {
-		unsigned int in_page = offset_in_page(addr);
+		unsigned int offset = 0;
+		unsigned int in_page = mm_offset_in_page(mm, addr);
 		unsigned int bytes =
 			min_t(size_t, remaining, page_size - in_page);
 
-		spans[i] = (struct page_span){ in_page, bytes };
+		if (ppps_mm_is_compat(mm)) {
+			if (!vma || addr >= vma->vm_end)
+				vma = vma_lookup(mm, addr);
+			if (WARN_ON_ONCE(!vma)) {
+				if (pin)
+					unpin_user_pages(pages, ret);
+				else
+					release_pages(pages, ret);
+				ret = -EFAULT;
+				goto out;
+			}
+			offset = vma_page_slice_offset(vma, pages[i], addr);
+		}
+		spans[i] = (struct page_span){ offset + in_page, bytes };
 		addr += bytes;
 		remaining -= bytes;
 	}
