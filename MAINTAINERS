@@ -7533,6 +7533,8 @@ F:	drivers/gpu/
 F:	include/drm/
 F:	include/linux/vga*
 F:	include/uapi/drm/
+F:	tools/testing/selftests/drivers/gpu/Makefile
+F:	tools/testing/selftests/drivers/gpu/drm_gem_mmap_ppps*
 
 DRM DRIVERS AND MISC GPU PATCHES
 M:	Maarten Lankhorst <maarten.lankhorst@linux.intel.com>
