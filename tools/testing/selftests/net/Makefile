@@ -180,6 +180,7 @@ TEST_GEN_PROGS := \
 	epoll_busy_poll \
 	icmp_rfc4884 \
 	ipv6_fragmentation \
+	packet_mmap_ppps \
 	proc_net_pktgen \
 	reuseaddr_conflict \
 	reuseport_bpf \
