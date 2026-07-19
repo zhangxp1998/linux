@@ -24,6 +24,8 @@ struct io_buffer_list {
 		struct {
 			struct page **buf_pages;
 			struct io_uring_buf_ring *buf_ring;
+			/* vmap() base; buf_ring may start inside a native page */
+			void *buf_ring_map;
 		};
 		struct rcu_head rcu;
 	};
