@@ -1672,7 +1672,7 @@ static int fill_files_note(struct memelfnote *note, struct coredump_params *cprm
 
 	/* Now we know exact count of files, can store it */
 	data[0] = count;
-	data[1] = PAGE_SIZE;
+	data[1] = MM_PAGE_SIZE(current->mm);
 	/*
 	 * Count usually is less than mm->map_count,
 	 * we need to move filenames down.
