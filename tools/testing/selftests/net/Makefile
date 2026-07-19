@@ -193,6 +193,7 @@ TEST_GEN_PROGS := \
 	so_incoming_cpu \
 	tap \
 	tcp_port_share \
+	tcp_zerocopy_ppps \
 	tls \
 	xsk_vmalloc_mmap_ppps \
 # end of TEST_GEN_PROGS
