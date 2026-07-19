@@ -1127,7 +1127,7 @@ static unsigned long vma_dump_size(struct vm_area_struct *vma,
 	 * dump the first page to aid in determining what was mapped here.
 	 */
 	if (FILTER(ELF_HEADERS) &&
-	    vma->vm_pgoff == 0 && (vma->vm_flags & VM_READ)) {
+	    !vma_file_offset(vma) && (vma->vm_flags & VM_READ)) {
 		if ((READ_ONCE(file_inode(vma->vm_file)->i_mode) & 0111) != 0)
 			return PAGE_SIZE;
 
@@ -1229,7 +1229,7 @@ static bool dump_vma_snapshot(struct coredump_params *cprm)
 		m->end = vma->vm_end;
 		m->flags = vma->vm_flags;
 		m->dump_size = vma_dump_size(vma, cprm->mm_flags);
-		m->pgoff = vma->vm_pgoff;
+		m->pgoff = vma_file_offset(vma) >> MM_PAGE_SHIFT(mm);
 		m->file = vma->vm_file;
 		if (m->file)
 			get_file(m->file);
