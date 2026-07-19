@@ -18,6 +18,7 @@
 #define USER_PAGE_SIZE 4096UL
 #define MMAP_OFFSET (3 * USER_PAGE_SIZE)
 #define MMAP_SIZE (2 * USER_PAGE_SIZE)
+#define TAIL_OFFSET (2 * USER_PAGE_SIZE)
 
 static int run_test(void)
 {
@@ -26,7 +27,7 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(3);
+	ksft_set_plan(4);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	fd = open("/dev/snd_pcm_mmap_ppps", O_RDWR | O_CLOEXEC);
@@ -43,6 +44,16 @@ static int run_test(void)
 			 "reject a PCM mapping that crosses the DMA buffer end\n");
 	if (mapping != MAP_FAILED)
 		munmap(mapping, MMAP_SIZE);
+
+	errno = 0;
+	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, TAIL_OFFSET);
+	saved_errno = errno;
+	ksft_test_result(mapping == MAP_FAILED && saved_errno == EINVAL,
+			 "reject the first process page beyond the DMA buffer (errno=%d)\n",
+			 saved_errno);
+	if (mapping != MAP_FAILED)
+		munmap(mapping, USER_PAGE_SIZE);
 	close(fd);
 	ksft_finished();
 }
