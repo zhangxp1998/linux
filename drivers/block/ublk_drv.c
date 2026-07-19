@@ -301,9 +301,15 @@ struct ublk_queue {
 struct ublk_buf_range {
 	unsigned short buf_index;
 	unsigned short flags;
-	u64 base_offset;	/* offset from the first pinned native page */
-	u64 valid_start;	/* first registered byte in native-page space */
-	u64 valid_end;	/* byte after the registered buffer */
+	unsigned int page_offset;
+	unsigned int valid_bytes;
+	u64 base_offset;
+};
+
+struct ublk_page_layout {
+	u64 buffer_offset;
+	unsigned int page_offset;
+	unsigned int valid_bytes;
 };
 
 struct ublk_device {
@@ -5335,8 +5341,8 @@ static void ublk_buf_erase_ranges(struct ublk_device *ub, int buf_index)
 
 static int __ublk_ctrl_reg_buf(struct ublk_device *ub,
 			       struct page **pages, unsigned long nr_pages,
-			       int index, unsigned short flags,
-			       u64 valid_start, u64 valid_end)
+			       struct ublk_page_layout *layouts, int index,
+			       unsigned short flags)
 {
 	unsigned long i;
 	int ret;
@@ -5346,9 +5352,14 @@ static int __ublk_ctrl_reg_buf(struct ublk_device *ub,
 		unsigned long start = i;
 		struct ublk_buf_range *range;
 
-		/* Find run of consecutive PFNs */
+		/* Find PFNs with the same registered bytes on each page. */
 		while (i + 1 < nr_pages &&
-		       page_to_pfn(pages[i + 1]) == pfn + (i - start) + 1)
+		       page_to_pfn(pages[i + 1]) == pfn + (i - start) + 1 &&
+		       layouts[i + 1].page_offset == layouts[start].page_offset &&
+		       layouts[i + 1].valid_bytes == layouts[start].valid_bytes &&
+		       layouts[i + 1].buffer_offset ==
+			layouts[start].buffer_offset +
+			(u64)(i - start + 1) * layouts[start].valid_bytes)
 			i++;
 
 		range = kzalloc(sizeof(*range), GFP_KERNEL);
@@ -5358,9 +5369,9 @@ static int __ublk_ctrl_reg_buf(struct ublk_device *ub,
 		}
 		range->buf_index = index;
 		range->flags = flags;
-		range->base_offset = (u64)start << PAGE_SHIFT;
-		range->valid_start = valid_start;
-		range->valid_end = valid_end;
+		range->page_offset = layouts[start].page_offset;
+		range->valid_bytes = layouts[start].valid_bytes;
+		range->base_offset = layouts[start].buffer_offset;
 
 		ret = mtree_insert_range(&ub->buf_tree, pfn,
 					 pfn + (i - start),
@@ -5383,20 +5394,62 @@ unwind:
  * The buffer tree and its cleanup path operate on native PFNs, so retain one
  * pin per native page and drop the redundant pins before inserting ranges.
  */
-static unsigned long ublk_compact_pinned_pages(struct page **pages,
-					       unsigned long nr_pages)
+static unsigned long
+ublk_compact_pinned_pages(struct page **pages,
+			  struct ublk_page_layout *layouts,
+			  unsigned long nr_pages,
+			  unsigned int process_page_size)
 {
 	unsigned long in, out = 0;
 
 	for (in = 0; in < nr_pages; in++) {
-		if (out && pages[in] == pages[out - 1]) {
+		struct ublk_page_layout *layout = out ? &layouts[out - 1] : NULL;
+		unsigned int page_offset = layouts[in].page_offset;
+
+		if (layout && pages[in] == pages[out - 1] &&
+		    page_offset == layout->page_offset + layout->valid_bytes) {
+			layout->valid_bytes += process_page_size;
 			unpin_user_page(pages[in]);
 			continue;
 		}
-		pages[out++] = pages[in];
+		pages[out] = pages[in];
+		layouts[out].buffer_offset = in * (u64)process_page_size;
+		layouts[out].page_offset = page_offset;
+		layouts[out].valid_bytes = process_page_size;
+		out++;
 	}
 
 	return out;
+}
+
+static long ublk_pin_user_pages(struct mm_struct *mm, unsigned long start,
+				unsigned long nr_pages, unsigned int gup_flags,
+				struct page **pages,
+				struct ublk_page_layout *layouts)
+{
+	unsigned int process_page_size = MM_PAGE_SIZE(mm);
+	unsigned long addr = start;
+	unsigned long i;
+	long pinned;
+
+	mmap_read_lock(mm);
+	for (i = 0; i < nr_pages; i++, addr += process_page_size) {
+		struct vm_area_struct *vma = vma_lookup(mm, addr);
+
+		if (!vma) {
+			pinned = -EFAULT;
+			goto unlock;
+		}
+		layouts[i].page_offset = vma_address_to_slice(vma, addr) *
+				 process_page_size + mm_offset_in_page(mm, addr);
+	}
+
+	/* Passing NULL tells GUP that mmap_lock is already held. */
+	pinned = pin_user_pages_remote(mm, start, nr_pages, gup_flags, pages,
+				       NULL);
+unlock:
+	mmap_read_unlock(mm);
+	return pinned;
 }
 
 /*
@@ -5408,10 +5461,11 @@ static int ublk_ctrl_reg_buf(struct ublk_device *ub,
 			     struct ublksrv_ctrl_cmd *header)
 {
 	void __user *argp = (void __user *)(unsigned long)header->addr;
+	struct mm_struct *mm = current->mm;
 	struct ublk_shmem_buf_reg buf_reg;
+	struct ublk_page_layout *layouts = NULL;
 	u64 addr_end;
-	u64 valid_start;
-	u64 valid_end;
+	unsigned int process_page_size;
 	unsigned long nr_process_pages;
 	unsigned long nr_pages;
 	struct page **pages = NULL;
@@ -5443,21 +5497,23 @@ static int ublk_ctrl_reg_buf(struct ublk_device *ub,
 	    !MM_PAGE_ALIGNED(current->mm, buf_reg.addr))
 		return -EINVAL;
 
-	nr_process_pages = buf_reg.len >> MM_PAGE_SHIFT(current->mm);
-	valid_start = offset_in_page(buf_reg.addr);
-	valid_end = valid_start + buf_reg.len;
+	process_page_size = MM_PAGE_SIZE(mm);
+	nr_process_pages = buf_reg.len >> MM_PAGE_SHIFT(mm);
 
 	/* Pin pages before any locks (may sleep) */
 	pages = kvmalloc_array(nr_process_pages, sizeof(*pages), GFP_KERNEL);
-	if (!pages)
-		return -ENOMEM;
+	layouts = kvmalloc_array(nr_process_pages, sizeof(*layouts), GFP_KERNEL);
+	if (!pages || !layouts) {
+		ret = -ENOMEM;
+		goto err_free_pages;
+	}
 
 	gup_flags = FOLL_LONGTERM;
 	if (!(buf_reg.flags & UBLK_SHMEM_BUF_READ_ONLY))
 		gup_flags |= FOLL_WRITE;
 
-	pinned = pin_user_pages_fast(buf_reg.addr, nr_process_pages,
-				     gup_flags, pages);
+	pinned = ublk_pin_user_pages(mm, buf_reg.addr, nr_process_pages,
+				     gup_flags, pages, layouts);
 	if (pinned < 0) {
 		ret = pinned;
 		goto err_free_pages;
@@ -5466,7 +5522,8 @@ static int ublk_ctrl_reg_buf(struct ublk_device *ub,
 		ret = -EFAULT;
 		goto err_unpin;
 	}
-	nr_pages = ublk_compact_pinned_pages(pages, pinned);
+	nr_pages = ublk_compact_pinned_pages(pages, layouts, pinned,
+					     process_page_size);
 	pinned = nr_pages;
 
 	memflags = ublk_lock_buf_tree(ub);
@@ -5477,14 +5534,15 @@ static int ublk_ctrl_reg_buf(struct ublk_device *ub,
 		goto err_unlock;
 	}
 
-	ret = __ublk_ctrl_reg_buf(ub, pages, nr_pages, index, buf_reg.flags,
-				  valid_start, valid_end);
+	ret = __ublk_ctrl_reg_buf(ub, pages, nr_pages, layouts, index,
+				  buf_reg.flags);
 	if (ret) {
 		ida_free(&ub->buf_ida, index);
 		goto err_unlock;
 	}
 
 	ublk_unlock_buf_tree(ub, memflags);
+	kvfree(layouts);
 	kvfree(pages);
 	return index;
 
@@ -5493,6 +5551,7 @@ err_unlock:
 err_unpin:
 	unpin_user_pages(pages, pinned);
 err_free_pages:
+	kvfree(layouts);
 	kvfree(pages);
 	return ret;
 }
@@ -5624,48 +5683,49 @@ static bool ublk_try_buf_match(struct ublk_device *ub,
 	bool first = true;
 
 	rq_for_each_bvec(bv, rq, iter) {
-		unsigned long pfn = page_to_pfn(bv.bv_page);
-		unsigned long end_pfn = pfn +
-			((bv.bv_offset + bv.bv_len - 1) >> PAGE_SHIFT);
-		struct ublk_buf_range *range;
-		u64 physical_off;
-		u64 physical_end;
-		u64 off;
-		MA_STATE(mas, &ub->buf_tree, pfn, pfn);
+		unsigned long pfn = page_to_pfn(bv.bv_page) +
+			(bv.bv_offset >> PAGE_SHIFT);
+		unsigned int page_offset = offset_in_page(bv.bv_offset);
+		unsigned int remaining = bv.bv_len;
 
-		range = mas_walk(&mas);
-		if (!range)
-			return false;
+		while (remaining) {
+			struct ublk_buf_range *range;
+			unsigned int bytes = min_t(unsigned int, remaining,
+						       PAGE_SIZE - page_offset);
+			u64 off;
 
-		/* verify all pages in this bvec fall within the range */
-		if (end_pfn > mas.last)
-			return false;
+			MA_STATE(mas, &ub->buf_tree, pfn, pfn);
 
-		physical_off = range->base_offset +
-			(pfn - mas.index) * PAGE_SIZE + bv.bv_offset;
-		if (check_add_overflow(physical_off, (u64)bv.bv_len,
-				       &physical_end) ||
-		    physical_off < range->valid_start ||
-		    physical_end > range->valid_end)
-			return false;
-		off = physical_off - range->valid_start;
-
-		if (first) {
-			/* Read-only buffer can't serve READ (kernel writes) */
-			if ((range->flags & UBLK_SHMEM_BUF_READ_ONLY) &&
-			    req_op(rq) != REQ_OP_WRITE)
+			range = mas_walk(&mas);
+			if (!range || page_offset < range->page_offset ||
+			    page_offset - range->page_offset >=
+				    range->valid_bytes ||
+			    bytes > range->valid_bytes -
+				    (page_offset - range->page_offset))
 				return false;
-			index = range->buf_index;
-			expected_offset = off;
-			*buf_off = off;
-			first = false;
-		} else {
-			if (range->buf_index != index)
+
+			off = range->base_offset +
+				(pfn - mas.index) * range->valid_bytes +
+				(page_offset - range->page_offset);
+			if (first) {
+				/* Read-only buffer can't serve READ (kernel writes) */
+				if ((range->flags & UBLK_SHMEM_BUF_READ_ONLY) &&
+				    req_op(rq) != REQ_OP_WRITE)
+					return false;
+				index = range->buf_index;
+				expected_offset = off;
+				*buf_off = off;
+				first = false;
+			} else if (range->buf_index != index ||
+				   off != expected_offset) {
 				return false;
-			if (off != expected_offset)
-				return false;
+			}
+
+			expected_offset += bytes;
+			remaining -= bytes;
+			pfn++;
+			page_offset = 0;
 		}
-		expected_offset += bv.bv_len;
 	}
 
 	if (first)
