@@ -9,6 +9,7 @@ LOCAL_HDRS += $(selfdir)/mm/dma_mmap_pages_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
 LOCAL_HDRS += $(selfdir)/mm/pagewalk_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/folio_within_range_ppps.h
+LOCAL_HDRS += $(selfdir)/mm/iov_iter_ppps.h
 
 include local_config.mk
 
@@ -53,6 +54,7 @@ CFLAGS += -U_FORTIFY_SOURCE
 KDIR ?= /lib/modules/$(shell uname -r)/build
 ifneq (,$(wildcard $(KDIR)/Module.symvers))
 GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
+IOV_ITER_PPPS_MODULE := iov_iter_ppps_module/iov_iter_ppps_module.ko
 MREMAP_PGOFF_PPPS_MODULE := mremap_pgoff_ppps_module/mremap_pgoff_ppps_module.ko
 VM_IOMAP_MEMORY_PPPS_MODULE := vm_iomap_memory_ppps_module/vm_iomap_memory_ppps_module.ko
 DMA_MMAP_ATTRS_PPPS_MODULE := dma_mmap_attrs_ppps_module/dma_mmap_attrs_ppps_module.ko
@@ -100,6 +102,7 @@ TEST_GEN_FILES += shmem_eof_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
 TEST_GEN_FILES += vhost_dirty_log_ppps
+TEST_GEN_FILES += iov_iter_ppps
 TEST_GEN_FILES += compaction_test
 TEST_GEN_FILES += gup_longterm
 TEST_GEN_FILES += gup_retry_ppps
@@ -231,6 +234,8 @@ TEST_FILES += hugetlb_reparenting_test.sh
 TEST_FILES += test_page_frag.sh
 TEST_FILES += test_gup_retry_ppps.sh
 TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
+TEST_FILES += test_iov_iter_ppps.sh
+TEST_FILES += $(IOV_ITER_PPPS_MODULE)
 TEST_FILES += test_mremap_pgoff_ppps.sh
 TEST_FILES += $(MREMAP_PGOFF_PPPS_MODULE)
 TEST_FILES += test_selinux_status_mmap_ppps.sh
@@ -269,6 +274,20 @@ clean_gup_retry_ppps_module:
 	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_gup_retry_ppps_module
+endif
+
+ifneq ($(IOV_ITER_PPPS_MODULE),)
+all: $(IOV_ITER_PPPS_MODULE)
+
+$(IOV_ITER_PPPS_MODULE): iov_iter_ppps_module/iov_iter_ppps_module.c \
+			 iov_iter_ppps_module/Makefile iov_iter_ppps.h
+	+$(MAKE) -C iov_iter_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_iov_iter_ppps_module
+clean_iov_iter_ppps_module:
+	+$(MAKE) -C iov_iter_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_iov_iter_ppps_module
 endif
 
 ifneq ($(MREMAP_PGOFF_PPPS_MODULE),)
