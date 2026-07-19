@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -130,6 +131,32 @@ static void vgetrandom_init(void)
 		ksft_exit_fail_msg("Failed to fetch vgetrandom params: %zd\n", ret);
 }
 
+static void test_state_page_boundary(void)
+{
+	size_t page_size = getpagesize();
+	uintptr_t state_addr;
+	uint8_t output[32];
+	void *mapping;
+	ssize_t ret;
+
+	mapping = mmap(NULL, page_size * 2, vgrnd.params.mmap_prot,
+		       vgrnd.params.mmap_flags, -1, 0);
+	ksft_assert(mapping != MAP_FAILED);
+
+	state_addr = (uintptr_t)mapping + page_size -
+		(vgrnd.params.size_of_opaque_state / 2);
+	state_addr &= ~(uintptr_t)7;
+	memset((void *)state_addr, 0, vgrnd.params.size_of_opaque_state);
+
+	ret = VDSO_CALL(vgrnd.fn, 5, output, sizeof(output), 0,
+			(void *)state_addr, vgrnd.params.size_of_opaque_state);
+	munmap(mapping, page_size * 2);
+	if (ret != -EFAULT)
+		ksft_exit_fail_msg("vgetrandom accepted state crossing a page: %zd\n", ret);
+
+	ksft_test_result_pass("getrandom state page boundary: PASS\n");
+}
+
 static ssize_t vgetrandom(void *buf, size_t len, unsigned long flags)
 {
 	static __thread void *state;
@@ -242,7 +269,7 @@ static void kselftest(void)
 	pid_t child;
 
 	ksft_print_header();
-	ksft_set_plan(2);
+	ksft_set_plan(3);
 
 	for (size_t i = 0; i < 1000; ++i) {
 		ssize_t ret = vgetrandom(weird_size, sizeof(weird_size), 0);
@@ -250,6 +277,7 @@ static void kselftest(void)
 	}
 
 	ksft_test_result_pass("getrandom: PASS\n");
+	test_state_page_boundary();
 
 	unshare(CLONE_NEWUSER);
 	ksft_assert(unshare(CLONE_NEWTIME) == 0);

@@ -14,7 +14,10 @@
 
 #undef PAGE_SIZE
 #undef PAGE_MASK
-#define PAGE_SIZE (1UL << CONFIG_PAGE_SHIFT)
+#ifndef VGETRANDOM_PAGE_SHIFT
+#define VGETRANDOM_PAGE_SHIFT CONFIG_PAGE_SHIFT
+#endif
+#define PAGE_SIZE (1UL << VGETRANDOM_PAGE_SHIFT)
 #define PAGE_MASK (~(PAGE_SIZE - 1))
 
 #define MEMCPY_AND_ZERO_SRC(type, dst, src, len) do {				\
