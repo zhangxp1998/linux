@@ -3648,13 +3648,15 @@ long pin_user_pages_remote(struct mm_struct *mm,
 			   int *locked)
 {
 	int local_locked = 1;
+	long ret;
 
 	if (!is_valid_gup_args(pages, locked, &gup_flags,
 			       FOLL_PIN | FOLL_TOUCH | FOLL_REMOTE))
 		return 0;
-	return __gup_longterm_locked(mm, start, nr_pages, pages,
-				     locked ? locked : &local_locked,
-				     gup_flags);
+	ret = __gup_longterm_locked(mm, start, nr_pages, pages,
+				    locked ? locked : &local_locked,
+				    gup_flags);
+	return ret;
 }
 EXPORT_SYMBOL(pin_user_pages_remote);
 
