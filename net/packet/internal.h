@@ -61,6 +61,7 @@ struct packet_ring_buffer {
 
 	unsigned int		head;
 	unsigned int		frames_per_block;
+	unsigned int		block_size;
 	unsigned int		frame_size;
 	unsigned int		frame_max;
 
