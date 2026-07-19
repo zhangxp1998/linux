@@ -4132,38 +4132,61 @@ void kvm_vcpu_on_spin(struct kvm_vcpu *me, bool yield_to_kernel_mode)
 }
 EXPORT_SYMBOL_GPL(kvm_vcpu_on_spin);
 
-static bool kvm_page_in_dirty_ring(struct kvm *kvm, unsigned long pgoff)
+static bool kvm_page_in_dirty_ring(struct kvm *kvm, struct mm_struct *mm,
+				   unsigned long pgoff)
 {
 #ifdef CONFIG_HAVE_KVM_DIRTY_RING
 	return (pgoff >= KVM_DIRTY_LOG_PAGE_OFFSET) &&
 	    (pgoff < KVM_DIRTY_LOG_PAGE_OFFSET +
-	     kvm->dirty_ring_size / PAGE_SIZE);
+	     kvm->dirty_ring_size / MM_PAGE_SIZE(mm));
 #else
 	return false;
 #endif
 }
 
+static unsigned long kvm_vcpu_fault_pgoff(struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return vmf->pgoff;
+
+	return (vma_file_offset(vma) + vmf->address - vma->vm_start) >>
+		MM_PAGE_SHIFT(vma->vm_mm);
+}
+
 static vm_fault_t kvm_vcpu_fault(struct vm_fault *vmf)
 {
 	struct kvm_vcpu *vcpu = vmf->vma->vm_file->private_data;
+	struct vm_area_struct *vma = vmf->vma;
+	unsigned long pgoff = kvm_vcpu_fault_pgoff(vmf);
+	unsigned int slice = 0;
 	struct page *page;
 
-	if (vmf->pgoff == 0)
+	if (pgoff == 0)
 		page = virt_to_page(vcpu->run);
 #ifdef CONFIG_X86
-	else if (vmf->pgoff == KVM_PIO_PAGE_OFFSET)
+	else if (pgoff == KVM_PIO_PAGE_OFFSET)
 		page = virt_to_page(vcpu->arch.pio_data);
 #endif
 #ifdef CONFIG_KVM_MMIO
-	else if (vmf->pgoff == KVM_COALESCED_MMIO_PAGE_OFFSET)
+	else if (pgoff == KVM_COALESCED_MMIO_PAGE_OFFSET)
 		page = virt_to_page(vcpu->kvm->coalesced_mmio_ring);
 #endif
-	else if (kvm_page_in_dirty_ring(vcpu->kvm, vmf->pgoff))
-		page = kvm_dirty_ring_get_page(
-		    &vcpu->dirty_ring,
-		    vmf->pgoff - KVM_DIRTY_LOG_PAGE_OFFSET);
-	else
+	else if (kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_mm, pgoff)) {
+		unsigned long offset = (pgoff - KVM_DIRTY_LOG_PAGE_OFFSET) <<
+			MM_PAGE_SHIFT(vma->vm_mm);
+
+		page = kvm_dirty_ring_get_page(&vcpu->dirty_ring,
+					       offset >> PAGE_SHIFT);
+		slice = vma_offset_to_slice(vma, offset);
+	} else {
 		return kvm_arch_vcpu_fault(vcpu, vmf);
+	}
+
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return vmf_insert_page_slice(vma, vmf->address, page, slice);
+
 	get_page(page);
 	vmf->page = page;
 	return 0;
@@ -4176,14 +4199,19 @@ static const struct vm_operations_struct kvm_vcpu_vm_ops = {
 static int kvm_vcpu_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct kvm_vcpu *vcpu = file->private_data;
-	unsigned long pages = DIV_ROUND_UP(vma->vm_end - vma->vm_start,
-					   PAGE_SIZE);
+	unsigned long start_pgoff = vma_file_offset(vma) >>
+		MM_PAGE_SHIFT(vma->vm_mm);
+	unsigned long pages = (vma->vm_end - vma->vm_start) >>
+		MM_PAGE_SHIFT(vma->vm_mm);
 
-	if ((kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_pgoff) ||
-	     kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_pgoff + pages - 1)) &&
+	if ((kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_mm, start_pgoff) ||
+	     kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_mm,
+				    start_pgoff + pages - 1)) &&
 	    ((vma->vm_flags & VM_EXEC) || !(vma->vm_flags & VM_SHARED)))
 		return -EINVAL;
 
+	if (ppps_mm_is_compat(vma->vm_mm))
+		vm_flags_set(vma, VM_MIXEDMAP);
 	vma->vm_ops = &kvm_vcpu_vm_ops;
 	return 0;
 }
@@ -5587,12 +5615,12 @@ static long kvm_dev_ioctl(struct file *filp,
 	case KVM_GET_VCPU_MMAP_SIZE:
 		if (arg)
 			goto out;
-		r = PAGE_SIZE;     /* struct kvm_run */
+		r = MM_PAGE_SIZE(current->mm); /* struct kvm_run */
 #ifdef CONFIG_X86
-		r += PAGE_SIZE;    /* pio data page */
+		r += MM_PAGE_SIZE(current->mm); /* pio data page */
 #endif
 #ifdef CONFIG_KVM_MMIO
-		r += PAGE_SIZE;    /* coalesced mmio ring page */
+		r += MM_PAGE_SIZE(current->mm); /* coalesced mmio ring page */
 #endif
 		break;
 	default:
