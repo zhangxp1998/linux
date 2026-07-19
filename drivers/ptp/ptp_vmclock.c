@@ -373,15 +373,16 @@ static int vmclock_miscdev_mmap(struct file *fp, struct vm_area_struct *vma)
 {
 	struct vmclock_file_state *fst = fp->private_data;
 	struct vmclock_state *st = fst->st;
+	size_t size = vma->vm_end - vma->vm_start;
 
 	if ((vma->vm_flags & (VM_READ|VM_WRITE)) != VM_READ)
 		return -EROFS;
 
-	if (vma->vm_end - vma->vm_start != PAGE_SIZE || vma->vm_pgoff)
+	if (size != MM_PAGE_SIZE(vma->vm_mm) || vma->vm_pgoff)
 		return -EINVAL;
 
 	if (io_remap_pfn_range(vma, vma->vm_start,
-			       st->res.start >> PAGE_SHIFT, PAGE_SIZE,
+			       st->res.start >> PAGE_SHIFT, size,
 			       vma->vm_page_prot))
 		return -EAGAIN;
 
