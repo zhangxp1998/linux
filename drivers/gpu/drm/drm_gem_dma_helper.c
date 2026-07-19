@@ -465,6 +465,11 @@ drm_gem_dma_prime_import_sg_table(struct drm_device *dev,
 {
 	struct drm_gem_dma_object *dma_obj;
 
+	/* DMA GEM objects and their PFN mmap path require native pages. */
+	if (!PAGE_ALIGNED(attach->dmabuf->size) ||
+	    !PAGE_ALIGNED(sg_dma_address(sgt->sgl)))
+		return ERR_PTR(-EINVAL);
+
 	/* check if the entries in the sg_table are contiguous */
 	if (drm_prime_get_contiguous_size(sgt) < attach->dmabuf->size)
 		return ERR_PTR(-EINVAL);
