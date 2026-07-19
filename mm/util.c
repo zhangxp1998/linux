@@ -520,7 +520,7 @@ EXPORT_SYMBOL_IF_KUNIT(arch_pick_mmap_layout);
 /**
  * __account_locked_vm - account locked pages to an mm's locked_vm
  * @mm:          mm to account against
- * @pages:       number of pages to account
+ * @pages:       number of native kernel pages to account
  * @inc:         %true if @pages should be considered positive, %false if not
  * @task:        task used to check RLIMIT_MEMLOCK
  * @bypass_rlim: %true if checking RLIMIT_MEMLOCK should be skipped
@@ -540,10 +540,12 @@ int __account_locked_vm(struct mm_struct *mm, unsigned long pages, bool inc,
 
 	mmap_assert_write_locked(mm);
 
+	pages = vm_native_pages_to_mm_pages(mm, pages);
 	locked_vm = mm->locked_vm;
 	if (inc) {
 		if (!bypass_rlim) {
-			limit = task_rlimit(task, RLIMIT_MEMLOCK) >> PAGE_SHIFT;
+			limit = task_rlimit(task, RLIMIT_MEMLOCK) >>
+				MM_PAGE_SHIFT(mm);
 			if (locked_vm + pages > limit)
 				ret = -ENOMEM;
 		}
@@ -555,8 +557,9 @@ int __account_locked_vm(struct mm_struct *mm, unsigned long pages, bool inc,
 	}
 
 	pr_debug("%s: [%d] caller %ps %c%lu %lu/%lu%s\n", __func__, task->pid,
-		 (void *)_RET_IP_, (inc) ? '+' : '-', pages << PAGE_SHIFT,
-		 locked_vm << PAGE_SHIFT, task_rlimit(task, RLIMIT_MEMLOCK),
+		 (void *)_RET_IP_, (inc) ? '+' : '-',
+		 pages << MM_PAGE_SHIFT(mm), locked_vm << MM_PAGE_SHIFT(mm),
+		 task_rlimit(task, RLIMIT_MEMLOCK),
 		 ret ? " - exceeded" : "");
 
 	return ret;
@@ -566,7 +569,7 @@ EXPORT_SYMBOL_GPL(__account_locked_vm);
 /**
  * account_locked_vm - account locked pages to an mm's locked_vm
  * @mm:          mm to account against, may be NULL
- * @pages:       number of pages to account
+ * @pages:       number of native kernel pages to account
  * @inc:         %true if @pages should be considered positive, %false if not
  *
  * Assumes a non-NULL @mm is valid (i.e. at least one reference on it).
