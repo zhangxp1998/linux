@@ -4742,7 +4742,7 @@ fallback:
 	return folio_prealloc(vma->vm_mm, vma, vmf->address, true);
 }
 
-void map_anon_folio_pte_nopf(struct folio *folio, pte_t *pte,
+static void map_anon_folio_pte_nopf(struct folio *folio, pte_t *pte,
 		struct vm_area_struct *vma, unsigned long addr,
 		bool uffd_wp)
 {
@@ -4764,7 +4764,7 @@ void map_anon_folio_pte_nopf(struct folio *folio, pte_t *pte,
 	update_mmu_cache_range(NULL, vma, addr, pte, nr_pages);
 }
 
-static void map_anon_folio_pte_pf(struct folio *folio, pte_t *pte,
+static __maybe_unused void map_anon_folio_pte_pf(struct folio *folio, pte_t *pte,
 		struct vm_area_struct *vma, unsigned long addr, bool uffd_wp)
 {
 	const unsigned int order = folio_order(folio);

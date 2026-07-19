@@ -388,7 +388,7 @@ void __init mem_init(void)
 	 * Check boundaries twice: Some fundamental inconsistencies can be
 	 * detected at build time already.
 	 */
-#ifdef CONFIG_COMPAT
+#if defined(CONFIG_COMPAT) && !defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE)
 	BUILD_BUG_ON(TASK_SIZE_32 > DEFAULT_MAP_WINDOW_64);
 #endif
 
