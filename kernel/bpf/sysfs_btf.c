@@ -27,7 +27,7 @@ static int btf_sysfs_vmlinux_mmap(struct file *filp, struct kobject *kobj,
 	if (attr->private != __start_BTF || !PAGE_ALIGNED(addr))
 		return -EINVAL;
 
-	if (vma->vm_pgoff)
+	if (vma_file_offset(vma))
 		return -EINVAL;
 
 	if (vma->vm_flags & (VM_WRITE | VM_EXEC | VM_MAYSHARE))
