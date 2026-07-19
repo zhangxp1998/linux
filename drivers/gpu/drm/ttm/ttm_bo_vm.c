@@ -209,7 +209,8 @@ vm_fault_t ttm_bo_vm_fault_reserved(struct vm_fault *vmf,
 
 	page_offset = ((address - vma->vm_start) >> PAGE_SHIFT) +
 		vma->vm_pgoff - drm_vma_node_start(&bo->base.vma_node);
-	page_last = vma_pages(vma) + vma->vm_pgoff -
+	page_last = DIV_ROUND_UP(vma->vm_end - vma->vm_start, PAGE_SIZE) +
+		vma->vm_pgoff -
 		drm_vma_node_start(&bo->base.vma_node);
 
 	if (unlikely(page_offset >= PFN_UP(bo->base.size)))
