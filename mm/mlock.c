@@ -816,7 +816,7 @@ int user_shm_lock(size_t size, struct ucounts *ucounts)
 	long memlock;
 	int allowed = 0;
 
-	locked = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	locked = DIV_ROUND_UP(size, PAGE_SIZE);
 	lock_limit = rlimit(RLIMIT_MEMLOCK);
 	if (lock_limit != RLIM_INFINITY)
 		lock_limit >>= PAGE_SHIFT;
@@ -841,7 +841,8 @@ out:
 void user_shm_unlock(size_t size, struct ucounts *ucounts)
 {
 	spin_lock(&shmlock_user_lock);
-	dec_rlimit_ucounts(ucounts, UCOUNT_RLIMIT_MEMLOCK, (size + PAGE_SIZE - 1) >> PAGE_SHIFT);
+	dec_rlimit_ucounts(ucounts, UCOUNT_RLIMIT_MEMLOCK,
+			   DIV_ROUND_UP(size, PAGE_SIZE));
 	spin_unlock(&shmlock_user_lock);
 	put_ucounts(ucounts);
 }
