@@ -6,8 +6,10 @@
 struct frame_vector {
 	unsigned int nr_allocated;	/* Number of frames we have space for */
 	unsigned int nr_frames;	/* Number of frames stored in ptrs array */
+	unsigned int frame_size;	/* Userspace-visible size of each frame */
 	bool got_ref;		/* Did we pin pages by getting page ref? */
 	bool is_pfns;		/* Does array contain pages or pfns? */
+	unsigned int *offsets;	/* Byte offset of each frame in its native page */
 	void *ptrs[];		/* Array of pinned pfns / pages. Use
 				 * pfns_vector_pages() or pfns_vector_pfns()
 				 * for access */
@@ -24,6 +26,17 @@ void frame_vector_to_pfns(struct frame_vector *vec);
 static inline unsigned int frame_vector_count(struct frame_vector *vec)
 {
 	return vec->nr_frames;
+}
+
+static inline unsigned int frame_vector_frame_size(struct frame_vector *vec)
+{
+	return vec->frame_size;
+}
+
+static inline unsigned int
+frame_vector_frame_offset(struct frame_vector *vec, unsigned int frame)
+{
+	return vec->offsets[frame];
 }
 
 static inline struct page **frame_vector_pages(struct frame_vector *vec)
