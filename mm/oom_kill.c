@@ -524,6 +524,12 @@ static bool __oom_reap_task_mm(struct mm_struct *mm)
 	struct vm_area_struct *vma;
 	bool ret = true;
 	VMA_ITERATOR(vmi, mm, 0);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm = current->pgtable_mm;
+
+	/* Reap page tables using the victim address-space geometry. */
+	current->pgtable_mm = mm;
+#endif
 
 	/*
 	 * Tell all users of get_user/copy_from_user etc... that the content
@@ -566,6 +572,9 @@ static bool __oom_reap_task_mm(struct mm_struct *mm)
 		}
 	}
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	current->pgtable_mm = prev_pgtable_mm;
+#endif
 	return ret;
 }
 
