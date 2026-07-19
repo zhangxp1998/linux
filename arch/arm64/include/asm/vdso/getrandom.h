@@ -9,6 +9,11 @@
 #include <asm/vdso/vsyscall.h>
 #include <vdso/datapage.h>
 
+/* PPPS tasks may use 4K pages even when the kernel uses 16K pages. */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#define VGETRANDOM_PAGE_SHIFT 12
+#endif
+
 /**
  * getrandom_syscall - Invoke the getrandom() syscall.
  * @buffer:	Destination buffer to fill with random bytes.
