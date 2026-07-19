@@ -12,9 +12,11 @@
 #include <sys/personality.h>
 #include <unistd.h>
 
+#include <linux/dma-buf.h>
 #include <linux/memfd.h>
 #include <linux/udmabuf.h>
 
+#include "dmabuf_mmap_ppps.h"
 #include "kselftest.h"
 
 #ifndef ADDR_4KB_COMPAT_PAGE_SIZE
@@ -24,21 +26,49 @@
 #define USER_PAGE_SIZE	4096UL
 #define BUFFER_SIZE	(4 * USER_PAGE_SIZE)
 
+static int check_vmap(int helper_fd, int dmabuf_fd, size_t first,
+		      size_t second, unsigned char first_expected,
+		      unsigned char second_expected, unsigned char first_new,
+		      unsigned char second_new)
+{
+	struct dmabuf_vmap_ppps request = {
+		.fd = dmabuf_fd,
+		.count = 2,
+		.offsets = { first, second },
+		.expected = { first_expected, second_expected },
+		.replacement = { first_new, second_new },
+	};
+
+	return ioctl(helper_fd, DMABUF_VMAP_PPPS_CHECK, &request);
+}
+
 static int run_test(void)
 {
+	struct {
+		__u32 flags;
+		__u32 count;
+		struct udmabuf_create_item list[2];
+	} create_list = {};
 	struct udmabuf_create create = {};
+	struct dma_buf_sync sync = {};
+	unsigned char *list_mapping;
+	unsigned char *subpage_mapping;
 	unsigned char *backing;
 	unsigned char *mapping;
 	void *helper_mapping;
 	bool contents_ok = true;
+	bool writeback_ok;
+	off_t exported_size;
 	size_t offset;
 	int memfd;
 	int devfd;
 	int buf_fd;
+	int list_fd;
+	int subpage_fd;
 	int helper_fd;
 
 	ksft_print_header();
-	ksft_set_plan(6);
+	ksft_set_plan(21);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -95,11 +125,115 @@ static int run_test(void)
 			 "map a complete buffer through dma_buf_mmap()\n");
 	if (helper_mapping != MAP_FAILED)
 		munmap(helper_mapping, BUFFER_SIZE);
-	close(helper_fd);
+	ksft_test_result(!check_vmap(helper_fd, buf_fd, 0,
+				     3 * USER_PAGE_SIZE, 0x31, 0x34,
+				     0xb1, 0xb4),
+			 "vmap the complete dma-buf in the kernel\n");
+	ksft_test_result(backing[0] == 0xb1 &&
+			 backing[3 * USER_PAGE_SIZE] == 0xb4,
+			 "write back through the complete kernel vmap\n");
 
+	create.offset = USER_PAGE_SIZE;
+	create.size = 2 * USER_PAGE_SIZE;
+	subpage_fd = ioctl(devfd, UDMABUF_CREATE, &create);
+	ksft_test_result(subpage_fd >= 0,
+			 "create a dma-buf from a 4K-aligned subrange\n");
+	if (subpage_fd < 0) {
+		ksft_test_result_fail("report the exact subrange size\n");
+		ksft_test_result_fail("map the 4K-aligned subrange\n");
+		ksft_test_result_fail("map the requested memfd bytes\n");
+		ksft_test_result_fail("write back through the subrange mapping\n");
+		ksft_test_result_fail("vmap the nonzero-offset subrange in the kernel\n");
+		ksft_test_result_fail("honor the first-slice offset in the kernel vmap\n");
+		ksft_test_result_fail("begin CPU access to the subrange\n");
+		ksft_test_result_fail("end CPU access to the subrange\n");
+		goto test_list;
+	}
+
+	exported_size = lseek(subpage_fd, 0, SEEK_END);
+	ksft_test_result(exported_size == 2 * USER_PAGE_SIZE,
+			 "report the exact subrange size\n");
+	subpage_mapping = mmap(NULL, 2 * USER_PAGE_SIZE,
+			       PROT_READ | PROT_WRITE, MAP_SHARED,
+			       subpage_fd, 0);
+	ksft_test_result(subpage_mapping != MAP_FAILED,
+			 "map the 4K-aligned subrange\n");
+	if (subpage_mapping == MAP_FAILED) {
+		ksft_test_result_fail("map the requested memfd bytes\n");
+		ksft_test_result_fail("write back through the subrange mapping\n");
+		ksft_test_result_fail("vmap the nonzero-offset subrange in the kernel\n");
+		ksft_test_result_fail("honor the first-slice offset in the kernel vmap\n");
+		ksft_test_result_fail("begin CPU access to the subrange\n");
+		ksft_test_result_fail("end CPU access to the subrange\n");
+		close(subpage_fd);
+		goto test_list;
+	}
+
+	contents_ok = subpage_mapping[0] == 0x32 &&
+		      subpage_mapping[USER_PAGE_SIZE] == 0x33;
+	ksft_test_result(contents_ok, "map the requested memfd bytes\n");
+	subpage_mapping[0] = 0xa1;
+	subpage_mapping[USER_PAGE_SIZE] = 0xa2;
+	writeback_ok = backing[USER_PAGE_SIZE] == 0xa1 &&
+		       backing[2 * USER_PAGE_SIZE] == 0xa2;
+	ksft_test_result(writeback_ok,
+			 "write back through the subrange mapping\n");
+	ksft_test_result(!check_vmap(helper_fd, subpage_fd, 0,
+				     USER_PAGE_SIZE, 0xa1, 0xa2,
+				     0xc1, 0xc2),
+			 "vmap the nonzero-offset subrange in the kernel\n");
+	ksft_test_result(backing[USER_PAGE_SIZE] == 0xc1 &&
+			 backing[2 * USER_PAGE_SIZE] == 0xc2,
+			 "honor the first-slice offset in the kernel vmap\n");
+	sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_RW;
+	ksft_test_result(ioctl(subpage_fd, DMA_BUF_IOCTL_SYNC, &sync) == 0,
+			 "begin CPU access to the subrange\n");
+	sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_RW;
+	ksft_test_result(ioctl(subpage_fd, DMA_BUF_IOCTL_SYNC, &sync) == 0,
+			 "end CPU access to the subrange\n");
+	munmap(subpage_mapping, 2 * USER_PAGE_SIZE);
+	close(subpage_fd);
+
+test_list:
+	create_list.count = 2;
+	create_list.list[0].memfd = memfd;
+	create_list.list[0].size = USER_PAGE_SIZE;
+	create_list.list[1].memfd = memfd;
+	create_list.list[1].offset = 3 * USER_PAGE_SIZE;
+	create_list.list[1].size = USER_PAGE_SIZE;
+	list_fd = ioctl(devfd, UDMABUF_CREATE_LIST, &create_list);
+	ksft_test_result(list_fd >= 0,
+			 "create a dma-buf from discontiguous 4K slices\n");
+	if (list_fd < 0) {
+		ksft_test_result_fail("report the exact slice-list size\n");
+		ksft_test_result_fail("map the discontiguous slice list\n");
+		ksft_test_result_fail("preserve the slice-list order\n");
+		goto out;
+	}
+
+	exported_size = lseek(list_fd, 0, SEEK_END);
+	ksft_test_result(exported_size == 2 * USER_PAGE_SIZE,
+			 "report the exact slice-list size\n");
+	list_mapping = mmap(NULL, 2 * USER_PAGE_SIZE,
+			    PROT_READ | PROT_WRITE, MAP_SHARED, list_fd, 0);
+	ksft_test_result(list_mapping != MAP_FAILED,
+			 "map the discontiguous slice list\n");
+	if (list_mapping == MAP_FAILED) {
+		ksft_test_result_fail("preserve the slice-list order\n");
+		close(list_fd);
+		goto out;
+	}
+	contents_ok = list_mapping[0] == 0xb1 &&
+		      list_mapping[USER_PAGE_SIZE] == 0xb4;
+	ksft_test_result(contents_ok, "preserve the slice-list order\n");
+	munmap(list_mapping, 2 * USER_PAGE_SIZE);
+	close(list_fd);
+
+out:
 	munmap(mapping, BUFFER_SIZE);
 	munmap(backing, BUFFER_SIZE);
 	close(buf_fd);
+	close(helper_fd);
 	close(memfd);
 	close(devfd);
 	ksft_finished();

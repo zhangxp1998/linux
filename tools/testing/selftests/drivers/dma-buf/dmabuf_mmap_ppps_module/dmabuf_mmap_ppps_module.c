@@ -4,6 +4,9 @@
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
+#include <linux/uaccess.h>
+
+#include "../dmabuf_mmap_ppps.h"
 
 #define TEST_BUFFER_SIZE (4 * 4096UL)
 
@@ -64,10 +67,54 @@ static int test_device_mmap(struct file *file, struct vm_area_struct *vma)
 	return dma_buf_mmap(file->private_data, vma, 0);
 }
 
+static long test_device_ioctl(struct file *file, unsigned int cmd,
+			      unsigned long arg)
+{
+	struct dmabuf_vmap_ppps request;
+	struct iosys_map map = {};
+	struct dma_buf *dmabuf;
+	unsigned int i;
+	long ret;
+
+	if (cmd != DMABUF_VMAP_PPPS_CHECK ||
+	    copy_from_user(&request, (void __user *)arg, sizeof(request)))
+		return -EINVAL;
+	if (!request.count || request.count > DMABUF_VMAP_PPPS_POINTS)
+		return -EINVAL;
+	dmabuf = dma_buf_get(request.fd);
+	if (IS_ERR(dmabuf))
+		return PTR_ERR(dmabuf);
+	for (i = 0; i < request.count; i++)
+		if (request.offsets[i] >= dmabuf->size) {
+			ret = -EINVAL;
+			goto put;
+		}
+	ret = dma_buf_vmap(dmabuf, &map);
+	if (ret)
+		goto put;
+	for (i = 0; i < request.count; i++) {
+		u8 actual;
+
+		iosys_map_memcpy_from(&actual, &map, request.offsets[i], 1);
+		if (actual != request.expected[i]) {
+			ret = -EUCLEAN;
+			goto unmap;
+		}
+		iosys_map_memcpy_to(&map, request.offsets[i],
+				    &request.replacement[i], 1);
+	}
+unmap:
+	dma_buf_vunmap(dmabuf, &map);
+put:
+	dma_buf_put(dmabuf);
+	return ret;
+}
+
 static const struct file_operations test_fops = {
 	.owner = THIS_MODULE,
 	.open = test_device_open,
 	.release = test_device_release,
+	.unlocked_ioctl = test_device_ioctl,
 	.mmap = test_device_mmap,
 };
 
