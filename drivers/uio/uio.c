@@ -842,7 +842,7 @@ static int uio_mmap(struct file *filep, struct vm_area_struct *vma)
 		goto out;
 	}
 
-	requested_pages = vma_pages(vma);
+	requested_pages = DIV_ROUND_UP(vma->vm_end - vma->vm_start, PAGE_SIZE);
 	actual_pages = ((idev->info->mem[mi].addr & ~PAGE_MASK)
 			+ idev->info->mem[mi].size + PAGE_SIZE -1) >> PAGE_SHIFT;
 	if (requested_pages > actual_pages) {
