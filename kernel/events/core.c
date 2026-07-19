@@ -6643,6 +6643,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long locked, lock_limit;
 	unsigned long vma_size;
 	unsigned long nr_pages;
+	u64 mmap_offset;
 	long user_extra = 0, extra = 0;
 	int ret = 0, flags = 0;
 
@@ -6662,8 +6663,9 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 		return ret;
 
 	vma_size = vma->vm_end - vma->vm_start;
+	mmap_offset = vma_file_offset(vma);
 
-	if (vma->vm_pgoff == 0) {
+	if (!mmap_offset) {
 		unsigned long metadata_size = ppps_mm_is_compat(vma->vm_mm) ?
 					      MM_PAGE_SIZE(vma->vm_mm) :
 					      __PAGE_SIZE;
@@ -6702,7 +6704,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 		if (aux_offset < perf_data_size(rb) + PAGE_SIZE)
 			goto aux_unlock;
 
-		if (aux_offset != vma->vm_pgoff << PAGE_SHIFT)
+		if (aux_offset != mmap_offset)
 			goto aux_unlock;
 
 		/* already mapped with a different offset */
