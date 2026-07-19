@@ -126,6 +126,7 @@ TARGETS += ublk
 TARGETS += uevent
 TARGETS += user_events
 TARGETS += vDSO
+TARGETS += vfio
 TARGETS += mm
 TARGETS += vfio
 TARGETS += x86
