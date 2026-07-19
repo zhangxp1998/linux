@@ -99,6 +99,7 @@ TEST_GEN_FILES += secretmem_eof_ppps
 TEST_GEN_FILES += shmem_eof_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
+TEST_GEN_FILES += vhost_dirty_log_ppps
 TEST_GEN_FILES += compaction_test
 TEST_GEN_FILES += gup_longterm
 TEST_GEN_FILES += gup_retry_ppps
