@@ -387,20 +387,32 @@ unsigned long randomize_stack_top(unsigned long stack_top)
  */
 unsigned long randomize_page(unsigned long start, unsigned long range)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *mm = current->mm;
+	unsigned int page_shift = MM_PAGE_SHIFT(mm);
+
+	if (!MM_PAGE_ALIGNED(mm, start)) {
+		range -= MM_PAGE_ALIGN(mm, start) - start;
+		start = MM_PAGE_ALIGN(mm, start);
+	}
+#else
+	unsigned int page_shift = __PAGE_SHIFT;
+
 	if (__offset_in_page(start)) {
 		range -= __PAGE_ALIGN(start) - start;
 		start = __PAGE_ALIGN(start);
 	}
+#endif
 
 	if (start > ULONG_MAX - range)
 		range = ULONG_MAX - start;
 
-	range >>= __PAGE_SHIFT;
+	range >>= page_shift;
 
 	if (range == 0)
 		return start;
 
-	return start + (get_random_long() % range << __PAGE_SHIFT);
+	return start + (get_random_long() % range << page_shift);
 }
 
 #ifdef CONFIG_ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT
