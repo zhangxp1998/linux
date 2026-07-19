@@ -4852,7 +4852,9 @@ check_folio:
 	pte = ppps_folio_mk_pte_slice(vma, folio, pte, address);
 	if (pte_swp_soft_dirty(vmf->orig_pte))
 		pte = pte_mksoft_dirty(pte);
-	if (pte_swp_uffd_wp(vmf->orig_pte))
+	/* A compat UFFD mode change can leave stale WP in the swap PTE. */
+	if (pte_swp_uffd_wp(vmf->orig_pte) &&
+	    (!ppps_mm_is_compat(vma->vm_mm) || userfaultfd_wp(vma)))
 		pte = pte_mkuffd_wp(pte);
 	trace_android_vh_do_swap_page(folio, &pte, vmf, entry);
 
