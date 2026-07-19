@@ -3,8 +3,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <setjmp.h>
 #include <linux/memfd.h>
 #include <linux/perf_event.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -25,7 +27,15 @@
 #define USER_PAGE_SIZE	4096UL
 #define FILE_SIZE	(4 * USER_PAGE_SIZE)
 #define FILE_OFFSET	USER_PAGE_SIZE
-#define DATA_PAGES	8
+#define DATA_PAGES	256
+
+static sigjmp_buf write_fault_jmp;
+
+static void write_fault_handler(int signal)
+{
+	(void)signal;
+	siglongjmp(write_fault_jmp, 1);
+}
 
 struct mmap_record {
 	struct perf_event_header header;
@@ -94,20 +104,99 @@ static bool find_mmap_offset(struct perf_event_mmap_page *metadata,
 
 static int open_perf_ring(struct perf_event_attr *attr,
 			  struct perf_event_mmap_page **metadata,
-			  size_t *page_size, size_t *ring_size)
+			  size_t data_pages, size_t *page_size,
+			  size_t *ring_size)
 {
 	int fd = perf_event_open(attr);
 
 	if (fd < 0)
 		return -1;
 	*page_size = USER_PAGE_SIZE;
-	*ring_size = (DATA_PAGES + 1) * *page_size;
+	*ring_size = (data_pages + 1) * *page_size;
 	*metadata = mmap(NULL, *ring_size, PROT_READ | PROT_WRITE,
 			 MAP_SHARED, fd, 0);
 	if (*metadata != MAP_FAILED)
 		return fd;
 	close(fd);
 	return -1;
+}
+
+static bool data_ring_is_readonly(struct perf_event_mmap_page *metadata)
+{
+	struct sigaction action = {
+		.sa_handler = write_fault_handler,
+	};
+	struct sigaction old_bus;
+	struct sigaction old_segv;
+	unsigned char *data = (unsigned char *)metadata +
+		metadata->data_offset;
+	bool faulted;
+
+	sigemptyset(&action.sa_mask);
+	if (sigaction(SIGBUS, &action, &old_bus))
+		return false;
+	if (sigaction(SIGSEGV, &action, &old_segv)) {
+		sigaction(SIGBUS, &old_bus, NULL);
+		return false;
+	}
+	if (sigsetjmp(write_fault_jmp, 1)) {
+		faulted = true;
+	} else {
+		*data = 0x5a;
+		faulted = false;
+	}
+	sigaction(SIGBUS, &old_bus, NULL);
+	sigaction(SIGSEGV, &old_segv, NULL);
+	return faulted;
+}
+
+static bool exercise_small_ring(struct perf_event_attr *attr)
+{
+	struct perf_event_mmap_page *metadata = MAP_FAILED;
+	uint64_t recorded_offset;
+	size_t ring_size = 0;
+	size_t page_size = 0;
+	bool success = true;
+	int perf_fd;
+	int i;
+
+	perf_fd = open_perf_ring(attr, &metadata, 1, &page_size, &ring_size);
+	if (perf_fd < 0 || metadata == MAP_FAILED)
+		return false;
+	if (metadata->data_offset != page_size ||
+	    metadata->data_size != page_size ||
+	    ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, 0)) {
+		success = false;
+		goto out;
+	}
+	for (i = 0; i < 128; i++) {
+		void *mapping;
+		int memfd;
+
+		memfd = memfd_create("perf-mmap-offset-ppps-small", MFD_CLOEXEC);
+		if (memfd < 0 || ftruncate(memfd, USER_PAGE_SIZE)) {
+			if (memfd >= 0)
+				close(memfd);
+			success = false;
+			break;
+		}
+		mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_EXEC,
+			       MAP_PRIVATE, memfd, 0);
+		if (mapping == MAP_FAILED ||
+		    !find_mmap_offset(metadata, page_size, &recorded_offset))
+			success = false;
+		if (mapping != MAP_FAILED)
+			munmap(mapping, USER_PAGE_SIZE);
+		close(memfd);
+		if (!success)
+			break;
+	}
+	ioctl(perf_fd, PERF_EVENT_IOC_DISABLE, 0);
+	success = success && metadata->data_head > 2 * metadata->data_size;
+out:
+	munmap(metadata, ring_size);
+	close(perf_fd);
+	return success;
 }
 
 static bool map_metadata_only(struct perf_event_attr *attr)
@@ -171,7 +260,7 @@ static int run_test(void)
 	int perf_fd;
 
 	ksft_print_header();
-	ksft_set_plan(8);
+	ksft_set_plan(11);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	ksft_test_result(map_metadata_only(&attr),
@@ -180,7 +269,8 @@ static int run_test(void)
 			 "reject a perf ring mmap at subpage offset 4K (errno=%d)\n",
 			 offset_errno);
 
-	perf_fd = open_perf_ring(&attr, &metadata, &page_size, &ring_size);
+	perf_fd = open_perf_ring(&attr, &metadata, DATA_PAGES, &page_size,
+				 &ring_size);
 	ksft_test_result(page_size && perf_fd >= 0 && metadata != MAP_FAILED,
 			 "open and map a software perf event\n");
 	if (!page_size || perf_fd < 0 || metadata == MAP_FAILED)
@@ -193,6 +283,11 @@ static int run_test(void)
 	ksft_test_result(data_offset <= ring_size &&
 			 data_size <= ring_size - data_offset,
 			 "keep the effective perf data ring inside the VMA\n");
+	ksft_test_result(data_offset == page_size &&
+			 data_size == DATA_PAGES * page_size,
+			 "preserve the requested perf data ring capacity\n");
+	ksft_test_result(data_ring_is_readonly(metadata),
+			 "keep perf data pages read-only\n");
 	if (ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, 0))
 		ksft_exit_fail_msg("perf enable failed: %s\n", strerror(errno));
 
@@ -213,6 +308,8 @@ static int run_test(void)
 		       (unsigned long long)recorded_offset, FILE_OFFSET);
 	ksft_test_result(found && recorded_offset == FILE_OFFSET,
 			 "perf reports the PPPS file slice offset\n");
+	ksft_test_result(exercise_small_ring(&attr),
+			 "wrap a one-process-page perf data ring\n");
 
 	munmap(file_mapping, USER_PAGE_SIZE);
 	close(memfd);
