@@ -3188,13 +3188,8 @@ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
 	}
 
 	if (vma_link(mm, vma)) {
-<<<<<<< HEAD
 		if (vma->vm_flags & VM_ACCOUNT)
-			vm_unacct_memory(charged);
-=======
-		if (vma_test(vma, VMA_ACCOUNT_BIT))
 			vm_unacct_memory_mm(mm, charged);
->>>>>>> d8c121fe917c (mm: normalize commit accounting for PPPS)
 		return -ENOMEM;
 	}
 
