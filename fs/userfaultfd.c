@@ -1789,6 +1789,9 @@ static int userfaultfd_continue(struct userfaultfd_ctx *ctx, unsigned long arg)
 	struct uffdio_continue __user *user_uffdio_continue;
 	struct userfaultfd_wake_range range;
 	uffd_flags_t flags = 0;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	user_uffdio_continue = (struct uffdio_continue __user *)arg;
 
@@ -1815,8 +1818,15 @@ static int userfaultfd_continue(struct userfaultfd_ctx *ctx, unsigned long arg)
 		flags |= MFILL_ATOMIC_WP;
 
 	if (mmget_not_zero(ctx->mm)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		prev_pgtable_mm = current->pgtable_mm;
+		current->pgtable_mm = ctx->mm;
+#endif
 		ret = mfill_atomic_continue(ctx, uffdio_continue.range.start,
 					    uffdio_continue.range.len, flags);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		current->pgtable_mm = prev_pgtable_mm;
+#endif
 		mmput(ctx->mm);
 	} else {
 		return -ESRCH;
