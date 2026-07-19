@@ -759,6 +759,7 @@ struct bpf_object {
 	void *arena_data;
 	size_t arena_data_sz;
 	size_t arena_data_off;
+	size_t arena_page_sz;
 
 	void *jumptables_data;
 	size_t jumptables_data_sz;
@@ -1835,7 +1836,7 @@ static size_t bpf_map_mmap_sz(const struct bpf_map *map)
 	case BPF_MAP_TYPE_ARRAY:
 		return array_map_mmap_sz(map->def.value_size, map->def.max_entries);
 	case BPF_MAP_TYPE_ARENA:
-		return page_sz * map->def.max_entries;
+		return (map->obj->arena_page_sz ?: page_sz) * map->def.max_entries;
 	default:
 		return 0; /* not supported */
 	}
@@ -2989,20 +2990,8 @@ static int bpf_object__init_user_btf_map(struct bpf_object *obj,
 }
 
 static int init_arena_map_data(struct bpf_object *obj, struct bpf_map *map,
-			       const char *sec_name, int sec_idx,
 			       void *data, size_t data_sz)
 {
-	const long page_sz = sysconf(_SC_PAGE_SIZE);
-	const size_t data_alloc_sz = roundup(data_sz, page_sz);
-	size_t mmap_sz;
-
-	mmap_sz = bpf_map_mmap_sz(map);
-	if (data_alloc_sz > mmap_sz) {
-		pr_warn("elf: sec '%s': declared ARENA map size (%zu) is too small to hold global __arena variables of size %zu\n",
-			sec_name, mmap_sz, data_sz);
-		return -E2BIG;
-	}
-
 	obj->arena_data = malloc(data_sz);
 	if (!obj->arena_data)
 		return -ENOMEM;
@@ -3078,8 +3067,7 @@ static int bpf_object__init_user_btf_maps(struct bpf_object *obj, bool strict,
 		obj->arena_map_idx = i;
 
 		if (obj->efile.arena_data) {
-			err = init_arena_map_data(obj, map, ARENA_SEC, obj->efile.arena_data_shndx,
-						  obj->efile.arena_data->d_buf,
+			err = init_arena_map_data(obj, map, obj->efile.arena_data->d_buf,
 						  obj->efile.arena_data->d_size);
 			if (err)
 				return err;
@@ -7424,11 +7412,52 @@ err_out:
 	return err;
 }
 
+static void bpf_object__init_arena_page_sz(struct bpf_object *obj)
+{
+	const struct btf_type *t;
+	const struct btf_enum *e;
+	const struct btf *btf = obj->btf_vmlinux;
+	int id, i;
+
+	if (!btf)
+		return;
+
+	id = btf__find_by_name_kind(btf, "page_size_enum", BTF_KIND_ENUM);
+	t = id > 0 ? btf__type_by_id(btf, id) : NULL;
+	if (!t)
+		return;
+
+	e = btf_enum(t);
+	for (i = 0; i < btf_vlen(t); i++, e++) {
+		const char *name = btf__name_by_offset(btf, e->name_off);
+		size_t page_sz = e->val;
+
+		if (strcmp(name, "__PAGE_SIZE"))
+			continue;
+		if (page_sz >= (size_t)sysconf(_SC_PAGE_SIZE) &&
+		    !(page_sz & (page_sz - 1)))
+			obj->arena_page_sz = page_sz;
+		break;
+	}
+}
+
 static int bpf_object__relocate(struct bpf_object *obj, const char *targ_btf_path)
 {
 	struct bpf_program *prog;
 	size_t i, j;
 	int err;
+
+	if (obj->arena_map_idx >= 0 && !obj->btf_vmlinux) {
+		/*
+		 * An arena's max_entries is expressed in kernel pages. A process
+		 * can use a smaller page size, so sysconf(_SC_PAGE_SIZE) is not
+		 * sufficient to determine the mmap length.
+		 */
+		err = bpf_object__load_vmlinux_btf(obj, true);
+		if (err)
+			pr_debug("object '%s': falling back to the process page size for arena layout\n",
+				 obj->name);
+	}
 
 	if (obj->btf_ext) {
 		err = bpf_object__relocate_core(obj, targ_btf_path);
@@ -7439,13 +7468,21 @@ static int bpf_object__relocate(struct bpf_object *obj, const char *targ_btf_pat
 		}
 		bpf_object__sort_relos(obj);
 	}
+	bpf_object__init_arena_page_sz(obj);
 
 	/* place globals at the end of the arena (if supported) */
 	if (obj->arena_map_idx >= 0 && kernel_supports(obj, FEAT_LDIMM64_FULL_RANGE_OFF)) {
 		struct bpf_map *arena_map = &obj->maps[obj->arena_map_idx];
+		size_t arena_data_sz;
 
-		obj->arena_data_off = bpf_map_mmap_sz(arena_map) -
-				      roundup(obj->arena_data_sz, sysconf(_SC_PAGE_SIZE));
+		arena_data_sz = roundup(obj->arena_data_sz,
+					obj->arena_page_sz ?: sysconf(_SC_PAGE_SIZE));
+		if (arena_data_sz > bpf_map_mmap_sz(arena_map)) {
+			pr_warn("elf: declared ARENA map size (%zu) is too small to hold global __arena variables of size %zu\n",
+				bpf_map_mmap_sz(arena_map), obj->arena_data_sz);
+			return -E2BIG;
+		}
+		obj->arena_data_off = bpf_map_mmap_sz(arena_map) - arena_data_sz;
 	}
 
 	/* Before relocating calls pre-process relocations and mark
