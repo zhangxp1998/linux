@@ -9,6 +9,11 @@
 #include <asm/vdso/vsyscall.h>
 #include <vdso/datapage.h>
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/* The kernel selects a read-only geometry page for the mapping's mm. */
+#define VGETRANDOM_PAGE_SHIFT READ_ONCE(vdso_u_arch_data.page_shift)
+#endif
+
 /**
  * getrandom_syscall - Invoke the getrandom() syscall.
  * @buffer:	Destination buffer to fill with random bytes.

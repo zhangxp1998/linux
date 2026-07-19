@@ -1459,6 +1459,7 @@ endchoice
 config ARM64_PER_PROCESS_PAGE_SIZE
 	bool "Enable Per-Process Page Size Support (Experimental)"
 	depends on ARM64_16K_PAGES && ARM64_VA_BITS_47 && MMU
+	select ARCH_HAS_VDSO_ARCH_DATA
 	default n
 	help
 	  Allows native 16KB kernels to execute processes mapped with 4KB

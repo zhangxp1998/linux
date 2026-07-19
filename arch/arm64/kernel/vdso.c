@@ -15,6 +15,7 @@
 #include <linux/gfp.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/ppps.h>
 #include <linux/sched.h>
 #include <linux/signal.h>
 #include <linux/slab.h>
@@ -27,6 +28,27 @@
 #include <asm/cacheflush.h>
 #include <asm/signal32.h>
 #include <asm/vdso.h>
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+static const union {
+	struct vdso_arch_data data;
+	u8 page[VDSO_ARCH_DATA_SIZE];
+} vdso_native_arch_data __page_aligned_data = {
+	.data.page_shift = PAGE_SHIFT,
+}, vdso_compat_arch_data __page_aligned_data = {
+	.data.page_shift = PAGE_SHIFT_COMPAT,
+};
+
+unsigned long arch_vdso_arch_data_pfn(struct vm_area_struct *vma,
+				      unsigned long pgoff)
+{
+	const void *data = ppps_mm_is_compat(vma->vm_mm) ?
+		&vdso_compat_arch_data : &vdso_native_arch_data;
+
+	return __phys_to_pfn(__pa_symbol(data)) +
+		pgoff - VDSO_ARCH_PAGES_START;
+}
+#endif
 
 enum vdso_abi {
 	VDSO_ABI_AA64,

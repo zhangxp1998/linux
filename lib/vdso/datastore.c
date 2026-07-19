@@ -37,6 +37,17 @@ static union {
 struct vdso_arch_data *vdso_k_arch_data = &vdso_arch_data_store.data;
 #endif /* CONFIG_ARCH_HAS_VDSO_ARCH_DATA */
 
+unsigned long __weak arch_vdso_arch_data_pfn(struct vm_area_struct *vma,
+					     unsigned long pgoff)
+{
+#ifdef CONFIG_ARCH_HAS_VDSO_ARCH_DATA
+	return __phys_to_pfn(__pa_symbol(vdso_k_arch_data)) +
+		pgoff - VDSO_ARCH_PAGES_START;
+#else
+	return 0;
+#endif
+}
+
 static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
 			     struct vm_area_struct *vma, struct vm_fault *vmf)
 {
@@ -81,8 +92,7 @@ static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
 	case VDSO_ARCH_PAGES_START ... VDSO_ARCH_PAGES_END:
 		if (!IS_ENABLED(CONFIG_ARCH_HAS_VDSO_ARCH_DATA))
 			return VM_FAULT_SIGBUS;
-		pfn = __phys_to_pfn(__pa_symbol(vdso_k_arch_data)) +
-			vmf->pgoff - VDSO_ARCH_PAGES_START;
+		pfn = arch_vdso_arch_data_pfn(vma, vmf->pgoff);
 		break;
 	default:
 		return VM_FAULT_SIGBUS;
