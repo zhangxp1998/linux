@@ -24,6 +24,7 @@ struct io_buffer_list {
 		struct {
 			struct page **buf_pages;
 			struct io_uring_buf_ring *buf_ring;
+			void *buf_ring_map;
 		};
 		struct rcu_head rcu;
 	};

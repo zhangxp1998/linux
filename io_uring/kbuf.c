@@ -358,7 +358,7 @@ static int __io_remove_buffers(struct io_ring_ctx *ctx,
 				for (j = 0; j < bl->buf_nr_pages; j++)
 					unpin_user_page(bl->buf_pages[j]);
 			}
-			io_pages_unmap(bl->buf_ring, &bl->buf_pages,
+			io_pages_unmap(bl->buf_ring_map, &bl->buf_pages,
 					&bl->buf_nr_pages, bl->flags & IOBL_MMAP);
 			bl->flags &= ~IOBL_MMAP;
 		}
@@ -616,21 +616,62 @@ err:
 static int io_pin_pbuf_ring(struct io_uring_buf_reg *reg,
 			    struct io_buffer_list *bl)
 {
-	struct io_uring_buf_ring *br = NULL;
+	struct mm_struct *mm = current->mm;
+	struct io_uring_buf_ring *br;
+	unsigned long addr = untagged_addr(reg->ring_addr);
+	size_t ring_size;
+	void *ring_map;
 	struct page **pages;
+	unsigned int page_offset = 0;
 	int nr_pages, ret;
 
-	pages = io_pin_pages(reg->ring_addr,
-			     flex_array_size(br, bufs, reg->ring_entries),
-			     &nr_pages);
-	if (IS_ERR(pages))
-		return PTR_ERR(pages);
+	ring_size = MM_PAGE_ALIGN(mm,
+			flex_array_size(br, bufs, reg->ring_entries));
+	if (ppps_mm_is_compat(mm)) {
+		struct vm_area_struct *vma;
 
-	br = vmap(pages, nr_pages, VM_MAP, PAGE_KERNEL);
-	if (!br) {
+		/*
+		 * A native vmap cannot concatenate arbitrary process-page
+		 * slices. The registered-memory implementation in newer
+		 * kernels therefore only supports one compat process page too.
+		 */
+		if (ring_size != MM_PAGE_SIZE(mm))
+			return -EOPNOTSUPP;
+
+		pages = kvmalloc_array(1, sizeof(*pages), GFP_KERNEL_ACCOUNT);
+		if (!pages)
+			return -ENOMEM;
+
+		mmap_read_lock(mm);
+		vma = vma_lookup(mm, addr);
+		if (!vma || ring_size > vma->vm_end - addr) {
+			ret = -EFAULT;
+		} else {
+			page_offset = vma_address_to_slice(vma, addr) *
+				      MM_PAGE_SIZE(mm);
+			ret = pin_user_pages(addr, 1,
+					     FOLL_WRITE | FOLL_LONGTERM, pages);
+		}
+		mmap_read_unlock(mm);
+		if (ret != 1) {
+			if (ret > 0)
+				unpin_user_pages(pages, ret);
+			kvfree(pages);
+			return ret < 0 ? ret : -EFAULT;
+		}
+		nr_pages = 1;
+	} else {
+		pages = io_pin_pages(addr, ring_size, &nr_pages);
+		if (IS_ERR(pages))
+			return PTR_ERR(pages);
+	}
+
+	ring_map = vmap(pages, nr_pages, VM_MAP, PAGE_KERNEL);
+	if (!ring_map) {
 		ret = -ENOMEM;
 		goto error_unpin;
 	}
+	br = ring_map + page_offset;
 
 #ifdef SHM_COLOUR
 	/*
@@ -650,13 +691,15 @@ static int io_pin_pbuf_ring(struct io_uring_buf_reg *reg,
 	bl->buf_pages = pages;
 	bl->buf_nr_pages = nr_pages;
 	bl->buf_ring = br;
+	bl->buf_ring_map = ring_map;
 	bl->flags |= IOBL_BUF_RING;
 	bl->flags &= ~IOBL_MMAP;
 	return 0;
 error_unpin:
 	unpin_user_pages(pages, nr_pages);
 	kvfree(pages);
-	vunmap(br);
+	if (ring_map)
+		vunmap(ring_map);
 	return ret;
 }
 
@@ -673,6 +716,7 @@ static int io_alloc_pbuf_ring(struct io_ring_ctx *ctx,
 		bl->buf_ring = NULL;
 		return -ENOMEM;
 	}
+	bl->buf_ring_map = bl->buf_ring;
 
 	bl->flags |= (IOBL_BUF_RING | IOBL_MMAP);
 	return 0;
@@ -696,7 +740,7 @@ int io_register_pbuf_ring(struct io_ring_ctx *ctx, void __user *arg)
 	if (!(reg.flags & IOU_PBUF_RING_MMAP)) {
 		if (!reg.ring_addr)
 			return -EFAULT;
-		if (reg.ring_addr & ~PAGE_MASK)
+		if (!MM_PAGE_ALIGNED(current->mm, reg.ring_addr))
 			return -EINVAL;
 	} else {
 		if (reg.ring_addr)
