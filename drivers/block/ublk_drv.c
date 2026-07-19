@@ -301,7 +301,9 @@ struct ublk_queue {
 struct ublk_buf_range {
 	unsigned short buf_index;
 	unsigned short flags;
-	unsigned int base_offset;	/* byte offset within buffer */
+	u64 base_offset;	/* offset from the first pinned native page */
+	u64 valid_start;	/* first registered byte in native-page space */
+	u64 valid_end;	/* byte after the registered buffer */
 };
 
 struct ublk_device {
@@ -5333,7 +5335,8 @@ static void ublk_buf_erase_ranges(struct ublk_device *ub, int buf_index)
 
 static int __ublk_ctrl_reg_buf(struct ublk_device *ub,
 			       struct page **pages, unsigned long nr_pages,
-			       int index, unsigned short flags)
+			       int index, unsigned short flags,
+			       u64 valid_start, u64 valid_end)
 {
 	unsigned long i;
 	int ret;
@@ -5355,7 +5358,9 @@ static int __ublk_ctrl_reg_buf(struct ublk_device *ub,
 		}
 		range->buf_index = index;
 		range->flags = flags;
-		range->base_offset = start << PAGE_SHIFT;
+		range->base_offset = (u64)start << PAGE_SHIFT;
+		range->valid_start = valid_start;
+		range->valid_end = valid_end;
 
 		ret = mtree_insert_range(&ub->buf_tree, pfn,
 					 pfn + (i - start),
@@ -5373,6 +5378,28 @@ unwind:
 }
 
 /*
+ * GUP returns one entry and one pin for each process page.  With PPPS,
+ * several adjacent process pages can refer to the same native struct page.
+ * The buffer tree and its cleanup path operate on native PFNs, so retain one
+ * pin per native page and drop the redundant pins before inserting ranges.
+ */
+static unsigned long ublk_compact_pinned_pages(struct page **pages,
+					       unsigned long nr_pages)
+{
+	unsigned long in, out = 0;
+
+	for (in = 0; in < nr_pages; in++) {
+		if (out && pages[in] == pages[out - 1]) {
+			unpin_user_page(pages[in]);
+			continue;
+		}
+		pages[out++] = pages[in];
+	}
+
+	return out;
+}
+
+/*
  * Register a shared memory buffer for zero-copy I/O.
  * Pins pages, builds PFN maple tree, freezes/unfreezes the queue
  * internally. Returns buffer index (>= 0) on success.
@@ -5382,6 +5409,10 @@ static int ublk_ctrl_reg_buf(struct ublk_device *ub,
 {
 	void __user *argp = (void __user *)(unsigned long)header->addr;
 	struct ublk_shmem_buf_reg buf_reg;
+	u64 addr_end;
+	u64 valid_start;
+	u64 valid_end;
+	unsigned long nr_process_pages;
 	unsigned long nr_pages;
 	struct page **pages = NULL;
 	unsigned int gup_flags;
@@ -5405,13 +5436,19 @@ static int ublk_ctrl_reg_buf(struct ublk_device *ub,
 		return -EINVAL;
 
 	if (!buf_reg.len || buf_reg.len > UBLK_SHMEM_BUF_SIZE_MAX ||
-	    !PAGE_ALIGNED(buf_reg.len) || !PAGE_ALIGNED(buf_reg.addr))
+	    buf_reg.addr > ULONG_MAX ||
+	    check_add_overflow(buf_reg.addr, buf_reg.len, &addr_end) ||
+	    addr_end > ULONG_MAX ||
+	    !MM_PAGE_ALIGNED(current->mm, buf_reg.len) ||
+	    !MM_PAGE_ALIGNED(current->mm, buf_reg.addr))
 		return -EINVAL;
 
-	nr_pages = buf_reg.len >> PAGE_SHIFT;
+	nr_process_pages = buf_reg.len >> MM_PAGE_SHIFT(current->mm);
+	valid_start = offset_in_page(buf_reg.addr);
+	valid_end = valid_start + buf_reg.len;
 
 	/* Pin pages before any locks (may sleep) */
-	pages = kvmalloc_array(nr_pages, sizeof(*pages), GFP_KERNEL);
+	pages = kvmalloc_array(nr_process_pages, sizeof(*pages), GFP_KERNEL);
 	if (!pages)
 		return -ENOMEM;
 
@@ -5419,15 +5456,18 @@ static int ublk_ctrl_reg_buf(struct ublk_device *ub,
 	if (!(buf_reg.flags & UBLK_SHMEM_BUF_READ_ONLY))
 		gup_flags |= FOLL_WRITE;
 
-	pinned = pin_user_pages_fast(buf_reg.addr, nr_pages, gup_flags, pages);
+	pinned = pin_user_pages_fast(buf_reg.addr, nr_process_pages,
+				     gup_flags, pages);
 	if (pinned < 0) {
 		ret = pinned;
 		goto err_free_pages;
 	}
-	if (pinned != nr_pages) {
+	if (pinned != nr_process_pages) {
 		ret = -EFAULT;
 		goto err_unpin;
 	}
+	nr_pages = ublk_compact_pinned_pages(pages, pinned);
+	pinned = nr_pages;
 
 	memflags = ublk_lock_buf_tree(ub);
 
@@ -5437,7 +5477,8 @@ static int ublk_ctrl_reg_buf(struct ublk_device *ub,
 		goto err_unlock;
 	}
 
-	ret = __ublk_ctrl_reg_buf(ub, pages, nr_pages, index, buf_reg.flags);
+	ret = __ublk_ctrl_reg_buf(ub, pages, nr_pages, index, buf_reg.flags,
+				  valid_start, valid_end);
 	if (ret) {
 		ida_free(&ub->buf_ida, index);
 		goto err_unlock;
@@ -5579,7 +5620,7 @@ static bool ublk_try_buf_match(struct ublk_device *ub,
 	struct req_iterator iter;
 	struct bio_vec bv;
 	int index = -1;
-	unsigned long expected_offset = 0;
+	u64 expected_offset = 0;
 	bool first = true;
 
 	rq_for_each_bvec(bv, rq, iter) {
@@ -5587,7 +5628,9 @@ static bool ublk_try_buf_match(struct ublk_device *ub,
 		unsigned long end_pfn = pfn +
 			((bv.bv_offset + bv.bv_len - 1) >> PAGE_SHIFT);
 		struct ublk_buf_range *range;
-		unsigned long off;
+		u64 physical_off;
+		u64 physical_end;
+		u64 off;
 		MA_STATE(mas, &ub->buf_tree, pfn, pfn);
 
 		range = mas_walk(&mas);
@@ -5598,8 +5641,14 @@ static bool ublk_try_buf_match(struct ublk_device *ub,
 		if (end_pfn > mas.last)
 			return false;
 
-		off = range->base_offset +
+		physical_off = range->base_offset +
 			(pfn - mas.index) * PAGE_SIZE + bv.bv_offset;
+		if (check_add_overflow(physical_off, (u64)bv.bv_len,
+				       &physical_end) ||
+		    physical_off < range->valid_start ||
+		    physical_end > range->valid_end)
+			return false;
+		off = physical_off - range->valid_start;
 
 		if (first) {
 			/* Read-only buffer can't serve READ (kernel writes) */
