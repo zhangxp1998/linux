@@ -115,13 +115,14 @@ static inline unsigned long mm_get_trans_granule(struct mm_struct *mm)
 
 #define TLBI_TTL_UNKNOWN	INT_MAX
 
-#define __tlbi_level(op, addr, level, mm) do {				\
+#define __tlbi_level(op, addr, level, ...) do {				\
 	u64 arg = addr;							\
-									\
+	struct mm_struct *__mm = NULL;					\
+	__VA_OPT__(__mm = (struct mm_struct *)(__VA_ARGS__);)		\
 	if (alternative_has_cap_unlikely(ARM64_HAS_ARMv8_4_TTL) &&	\
 	    level >= 0 && level <= 3) {					\
 		u64 ttl = level & 3;					\
-		ttl |= mm_get_trans_granule(mm) << 2;			\
+		ttl |= mm_get_trans_granule(__mm) << 2;			\
 		arg &= ~TLBI_TTL_MASK;					\
 		arg |= FIELD_PREP(TLBI_TTL_MASK, ttl);			\
 	}								\
@@ -129,9 +130,9 @@ static inline unsigned long mm_get_trans_granule(struct mm_struct *mm)
 	__tlbi(op, arg);						\
 } while(0)
 
-#define __tlbi_user_level(op, arg, level, mm) do {			\
+#define __tlbi_user_level(op, arg, level, ...) do {			\
 	if (arm64_kernel_unmapped_at_el0())				\
-		__tlbi_level(op, (arg | USER_ASID_FLAG), level, mm);	\
+		__tlbi_level(op, (arg | USER_ASID_FLAG), level, ##__VA_ARGS__);	\
 } while (0)
 
 /*
@@ -514,12 +515,6 @@ static inline void __flush_tlb_page(struct vm_area_struct *vma,
 	bool last_level = (flags & TLBF_NOWALKCACHE) ? true : false;
 
 	__flush_tlb_range(vma, start, end, stride, last_level, 3);
-}
-
-static inline void flush_tlb_page(struct vm_area_struct *vma,
-				  unsigned long uaddr)
-{
-	__flush_tlb_page(vma, uaddr, TLBF_NONE);
 }
 
 static inline void flush_tlb_kernel_range(unsigned long start, unsigned long end)

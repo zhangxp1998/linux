@@ -210,6 +210,7 @@ int __ptep_set_access_flags_anysz(struct vm_area_struct *vma,
 {
 	pteval_t old_pteval, pteval;
 	pte_t pte = __ptep_get(ptep);
+	int level;
 
 	if (pte_same(pte, entry))
 		return 0;

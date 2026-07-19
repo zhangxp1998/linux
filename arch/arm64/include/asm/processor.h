@@ -33,7 +33,6 @@
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/thread_info.h>
-#include <linux/android_vendor.h>
 #include <linux/ppps.h>
 
 #include <vdso/processor.h>

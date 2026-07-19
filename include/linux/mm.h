@@ -29,7 +29,6 @@
 #include <linux/sizes.h>
 #include <linux/sched.h>
 #include <linux/pgtable.h>
-#include <linux/pgsize_migration_inline.h>
 #include <linux/ppps.h>
 #include <linux/kasan.h>
 #include <linux/memremap.h>

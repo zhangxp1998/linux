@@ -1742,7 +1742,7 @@ static int want_pages_array_mmsz(struct page ***res, size_t size,
 		count = maxpages;
 	WARN_ON(!count);
 	if (!*res) {
-		*res = kvmalloc_objs(struct page *, count);
+		*res = kvmalloc_array(count, sizeof(struct page *), GFP_KERNEL);
 		if (!*res)
 			return 0;
 	}

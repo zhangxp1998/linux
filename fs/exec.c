@@ -38,7 +38,6 @@
 #include <linux/sched/signal.h>
 #include <linux/sched/numa_balancing.h>
 #include <linux/sched/task.h>
-#include <linux/page_size_compat.h>
 #include <linux/ppps.h>
 #include <linux/pagemap.h>
 #include <linux/perf_event.h>

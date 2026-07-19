@@ -14,7 +14,6 @@
 #include <linux/file.h>
 #include <linux/syscalls.h>
 #include <linux/sched.h>
-#include <linux/page_size_compat.h>
 #include <linux/ppps.h>
 
 /*

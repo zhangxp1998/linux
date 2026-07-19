@@ -113,7 +113,7 @@ static inline pgoff_t mmap_pgoff_offset(const struct mmap_state *map)
 	 * boundaries. Scale the starting offset (in compat pages) to host pages.
 	 * Private anonymous mappings remain in compat page units.
 	 */
-	if (map->file || vma_flags_test(&map->vma_flags, VMA_SHARED_BIT))
+	if (map->file || (map->vm_flags & VM_SHARED))
 		return map->pgoff >> PPPS_SLICE_SHIFT;
 
 	return map->pgoff;
@@ -130,7 +130,7 @@ static inline unsigned int mmap_slice_offset(const struct mmap_state *map)
 	 * offset relative to the host page boundary for file-backed and shared
 	 * anonymous mappings. Private anonymous mappings do not track slices.
 	 */
-	if (map->file || vma_flags_test(&map->vma_flags, VMA_SHARED_BIT))
+	if (map->file || (map->vm_flags & VM_SHARED))
 		return map->pgoff & PPPS_SLICE_MASK;
 
 	return 0;

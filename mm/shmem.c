@@ -42,7 +42,6 @@
 #include <linux/iversion.h>
 #include <linux/unicode.h>
 #include <linux/mm_inline.h>
-#include <linux/page_size_compat.h>
 #include <linux/ppps.h>
 #include "swap.h"
 
