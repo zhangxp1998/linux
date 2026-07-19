@@ -432,6 +432,9 @@ exynos_drm_gem_prime_import_sg_table(struct drm_device *dev,
 {
 	struct exynos_drm_gem *exynos_gem;
 
+	if (!PAGE_ALIGNED(attach->dmabuf->size))
+		return ERR_PTR(-EINVAL);
+
 	/* check if the entries in the sg_table are contiguous */
 	if (drm_prime_get_contiguous_size(sgt) < attach->dmabuf->size) {
 		DRM_ERROR("buffer chunks must be mapped contiguously");
