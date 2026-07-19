@@ -573,9 +573,9 @@ int vfio_platform_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 		return -EINVAL;
 	if (index >= vdev->num_regions)
 		return -EINVAL;
-	if (vma->vm_start & ~PAGE_MASK)
+	if (!MM_PAGE_ALIGNED(vma->vm_mm, vma->vm_start))
 		return -EINVAL;
-	if (vma->vm_end & ~PAGE_MASK)
+	if (!MM_PAGE_ALIGNED(vma->vm_mm, vma->vm_end))
 		return -EINVAL;
 
 	if (!(vdev->regions[index].flags & VFIO_REGION_INFO_FLAG_MMAP))
