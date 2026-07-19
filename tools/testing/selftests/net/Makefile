@@ -187,6 +187,7 @@ TEST_GEN_PROGS := \
 	tcp_port_share \
 	tls \
 	tun \
+	xsk_vmalloc_mmap_ppps \
 # end of TEST_GEN_PROGS
 
 TEST_FILES := \
