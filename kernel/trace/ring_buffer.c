@@ -6956,6 +6956,8 @@ static int __rb_map_vma(struct ring_buffer_per_cpu *cpu_buffer,
 	if (vma->vm_flags & VM_WRITE || vma->vm_flags & VM_EXEC ||
 	    !(vma->vm_flags & VM_MAYSHARE))
 		return -EPERM;
+	if (!IS_ALIGNED(vma_file_offset(vma), PAGE_SIZE))
+		return -EINVAL;
 
 	subbuf_order = cpu_buffer->buffer->subbuf_order;
 	subbuf_pages = 1 << subbuf_order;
