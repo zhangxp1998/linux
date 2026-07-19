@@ -307,6 +307,7 @@ CATEGORY="mmap" run_test ./sysv_shm_ppps
 CATEGORY="mmap" run_test ./io_uring_mmap_ppps
 CATEGORY="mmap" run_test ./io_uring_fixed_buffer_ppps
 CATEGORY="mmap" run_test ./mglru_ppps
+CATEGORY="mmap" run_test ./anon_pageout_ppps
 CATEGORY="mmap" run_test ./thp_mmap_offset_ppps
 CATEGORY="mmap" run_test ./shmem_mmap_offset_ppps
 CATEGORY="mmap" run_test ./memfd_eof_ppps secretmem

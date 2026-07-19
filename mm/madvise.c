@@ -340,7 +340,10 @@ static inline int madvise_folio_pte_batch(struct vm_area_struct *vma,
 static inline int madvise_folio_nr_ptes(struct vm_area_struct *vma,
 					struct folio *folio)
 {
-	return folio_size(folio) >> MM_PAGE_SHIFT(mm);
+	if (ppps_mm_is_compat(mm) && folio_test_anon(folio))
+		return folio_nr_pages(folio);
+
+	return folio_nr_ptes(folio, vma);
 }
 
 static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
