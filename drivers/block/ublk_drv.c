@@ -203,7 +203,62 @@ struct ublk_queue {
 	bool fail_io; /* copy of dev->state == UBLK_S_DEV_FAIL_IO */
 	spinlock_t		cancel_lock;
 	struct ublk_device *dev;
-	struct ublk_io ios[];
+	u32 nr_io_ready;
+
+	/*
+	 * For supporting UBLK_F_BATCH_IO only.
+	 *
+	 * Inflight ublk request tag is saved in this fifo
+	 *
+	 * There are multiple writer from ublk_queue_rq() or ublk_queue_rqs(),
+	 * so lock is required for storing request tag to fifo
+	 *
+	 * Make sure just one reader for fetching request from task work
+	 * function to ublk server, so no need to grab the lock in reader
+	 * side.
+	 *
+	 * Batch I/O State Management:
+	 *
+	 * The batch I/O system uses implicit state management based on the
+	 * combination of three key variables below.
+	 *
+	 * - IDLE: list_empty(&fcmd_head) && !active_fcmd
+	 *   No fetch commands available, events queue in evts_fifo
+	 *
+	 * - READY: !list_empty(&fcmd_head) && !active_fcmd
+	 *   Fetch commands available but none processing events
+	 *
+	 * - ACTIVE: active_fcmd
+	 *   One fetch command actively processing events from evts_fifo
+	 *
+	 * Key Invariants:
+	 * - At most one active_fcmd at any time (single reader)
+	 * - active_fcmd is always from fcmd_head list when non-NULL
+	 * - evts_fifo can be read locklessly by the single active reader
+	 * - All state transitions require evts_lock protection
+	 * - Multiple writers to evts_fifo require lock protection
+	 */
+	struct {
+		DECLARE_KFIFO_PTR(evts_fifo, unsigned short);
+		spinlock_t evts_lock;
+
+		/* List of fetch commands available to process events */
+		struct list_head fcmd_head;
+
+		/* Currently active fetch command (NULL = none active) */
+		struct ublk_batch_fetch_cmd  *active_fcmd;
+	}____cacheline_aligned_in_smp;
+
+	struct ublk_io ios[] __counted_by(q_depth);
+};
+
+/* Maple tree value: maps a PFN range to buffer location */
+struct ublk_buf_range {
+	unsigned short buf_index;
+	unsigned short flags;
+	u64 base_offset;	/* offset from the first pinned native page */
+	u64 valid_start;	/* first registered byte in native-page space */
+	u64 valid_end;	/* byte after the registered buffer */
 };
 
 struct ublk_device {
@@ -3619,6 +3674,389 @@ exit:
 	return err;
 }
 
+/*
+ * Lock for maple tree modification: acquire ub->mutex, then freeze queue
+ * if device is started. If device is not yet started, only mutex is
+ * needed since no I/O path can access the tree.
+ *
+ * This ordering (mutex -> freeze) is safe because ublk_stop_dev_unlocked()
+ * already holds ub->mutex when calling del_gendisk() which freezes the queue.
+*/
+static unsigned int ublk_lock_buf_tree(struct ublk_device *ub)
+{
+	unsigned int memflags = 0;
+
+	mutex_lock(&ub->mutex);
+	if (ub->ub_disk)
+		memflags = blk_mq_freeze_queue(ub->ub_disk->queue);
+
+	return memflags;
+}
+
+static void ublk_unlock_buf_tree(struct ublk_device *ub, unsigned int memflags)
+{
+	if (ub->ub_disk)
+		blk_mq_unfreeze_queue(ub->ub_disk->queue, memflags);
+	mutex_unlock(&ub->mutex);
+}
+
+/* Erase coalesced PFN ranges from the maple tree matching buf_index */
+static void ublk_buf_erase_ranges(struct ublk_device *ub, int buf_index)
+{
+	MA_STATE(mas, &ub->buf_tree, 0, ULONG_MAX);
+	struct ublk_buf_range *range;
+
+	mas_lock(&mas);
+	mas_for_each(&mas, range, ULONG_MAX) {
+		if (range->buf_index == buf_index) {
+			mas_erase(&mas);
+			kfree(range);
+		}
+	}
+	mas_unlock(&mas);
+}
+
+static int __ublk_ctrl_reg_buf(struct ublk_device *ub,
+			       struct page **pages, unsigned long nr_pages,
+			       int index, unsigned short flags,
+			       u64 valid_start, u64 valid_end)
+{
+	unsigned long i;
+	int ret;
+
+	for (i = 0; i < nr_pages; i++) {
+		unsigned long pfn = page_to_pfn(pages[i]);
+		unsigned long start = i;
+		struct ublk_buf_range *range;
+
+		/* Find run of consecutive PFNs */
+		while (i + 1 < nr_pages &&
+		       page_to_pfn(pages[i + 1]) == pfn + (i - start) + 1)
+			i++;
+
+		range = kzalloc(sizeof(*range), GFP_KERNEL);
+		if (!range) {
+			ret = -ENOMEM;
+			goto unwind;
+		}
+		range->buf_index = index;
+		range->flags = flags;
+		range->base_offset = (u64)start << PAGE_SHIFT;
+		range->valid_start = valid_start;
+		range->valid_end = valid_end;
+
+		ret = mtree_insert_range(&ub->buf_tree, pfn,
+					 pfn + (i - start),
+					 range, GFP_KERNEL);
+		if (ret) {
+			kfree(range);
+			goto unwind;
+		}
+	}
+	return 0;
+
+unwind:
+	ublk_buf_erase_ranges(ub, index);
+	return ret;
+}
+
+/*
+ * GUP returns one entry and one pin for each process page.  With PPPS,
+ * several adjacent process pages can refer to the same native struct page.
+ * The buffer tree and its cleanup path operate on native PFNs, so retain one
+ * pin per native page and drop the redundant pins before inserting ranges.
+ */
+static unsigned long ublk_compact_pinned_pages(struct page **pages,
+					       unsigned long nr_pages)
+{
+	unsigned long in, out = 0;
+
+	for (in = 0; in < nr_pages; in++) {
+		if (out && pages[in] == pages[out - 1]) {
+			unpin_user_page(pages[in]);
+			continue;
+		}
+		pages[out++] = pages[in];
+	}
+
+	return out;
+}
+
+/*
+ * Register a shared memory buffer for zero-copy I/O.
+ * Pins pages, builds PFN maple tree, freezes/unfreezes the queue
+ * internally. Returns buffer index (>= 0) on success.
+ */
+static int ublk_ctrl_reg_buf(struct ublk_device *ub,
+			     struct ublksrv_ctrl_cmd *header)
+{
+	void __user *argp = (void __user *)(unsigned long)header->addr;
+	struct ublk_shmem_buf_reg buf_reg;
+	u64 addr_end;
+	u64 valid_start;
+	u64 valid_end;
+	unsigned long nr_process_pages;
+	unsigned long nr_pages;
+	struct page **pages = NULL;
+	unsigned int gup_flags;
+	unsigned int memflags;
+	long pinned;
+	int index;
+	int ret;
+
+	if (!ublk_dev_support_shmem_zc(ub))
+		return -EOPNOTSUPP;
+
+	memset(&buf_reg, 0, sizeof(buf_reg));
+	if (copy_from_user(&buf_reg, argp,
+			   min_t(size_t, header->len, sizeof(buf_reg))))
+		return -EFAULT;
+
+	if (buf_reg.flags & ~UBLK_SHMEM_BUF_READ_ONLY)
+		return -EINVAL;
+
+	if (buf_reg.reserved)
+		return -EINVAL;
+
+	if (!buf_reg.len || buf_reg.len > UBLK_SHMEM_BUF_SIZE_MAX ||
+	    buf_reg.addr > ULONG_MAX ||
+	    check_add_overflow(buf_reg.addr, buf_reg.len, &addr_end) ||
+	    addr_end > ULONG_MAX ||
+	    !MM_PAGE_ALIGNED(current->mm, buf_reg.len) ||
+	    !MM_PAGE_ALIGNED(current->mm, buf_reg.addr))
+		return -EINVAL;
+
+	nr_process_pages = buf_reg.len >> MM_PAGE_SHIFT(current->mm);
+	valid_start = offset_in_page(buf_reg.addr);
+	valid_end = valid_start + buf_reg.len;
+
+	/* Pin pages before any locks (may sleep) */
+	pages = kvmalloc_array(nr_process_pages, sizeof(*pages), GFP_KERNEL);
+	if (!pages)
+		return -ENOMEM;
+
+	gup_flags = FOLL_LONGTERM;
+	if (!(buf_reg.flags & UBLK_SHMEM_BUF_READ_ONLY))
+		gup_flags |= FOLL_WRITE;
+
+	pinned = pin_user_pages_fast(buf_reg.addr, nr_process_pages,
+				     gup_flags, pages);
+	if (pinned < 0) {
+		ret = pinned;
+		goto err_free_pages;
+	}
+	if (pinned != nr_process_pages) {
+		ret = -EFAULT;
+		goto err_unpin;
+	}
+	nr_pages = ublk_compact_pinned_pages(pages, pinned);
+	pinned = nr_pages;
+
+	memflags = ublk_lock_buf_tree(ub);
+
+	index = ida_alloc_max(&ub->buf_ida, USHRT_MAX, GFP_KERNEL);
+	if (index < 0) {
+		ret = index;
+		goto err_unlock;
+	}
+
+	ret = __ublk_ctrl_reg_buf(ub, pages, nr_pages, index, buf_reg.flags,
+				  valid_start, valid_end);
+	if (ret) {
+		ida_free(&ub->buf_ida, index);
+		goto err_unlock;
+	}
+
+	ublk_unlock_buf_tree(ub, memflags);
+	kvfree(pages);
+	return index;
+
+err_unlock:
+	ublk_unlock_buf_tree(ub, memflags);
+err_unpin:
+	unpin_user_pages(pages, pinned);
+err_free_pages:
+	kvfree(pages);
+	return ret;
+}
+
+static void ublk_unpin_range_pages(unsigned long base_pfn,
+				   unsigned long nr_pages)
+{
+#define UBLK_UNPIN_BATCH	32
+	struct page *pages[UBLK_UNPIN_BATCH];
+	unsigned long off;
+
+	for (off = 0; off < nr_pages; ) {
+		unsigned int batch = min_t(unsigned long,
+					   nr_pages - off, UBLK_UNPIN_BATCH);
+		unsigned int j;
+
+		for (j = 0; j < batch; j++)
+			pages[j] = pfn_to_page(base_pfn + off + j);
+		unpin_user_pages(pages, batch);
+		off += batch;
+	}
+}
+
+/*
+ * Inner loop: erase up to UBLK_REMOVE_BATCH matching ranges under
+ * mas_lock, collecting them into an xarray. Then drop the lock and
+ * unpin pages + free ranges outside spinlock context.
+ *
+ * Returns true if the tree walk completed, false if more ranges remain.
+ * Xarray key is the base PFN, value encodes nr_pages via xa_mk_value().
+ */
+#define UBLK_REMOVE_BATCH	64
+
+static bool __ublk_shmem_remove_ranges(struct ublk_device *ub,
+					int buf_index, int *ret)
+{
+	MA_STATE(mas, &ub->buf_tree, 0, ULONG_MAX);
+	struct ublk_buf_range *range;
+	struct xarray to_unpin;
+	unsigned long idx;
+	unsigned int count = 0;
+	bool done = false;
+	void *entry;
+
+	xa_init(&to_unpin);
+
+	mas_lock(&mas);
+	mas_for_each(&mas, range, ULONG_MAX) {
+		unsigned long nr;
+
+		if (buf_index >= 0 && range->buf_index != buf_index)
+			continue;
+
+		*ret = 0;
+		nr = mas.last - mas.index + 1;
+		if (xa_err(xa_store(&to_unpin, mas.index,
+				    xa_mk_value(nr), GFP_ATOMIC)))
+			goto unlock;
+		mas_erase(&mas);
+		kfree(range);
+		if (++count >= UBLK_REMOVE_BATCH)
+			goto unlock;
+	}
+	done = true;
+unlock:
+	mas_unlock(&mas);
+
+	xa_for_each(&to_unpin, idx, entry)
+		ublk_unpin_range_pages(idx, xa_to_value(entry));
+	xa_destroy(&to_unpin);
+
+	return done;
+}
+
+/*
+ * Remove ranges from the maple tree matching buf_index, unpin pages
+ * and free range structs. If buf_index < 0, remove all ranges.
+ * Processes ranges in batches to avoid holding the maple tree spinlock
+ * across potentially expensive page unpinning.
+ */
+static int ublk_shmem_remove_ranges(struct ublk_device *ub, int buf_index)
+{
+	int ret = -ENOENT;
+
+	while (!__ublk_shmem_remove_ranges(ub, buf_index, &ret))
+		cond_resched();
+	return ret;
+}
+
+static int ublk_ctrl_unreg_buf(struct ublk_device *ub,
+			       struct ublksrv_ctrl_cmd *header)
+{
+	int index = (int)header->data[0];
+	unsigned int memflags;
+	int ret;
+
+	if (!ublk_dev_support_shmem_zc(ub))
+		return -EOPNOTSUPP;
+
+	if (index < 0 || index > USHRT_MAX)
+		return -EINVAL;
+
+	memflags = ublk_lock_buf_tree(ub);
+
+	ret = ublk_shmem_remove_ranges(ub, index);
+	if (!ret)
+		ida_free(&ub->buf_ida, index);
+
+	ublk_unlock_buf_tree(ub, memflags);
+	return ret;
+}
+
+static void ublk_buf_cleanup(struct ublk_device *ub)
+{
+	ublk_shmem_remove_ranges(ub, -1);
+	mtree_destroy(&ub->buf_tree);
+	ida_destroy(&ub->buf_ida);
+}
+
+/* Check if request pages match a registered shared memory buffer */
+static bool ublk_try_buf_match(struct ublk_device *ub,
+				   struct request *rq,
+				   u32 *buf_idx, u32 *buf_off)
+{
+	struct req_iterator iter;
+	struct bio_vec bv;
+	int index = -1;
+	u64 expected_offset = 0;
+	bool first = true;
+
+	rq_for_each_bvec(bv, rq, iter) {
+		unsigned long pfn = page_to_pfn(bv.bv_page);
+		unsigned long end_pfn = pfn +
+			((bv.bv_offset + bv.bv_len - 1) >> PAGE_SHIFT);
+		struct ublk_buf_range *range;
+		u64 physical_off;
+		u64 physical_end;
+		u64 off;
+		MA_STATE(mas, &ub->buf_tree, pfn, pfn);
+
+		range = mas_walk(&mas);
+		if (!range)
+			return false;
+
+		/* verify all pages in this bvec fall within the range */
+		if (end_pfn > mas.last)
+			return false;
+
+		physical_off = range->base_offset +
+			(pfn - mas.index) * PAGE_SIZE + bv.bv_offset;
+		if (check_add_overflow(physical_off, (u64)bv.bv_len,
+				       &physical_end) ||
+		    physical_off < range->valid_start ||
+		    physical_end > range->valid_end)
+			return false;
+		off = physical_off - range->valid_start;
+
+		if (first) {
+			/* Read-only buffer can't serve READ (kernel writes) */
+			if ((range->flags & UBLK_SHMEM_BUF_READ_ONLY) &&
+			    req_op(rq) != REQ_OP_WRITE)
+				return false;
+			index = range->buf_index;
+			expected_offset = off;
+			*buf_off = off;
+			first = false;
+		} else {
+			if (range->buf_index != index)
+				return false;
+			if (off != expected_offset)
+				return false;
+		}
+		expected_offset += bv.bv_len;
+	}
+
+	if (first)
+		return false;
+
+	*buf_idx = index;
+	return true;
+}
 static int ublk_ctrl_uring_cmd_permission(struct ublk_device *ub,
 		struct io_uring_cmd *cmd)
 {
