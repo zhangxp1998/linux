@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: GPL-2.0
+
+#include <linux/device.h>
+#include <linux/gfp.h>
+#include <linux/module.h>
+#include <linux/sizes.h>
+#include <linux/uio_driver.h>
+
+#define TEST_BYTES SZ_16K
+#define TEST_SLICE_BYTES SZ_4K
+
+static struct device *test_parent;
+static unsigned long test_buffer;
+static struct uio_info test_info;
+
+static int __init test_init(void)
+{
+	static const u8 values[] = { 0x11, 0x22, 0x33, 0x44 };
+	int ret;
+	int i;
+
+	test_buffer = __get_free_pages(GFP_KERNEL | __GFP_ZERO,
+				       get_order(TEST_BYTES));
+	if (!test_buffer)
+		return -ENOMEM;
+
+	for (i = 0; i < ARRAY_SIZE(values); i++)
+		*((u8 *)test_buffer + i * TEST_SLICE_BYTES) = values[i];
+
+	test_parent = root_device_register("uio_mmap_ppps_parent");
+	if (IS_ERR(test_parent)) {
+		ret = PTR_ERR(test_parent);
+		goto free_buffer;
+	}
+
+	test_info.name = "uio_mmap_ppps";
+	test_info.version = "1";
+	test_info.irq = UIO_IRQ_NONE;
+	test_info.mem[0].name = "test_buffer";
+	test_info.mem[0].addr = test_buffer;
+	test_info.mem[0].size = TEST_BYTES;
+	test_info.mem[0].memtype = UIO_MEM_LOGICAL;
+
+	ret = uio_register_device(test_parent, &test_info);
+	if (ret)
+		goto unregister_parent;
+
+	return 0;
+
+unregister_parent:
+	root_device_unregister(test_parent);
+free_buffer:
+	free_pages(test_buffer, get_order(TEST_BYTES));
+	return ret;
+}
+
+static void __exit test_exit(void)
+{
+	uio_unregister_device(&test_info);
+	root_device_unregister(test_parent);
+	free_pages(test_buffer, get_order(TEST_BYTES));
+}
+
+module_init(test_init);
+module_exit(test_exit);
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("UIO mmap PPPS regression fixture");
