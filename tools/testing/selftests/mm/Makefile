@@ -447,6 +447,8 @@ $(OUTPUT)/taskstats_ppps: CFLAGS := -Wall -O2 $(EXTRA_CFLAGS)
 $(OUTPUT)/taskstats_ppps: CFLAGS += -Wunreachable-code -U_FORTIFY_SOURCE
 $(OUTPUT)/taskstats_ppps: CFLAGS += -I$(selfdir)
 
+$(OUTPUT)/vb2_mmap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+
 $(OUTPUT)/gup_longterm: LDLIBS += $(IOURING_EXTRA_LIBS)
 
 $(OUTPUT)/mlock-random-test $(OUTPUT)/memfd_secret: LDLIBS += -lcap
