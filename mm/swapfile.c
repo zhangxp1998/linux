@@ -2243,7 +2243,7 @@ static int unuse_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 		folio_free_swap(folio);
 		folio_unlock(folio);
 		folio_put(folio);
-	} while (addr += PAGE_SIZE, addr != end);
+	} while (addr += MM_PAGE_SIZE(vma->vm_mm), addr != end);
 
 	if (pte)
 		pte_unmap(pte);
@@ -2335,6 +2335,12 @@ static int unuse_mm(struct mm_struct *mm, unsigned int type)
 	struct vm_area_struct *vma;
 	int ret = 0;
 	VMA_ITERATOR(vmi, mm, 0);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm = current->pgtable_mm;
+
+	/* Page table helpers must use the address-space geometry being scanned. */
+	current->pgtable_mm = mm;
+#endif
 
 	mmap_read_lock(mm);
 	for_each_vma(vmi, vma) {
@@ -2347,6 +2353,9 @@ static int unuse_mm(struct mm_struct *mm, unsigned int type)
 		cond_resched();
 	}
 	mmap_read_unlock(mm);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	current->pgtable_mm = prev_pgtable_mm;
+#endif
 	return ret;
 }
 
