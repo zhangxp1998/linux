@@ -2774,45 +2774,61 @@ static void io_rings_free(struct io_ring_ctx *ctx)
 	ctx->sq_sqes = NULL;
 }
 
-unsigned long rings_size(unsigned int flags, unsigned int sq_entries,
-			 unsigned int cq_entries, size_t *sq_offset)
+int io_uring_calc_rings_size(unsigned int flags, unsigned int sq_entries,
+			     unsigned int cq_entries, struct io_rings_layout *rl)
 {
 	struct io_rings *rings;
 	size_t off, sq_array_size;
 
 	off = struct_size(rings, cqes, cq_entries);
 	if (off == SIZE_MAX)
-		return SIZE_MAX;
+		return -EOVERFLOW;
 	if (flags & IORING_SETUP_CQE32) {
 		if (check_shl_overflow(off, 1, &off))
-			return SIZE_MAX;
-	}
-	if (flags & IORING_SETUP_CQE_MIXED) {
-		if (cq_entries < 2)
-			return SIZE_MAX;
+			return -EOVERFLOW;
 	}
 
 #ifdef CONFIG_SMP
 	off = ALIGN(off, SMP_CACHE_BYTES);
 	if (off == 0)
-		return SIZE_MAX;
+		return -EOVERFLOW;
 #endif
 
 	if (flags & IORING_SETUP_NO_SQARRAY) {
-		*sq_offset = SIZE_MAX;
-		return off;
+		rl->sq_array_offset = SIZE_MAX;
+		rl->rings_size = off;
+	} else {
+		rl->sq_array_offset = off;
+		sq_array_size = array_size(sizeof(u32), sq_entries);
+		if (sq_array_size == SIZE_MAX)
+			return -EOVERFLOW;
+
+		if (check_add_overflow(off, sq_array_size, &off))
+			return -EOVERFLOW;
+		rl->rings_size = off;
 	}
 
-	*sq_offset = off;
-
-	sq_array_size = array_size(sizeof(u32), sq_entries);
+	if (flags & IORING_SETUP_SQE128)
+		sq_array_size = array_size(sizeof(struct io_uring_sqe) * 2, sq_entries);
+	else
+		sq_array_size = array_size(sizeof(struct io_uring_sqe), sq_entries);
 	if (sq_array_size == SIZE_MAX)
-		return SIZE_MAX;
+		return -EOVERFLOW;
 
-	if (check_add_overflow(off, sq_array_size, &off))
-		return SIZE_MAX;
+	rl->sq_size = sq_array_size;
+	return 0;
+}
 
-	return off;
+unsigned long rings_size(unsigned int flags, unsigned int sq_entries,
+			 unsigned int cq_entries, size_t *sq_offset)
+{
+	struct io_rings_layout layout;
+
+	if (io_uring_calc_rings_size(flags, sq_entries, cq_entries, &layout))
+		return SIZE_MAX;
+	if (sq_offset)
+		*sq_offset = layout.sq_array_offset;
+	return layout.rings_size;
 }
 
 static __cold void __io_req_caches_free(struct io_ring_ctx *ctx)

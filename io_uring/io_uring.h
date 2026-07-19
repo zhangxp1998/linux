@@ -17,6 +17,17 @@
 #include <trace/events/io_uring.h>
 #endif
 
+struct io_rings_layout {
+	/* size of CQ + headers + SQ offset array */
+	size_t rings_size;
+	size_t sq_size;
+
+	size_t sq_array_offset;
+};
+
+int io_uring_calc_rings_size(unsigned int flags, unsigned int sq_entries,
+			     unsigned int cq_entries,
+			     struct io_rings_layout *rl);
 #define IORING_FEAT_FLAGS (IORING_FEAT_SINGLE_MMAP |\
 			IORING_FEAT_NODROP |\
 			IORING_FEAT_SUBMIT_STABLE |\
