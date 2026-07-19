@@ -428,21 +428,33 @@ struct user_arg_ptr {
 static const char __user *get_user_arg_ptr(struct user_arg_ptr argv, int nr)
 {
 	const char __user *native;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm = current->pgtable_mm;
+
+	current->pgtable_mm = current->mm;
+#endif
 
 #ifdef CONFIG_COMPAT
 	if (unlikely(argv.is_compat)) {
 		compat_uptr_t compat;
 
 		if (get_user(compat, argv.ptr.compat + nr))
-			return ERR_PTR(-EFAULT);
-
-		return compat_ptr(compat);
+			native = ERR_PTR(-EFAULT);
+		else
+			native = compat_ptr(compat);
+		goto out;
 	}
 #endif
 
 	if (get_user(native, argv.ptr.native + nr))
-		return ERR_PTR(-EFAULT);
+		native = ERR_PTR(-EFAULT);
 
+#ifdef CONFIG_COMPAT
+out:
+#endif
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	current->pgtable_mm = prev_pgtable_mm;
+#endif
 	return native;
 }
 
@@ -578,6 +590,9 @@ static int copy_strings(int argc, struct user_arg_ptr argv,
 	char *kaddr = NULL;
 	unsigned long kpos = 0;
 	int ret;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	while (argc-- > 0) {
 		const char __user *str;
@@ -589,7 +604,14 @@ static int copy_strings(int argc, struct user_arg_ptr argv,
 		if (IS_ERR(str))
 			goto out;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		prev_pgtable_mm = current->pgtable_mm;
+		current->pgtable_mm = current->mm;
+#endif
 		len = strnlen_user(str, MAX_ARG_STRLEN);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		current->pgtable_mm = prev_pgtable_mm;
+#endif
 		if (!len)
 			goto out;
 
@@ -647,7 +669,16 @@ static int copy_strings(int argc, struct user_arg_ptr argv,
 				kpos = pos & proc_page_mask;
 				flush_arg_page(bprm, kpos, kmapped_page);
 			}
-			if (copy_from_user(kaddr + (pos % proc_page_size), str, bytes_to_copy)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			prev_pgtable_mm = current->pgtable_mm;
+			current->pgtable_mm = current->mm;
+#endif
+			ret = copy_from_user(kaddr + (pos % proc_page_size), str,
+					     bytes_to_copy);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			current->pgtable_mm = prev_pgtable_mm;
+#endif
+			if (ret) {
 				ret = -EFAULT;
 				goto out;
 			}
