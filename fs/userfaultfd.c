@@ -1235,6 +1235,20 @@ static __always_inline int validate_range(struct mm_struct *mm,
 	return validate_unaligned_range(mm, start, len);
 }
 
+static __always_inline int validate_copy_source_range(struct mm_struct *dst_mm,
+						      __u64 start, __u64 len)
+{
+	__u64 task_size = current->mm->task_size;
+
+	if (len & ~MM_PAGE_MASK(dst_mm))
+		return -EINVAL;
+	if (!len || start >= task_size || len > task_size - start)
+		return -EINVAL;
+	if (start + len <= start)
+		return -EINVAL;
+	return 0;
+}
+
 static int userfaultfd_register(struct userfaultfd_ctx *ctx,
 				unsigned long arg)
 {
@@ -1600,8 +1614,8 @@ static int userfaultfd_copy(struct userfaultfd_ctx *ctx,
 			   sizeof(uffdio_copy)-sizeof(__s64)))
 		goto out;
 
-	ret = validate_unaligned_range(ctx->mm, uffdio_copy.src,
-				       uffdio_copy.len);
+	ret = validate_copy_source_range(ctx->mm, uffdio_copy.src,
+					 uffdio_copy.len);
 	if (ret)
 		goto out;
 	ret = validate_range(ctx->mm, uffdio_copy.dst, uffdio_copy.len);
