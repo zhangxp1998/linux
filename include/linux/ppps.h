@@ -14,11 +14,11 @@ struct linux_binprm;
 #define PAGE_SHIFT_COMPAT	12
 #define VA_BITS_COMPAT		39
 #define _MM_PAGE_SHIFT_HELPER(mm) \
-	((mm) && (mm)->page_shift ? (mm)->page_shift : PAGE_SHIFT_KERNEL)
+	(((struct mm_struct *)(mm)) && ((struct mm_struct *)(mm))->page_shift ? ((struct mm_struct *)(mm))->page_shift : PAGE_SHIFT_KERNEL)
 #define _MM_VA_BITS_HELPER(mm) \
-	(((mm) && (mm)->page_shift == PAGE_SHIFT_COMPAT) ? VA_BITS_COMPAT : VA_BITS)
+	((((struct mm_struct *)(mm)) && ((struct mm_struct *)(mm))->page_shift == PAGE_SHIFT_COMPAT) ? VA_BITS_COMPAT : VA_BITS)
 #define ppps_mm_is_compat(mm)						\
-	((mm) && (mm)->page_shift == PAGE_SHIFT_COMPAT)
+	(((struct mm_struct *)(mm)) && ((struct mm_struct *)(mm))->page_shift == PAGE_SHIFT_COMPAT)
 
 unsigned long mm_task_size64(void);
 unsigned long mm_task_size64_of(struct mm_struct *mm);
