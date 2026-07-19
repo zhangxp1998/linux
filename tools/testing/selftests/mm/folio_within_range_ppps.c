@@ -23,7 +23,7 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(4);
+	ksft_set_plan(5);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -38,6 +38,9 @@ static int run_test(void)
 	ksft_test_result(ioctl(fd,
 			       FOLIO_WITHIN_RANGE_PPPS_CHECK_SUBPAGE) == 0,
 			 "reject a folio only partially covered at VMA start\n");
+	ksft_test_result(ioctl(fd,
+			       FOLIO_WITHIN_RANGE_PPPS_CHECK_ADDRESS_END) == 0,
+			 "stop a reverse-map walk at the end of the native folio\n");
 
 	close(fd);
 	ksft_finished();

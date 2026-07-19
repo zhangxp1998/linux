@@ -1010,6 +1010,16 @@ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
 	pgoff_t pgoff;
 	unsigned long address;
 
+	if (ppps_mm_is_compat(vma->vm_mm) && !vma_is_anonymous(vma)) {
+		pgoff = pvmw->pgoff + pvmw->nr_pages;
+		address = vma->vm_start +
+			((pgoff - vma->vm_pgoff) << PAGE_SHIFT);
+		address -= offset_in_page(vma_file_offset(vma));
+		if (address < vma->vm_start || address > vma->vm_end)
+			address = vma->vm_end;
+		return address;
+	}
+
 	/* Common case, plus ->pgoff is invalid for KSM */
 	if (pvmw->nr_pages == 1)
 		return pvmw->address + PAGE_SIZE;
