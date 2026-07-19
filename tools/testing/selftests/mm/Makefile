@@ -103,6 +103,7 @@ TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
 TEST_GEN_FILES += vhost_dirty_log_ppps
 TEST_GEN_FILES += iov_iter_ppps
+TEST_GEN_FILES += futex_shared_ppps
 TEST_GEN_FILES += compaction_test
 TEST_GEN_FILES += gup_longterm
 TEST_GEN_FILES += gup_retry_ppps
