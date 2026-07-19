@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/personality.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "../kselftest.h"
@@ -22,6 +23,7 @@
 
 #define USER_PAGE_SIZE	4096UL
 #define NATIVE_16K_SIZE	(4 * USER_PAGE_SIZE)
+#define POLICY_PATH	"/sys/fs/selinux/policy"
 #define STATUS_PATH	"/sys/fs/selinux/status"
 
 struct selinux_kernel_status {
@@ -52,17 +54,21 @@ static int run_test(void)
 	struct sigaction action = {
 		.sa_handler = fault_handler,
 	};
+	struct stat policy_stat;
 	const struct selinux_kernel_status *status;
 	unsigned char *reservation;
 	unsigned char value = 0;
 	bool guards_fault = true;
+	bool policy_ready;
+	bool policy_tail_faults = false;
+	off_t policy_end;
 	unsigned int guard;
 	void *mapping;
 	void *offset_mapping;
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(9);
+	ksft_set_plan(12);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -117,6 +123,26 @@ static int run_test(void)
 	if (offset_mapping != MAP_FAILED)
 		munmap(offset_mapping, USER_PAGE_SIZE);
 
+	close(fd);
+	fd = open(POLICY_PATH, O_RDONLY | O_CLOEXEC);
+	policy_ready = fd >= 0 && !fstat(fd, &policy_stat) && policy_stat.st_size;
+	ksft_test_result(policy_ready, "open a non-empty SELinux policy snapshot\n");
+	if (!policy_ready)
+		ksft_exit_fail_msg("open %s failed: %s\n", POLICY_PATH,
+				   strerror(errno));
+	policy_end = (policy_stat.st_size + USER_PAGE_SIZE - 1) &
+		     ~(USER_PAGE_SIZE - 1);
+	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
+		       policy_end);
+	ksft_test_result(mapping != MAP_FAILED,
+			 "map the first 4K process page beyond policy EOF\n");
+	if (mapping != MAP_FAILED) {
+		policy_tail_faults = !read_byte(mapping, &value);
+		munmap(mapping, USER_PAGE_SIZE);
+	}
+	ksft_test_result(policy_tail_faults,
+			 "fault on access beyond policy EOF (size=%lld offset=%lld)\n",
+			 (long long)policy_stat.st_size, (long long)policy_end);
 	close(fd);
 	ksft_finished();
 }
