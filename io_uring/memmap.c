@@ -173,27 +173,58 @@ struct page **io_pin_pages(unsigned long uaddr, unsigned long len, int *npages)
 }
 
 void *__io_uaddr_map(struct page ***pages, unsigned short *npages,
-		     unsigned long uaddr, size_t size)
+		     unsigned long uaddr, size_t size, void **map_base)
 {
+	struct mm_struct *mm = current->mm;
 	struct page **page_array;
+	unsigned int page_offset = 0;
 	unsigned int nr_pages;
 	void *page_addr;
+	int ret;
 
 	*npages = 0;
+	*map_base = NULL;
+	uaddr = untagged_addr(uaddr);
+	size = MM_PAGE_ALIGN(mm, size);
 
-	if (uaddr & (PAGE_SIZE - 1) || !size)
+	if (!MM_PAGE_ALIGNED(mm, uaddr) || !size)
 		return ERR_PTR(-EINVAL);
 
-	nr_pages = 0;
-	page_array = io_pin_pages(uaddr, size, &nr_pages);
-	if (IS_ERR(page_array))
-		return page_array;
+	if (ppps_mm_is_compat(mm)) {
+		/*
+		 * Older io_uring stores these regions as a contiguous native
+		 * vmap. Support one compat process page, matching the limitation
+		 * of the newer registered-memory implementation.
+		 */
+		if (size != MM_PAGE_SIZE(mm))
+			return ERR_PTR(-EOPNOTSUPP);
+
+		page_array = kvmalloc_array(1, sizeof(*page_array),
+					    GFP_KERNEL_ACCOUNT);
+		if (!page_array)
+			return ERR_PTR(-ENOMEM);
+
+		ret = pin_user_pages_with_offsets(mm, uaddr, 1,
+						  FOLL_WRITE | FOLL_LONGTERM,
+						  page_array, &page_offset);
+		if (ret != 1) {
+			kvfree(page_array);
+			return ERR_PTR(ret < 0 ? ret : -EFAULT);
+		}
+		nr_pages = 1;
+	} else {
+		nr_pages = 0;
+		page_array = io_pin_pages(uaddr, size, &nr_pages);
+		if (IS_ERR(page_array))
+			return page_array;
+	}
 
 	page_addr = vmap(page_array, nr_pages, VM_MAP, PAGE_KERNEL);
 	if (page_addr) {
 		*pages = page_array;
 		*npages = nr_pages;
-		return page_addr;
+		*map_base = page_addr;
+		return page_addr + page_offset;
 	}
 
 	io_pages_free(&page_array, nr_pages);
