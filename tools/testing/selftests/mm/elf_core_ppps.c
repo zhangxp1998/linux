@@ -8,12 +8,9 @@
 
 #include <elf.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 
 #include "kselftest_ppps.h"
@@ -21,6 +18,8 @@
 #define TEST_VMAS	4
 #define TEST_BASE	0x50000000UL
 #define TEST_STRIDE	0x10000UL
+#define FILE_TEST_BASE	0x60000000UL
+#define FILE_TEST_PATH	"/tmp/elf-core-ppps-offset-file"
 #define CORE_PATTERN	"/tmp/elf-core-ppps-%p"
 
 static bool write_file(const char *path, const char *contents, size_t length)
@@ -34,6 +33,21 @@ static bool write_file(const char *path, const char *contents, size_t length)
 	written = write(fd, contents, length);
 	close(fd);
 	return written == (ssize_t)length;
+}
+
+static bool create_offset_file(void)
+{
+	int fd;
+
+	fd = open(FILE_TEST_PATH, O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0700);
+	if (fd < 0)
+		return false;
+	if (fchmod(fd, 0700) || ftruncate(fd, 2 * PROCESS_PAGE_SIZE)) {
+		close(fd);
+		return false;
+	}
+	close(fd);
+	return true;
 }
 
 static char *read_core_pattern(size_t *length)
@@ -63,26 +77,95 @@ static void crash_with_test_vmas(void)
 		.rlim_max = RLIM_INFINITY,
 	};
 	unsigned int index;
+	void *mapping;
+	int fd;
 
-	if (setrlimit(RLIMIT_CORE, &limit))
+	if (setrlimit(RLIMIT_CORE, &limit) ||
+	    !write_file("/proc/self/coredump_filter", "0x11\n", 5))
 		_exit(120);
+	fd = open(FILE_TEST_PATH, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		_exit(121);
+	mapping = mmap((void *)FILE_TEST_BASE, PROCESS_PAGE_SIZE, PROT_READ,
+		       MAP_PRIVATE | MAP_FIXED_NOREPLACE, fd, PROCESS_PAGE_SIZE);
+	close(fd);
+	if (mapping != (void *)FILE_TEST_BASE)
+		_exit(122);
 	for (index = 0; index < TEST_VMAS; index++) {
 		void *target = (void *)(TEST_BASE + index * TEST_STRIDE);
-		void *mapping;
 
 		mapping = mmap(target, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
 			       -1, 0);
 		if (mapping != target)
-			_exit(121);
-		memset(mapping, 0x40 + index, USER_PAGE_SIZE);
+			_exit(123);
+		memset(mapping, 0x40 + index, PROCESS_PAGE_SIZE);
 	}
 	raise(SIGSEGV);
-	_exit(122);
+	_exit(124);
+}
+
+struct elf_note_header {
+	uint32_t namesz;
+	uint32_t descsz;
+	uint32_t type;
+};
+
+static bool inspect_nt_file(int fd, uint64_t note_offset, uint64_t note_size,
+			    bool *found,
+			    uint64_t *page_size, uint64_t *file_offset)
+{
+	off_t end = note_offset + note_size;
+	off_t pos = note_offset;
+
+	while (pos + (off_t)sizeof(struct elf_note_header) <= end) {
+		struct elf_note_header note;
+		off_t desc_pos;
+		off_t next;
+		uint64_t *desc;
+		uint64_t count;
+		uint64_t index;
+
+		if (pread(fd, &note, sizeof(note), pos) != sizeof(note))
+			return false;
+		desc_pos = (pos + sizeof(note) + note.namesz + 3) & ~3ULL;
+		next = (desc_pos + note.descsz + 3) & ~3ULL;
+		if (desc_pos < pos || next < desc_pos || next > end)
+			return false;
+		pos = next;
+		if (note.type != NT_FILE || note.descsz < 2 * sizeof(*desc))
+			continue;
+		desc = malloc(note.descsz);
+		if (!desc)
+			return false;
+		if (pread(fd, desc, note.descsz, desc_pos) != (ssize_t)note.descsz) {
+			free(desc);
+			return false;
+		}
+		count = desc[0];
+		if (count > (note.descsz / sizeof(*desc) - 2) / 3) {
+			free(desc);
+			return false;
+		}
+		for (index = 0; index < count; index++) {
+			uint64_t *entry = &desc[2 + 3 * index];
+
+			if (entry[0] != FILE_TEST_BASE)
+				continue;
+			*found = true;
+			*page_size = desc[1];
+			*file_offset = entry[2];
+			break;
+		}
+		free(desc);
+	}
+	return true;
 }
 
 static bool inspect_core(const char *path, unsigned int *found,
-			 unsigned int *misaligned)
+			 unsigned int *misaligned, bool *offset_segment_found,
+			 uint64_t *offset_dump_size, bool *nt_file_found,
+			 uint64_t *note_page_size, uint64_t *note_file_offset)
 {
 	Elf64_Ehdr header;
 	Elf64_Phdr phdr;
@@ -91,6 +174,11 @@ static bool inspect_core(const char *path, unsigned int *found,
 
 	*found = 0;
 	*misaligned = 0;
+	*offset_segment_found = false;
+	*offset_dump_size = 0;
+	*nt_file_found = false;
+	*note_page_size = 0;
+	*note_file_offset = 0;
 	fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (fd < 0)
 		return false;
@@ -104,6 +192,15 @@ static bool inspect_core(const char *path, unsigned int *found,
 		if (pread(fd, &phdr, sizeof(phdr),
 			  header.e_phoff + index * sizeof(phdr)) != sizeof(phdr))
 			goto error;
+		if (phdr.p_type == PT_NOTE &&
+		    !inspect_nt_file(fd, phdr.p_offset, phdr.p_filesz,
+				     nt_file_found, note_page_size,
+				     note_file_offset))
+			goto error;
+		if (phdr.p_type == PT_LOAD && phdr.p_vaddr == FILE_TEST_BASE) {
+			*offset_segment_found = true;
+			*offset_dump_size = phdr.p_filesz;
+		}
 		if (phdr.p_type != PT_LOAD || phdr.p_vaddr < TEST_BASE ||
 		    phdr.p_vaddr >= TEST_BASE + TEST_VMAS * TEST_STRIDE)
 			continue;
@@ -129,23 +226,34 @@ static int run_test(void)
 	char *old_pattern;
 	unsigned int found = 0;
 	unsigned int misaligned = 0;
+	uint64_t note_file_offset = 0;
+	uint64_t note_page_size = 0;
+	uint64_t offset_dump_size = 0;
 	size_t old_pattern_length = 0;
 	bool inspected = false;
+	bool nt_file_found = false;
+	bool offset_segment_found = false;
 	int status = 0;
 	pid_t pid = -1;
 	pid_t waited;
 
 	ksft_print_header();
-	ksft_set_plan(5);
+	ksft_set_plan(7);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
+	if (!create_offset_file())
+		ksft_exit_fail_msg("create offset test file failed: %s\n",
+				   strerror(errno));
 	old_pattern = read_core_pattern(&old_pattern_length);
-	if (!old_pattern)
+	if (!old_pattern) {
+		unlink(FILE_TEST_PATH);
 		ksft_exit_fail_msg("read core_pattern failed: %s\n",
 				   strerror(errno));
+	}
 	if (!write_file("/proc/sys/kernel/core_pattern", CORE_PATTERN,
 			strlen(CORE_PATTERN))) {
 		free(old_pattern);
+		unlink(FILE_TEST_PATH);
 		ksft_exit_skip("cannot install a temporary core pattern\n");
 	}
 	ksft_test_result(true, "install a temporary core pattern\n");
@@ -157,6 +265,8 @@ static int run_test(void)
 		ksft_test_result_fail("generate a core from the 4K process\n");
 		ksft_test_result_fail("parse the generated ELF core\n");
 		ksft_test_result_fail("keep 4K VMA offsets aligned in PT_LOAD headers\n");
+		ksft_test_result_fail("do not dump a mapping that starts at file offset 4K\n");
+		ksft_test_result_fail("encode the 4K file offset in NT_FILE\n");
 		ksft_print_msg("fork failed: %s\n", strerror(errno));
 		goto restore_pattern;
 	}
@@ -167,6 +277,8 @@ static int run_test(void)
 		ksft_test_result_fail("generate a core from the 4K process\n");
 		ksft_test_result_fail("parse the generated ELF core\n");
 		ksft_test_result_fail("keep 4K VMA offsets aligned in PT_LOAD headers\n");
+		ksft_test_result_fail("do not dump a mapping that starts at file offset 4K\n");
+		ksft_test_result_fail("encode the 4K file offset in NT_FILE\n");
 		ksft_print_msg("waitpid failed: %s\n", strerror(errno));
 		goto remove_core;
 	}
@@ -174,18 +286,30 @@ static int run_test(void)
 			 "generate a core from the 4K process\n");
 
 	snprintf(core_path, sizeof(core_path), "/tmp/elf-core-ppps-%d", pid);
-	inspected = inspect_core(core_path, &found, &misaligned);
+	inspected = inspect_core(core_path, &found, &misaligned,
+				 &offset_segment_found, &offset_dump_size,
+				 &nt_file_found, &note_page_size,
+				 &note_file_offset);
 	ksft_test_result(inspected, "parse the generated ELF core\n");
 	ksft_test_result(inspected && found == TEST_VMAS && !misaligned,
 			 "keep 4K VMA offsets aligned in PT_LOAD headers\n");
-	ksft_print_msg("test VMAs=%u misaligned PT_LOADs=%u\n",
-		       found, misaligned);
+	ksft_test_result(inspected && offset_segment_found && !offset_dump_size,
+			 "do not dump a mapping that starts at file offset 4K\n");
+	ksft_test_result(inspected && nt_file_found &&
+			 note_page_size == PROCESS_PAGE_SIZE && note_file_offset == 1,
+			 "encode the 4K file offset in NT_FILE\n");
+	ksft_print_msg("VMAs=%u misaligned=%u filesz=%llu page=%llu offset=%llu\n",
+		       found, misaligned, (unsigned long long)offset_dump_size,
+		       (unsigned long long)note_page_size,
+		       (unsigned long long)note_file_offset);
 
 remove_core:
 	snprintf(core_path, sizeof(core_path), "/tmp/elf-core-ppps-%d", pid);
 	unlink(core_path);
+	unlink(FILE_TEST_PATH);
 
 restore_pattern:
+	unlink(FILE_TEST_PATH);
 	if (!write_file("/proc/sys/kernel/core_pattern", old_pattern,
 			old_pattern_length))
 		ksft_print_msg("warning: could not restore core_pattern\n");
