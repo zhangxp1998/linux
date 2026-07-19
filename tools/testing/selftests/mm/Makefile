@@ -13,6 +13,7 @@ LOCAL_HDRS += $(selfdir)/mm/dma_mmap_attrs_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/dma_mmap_pages_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
 LOCAL_HDRS += $(selfdir)/mm/pagewalk_ppps.h
+LOCAL_HDRS += $(selfdir)/mm/folio_within_range_ppps.h
 
 include local_config.mk
 
@@ -79,6 +80,9 @@ ifneq (,$(shell grep -s '^CONFIG_MAPPING_DIRTY_HELPERS=y$$' $(KDIR)/.config))
 PAGEWALK_PPPS_MODULE := pagewalk_ppps_module/pagewalk_ppps_module.ko
 TEST_FILES += $(PAGEWALK_PPPS_MODULE)
 endif
+FOLIO_WITHIN_RANGE_PPPS_MODULE := \
+	folio_within_range_ppps_module/folio_within_range_ppps_test.ko
+TEST_FILES += $(FOLIO_WITHIN_RANGE_PPPS_MODULE)
 else
 PAGE_FRAG_WARNING = "missing Module.symvers, please have the kernel built first"
 endif
@@ -121,6 +125,7 @@ TEST_GEN_FILES += madv_populate
 TEST_GEN_FILES += madvise_remove_ppps
 TEST_GEN_FILES += madvise_willneed_ppps
 TEST_GEN_FILES += filemap_exec_readahead_ppps
+TEST_GEN_FILES += folio_within_range_ppps
 TEST_GEN_FILES += map_fixed_noreplace
 TEST_GEN_FILES += map_hugetlb
 TEST_GEN_FILES += map_populate
@@ -267,6 +272,7 @@ TEST_FILES += test_dma_mmap_pages_ppps.sh
 TEST_FILES += test_iommu_dma_mmap_ppps.sh
 TEST_FILES += test_v9fs_mmap_close_ppps.sh
 TEST_FILES += test_pagewalk_ppps.sh
+TEST_FILES += test_folio_within_range_ppps.sh
 TEST_FILES += test_vm_map_pages_ppps.sh
 TEST_FILES += test_page_frag.sh
 TEST_FILES += run_vmtests.sh
@@ -420,6 +426,21 @@ clean_pagewalk_ppps_module:
 	+$(MAKE) -C pagewalk_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_pagewalk_ppps_module
+endif
+
+ifneq ($(FOLIO_WITHIN_RANGE_PPPS_MODULE),)
+all: $(FOLIO_WITHIN_RANGE_PPPS_MODULE)
+
+$(FOLIO_WITHIN_RANGE_PPPS_MODULE): \
+	folio_within_range_ppps_module/folio_within_range_ppps_test.c \
+	folio_within_range_ppps_module/Makefile folio_within_range_ppps.h
+	+$(MAKE) -C folio_within_range_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_folio_within_range_ppps_module
+clean_folio_within_range_ppps_module:
+	+$(MAKE) -C folio_within_range_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_folio_within_range_ppps_module
 endif
 
 $(TEST_GEN_PROGS): vm_util.c thp_settings.c
