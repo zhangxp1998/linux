@@ -149,6 +149,13 @@ static loff_t vaddr_to_offset(struct vm_area_struct *vma, unsigned long vaddr)
 	return vma_file_offset(vma) + (vaddr - vma->vm_start);
 }
 
+static unsigned long uprobe_vma_page_offset(struct vm_area_struct *vma,
+					    unsigned long vaddr)
+{
+	return vma_page_slice_offset(vma, NULL, vaddr) +
+	       mm_offset_in_page(vma->vm_mm, vaddr);
+}
+
 /**
  * __replace_page - replace page in vma by new page.
  * based on replace_page in mm/ksm.c
@@ -218,9 +225,12 @@ static int __replace_page(struct vm_area_struct *vma, unsigned long addr,
 
 	flush_cache_page(vma, addr, pte_pfn(pte));
 	ptep_clear_flush(vma, addr, pvmw.pte);
-	if (new_page)
-		set_pte_at(mm, addr, pvmw.pte,
-			   mk_pte(new_page, vma->vm_page_prot));
+	if (new_page) {
+		pte_t entry = mk_pte(new_page, vma->vm_page_prot);
+
+		entry = vma_pte_mkslice(vma, entry, addr);
+		set_pte_at(mm, addr, pvmw.pte, entry);
+	}
 
 	folio_remove_rmap_pte(old_folio, old_page, vma);
 	if (!folio_mapped(old_folio))
@@ -274,7 +284,8 @@ static void copy_to_page(struct page *page, unsigned long vaddr, const void *src
 	kunmap_atomic(kaddr);
 }
 
-static int verify_opcode(struct page *page, unsigned long vaddr, uprobe_opcode_t *new_opcode)
+static int verify_opcode(struct page *page, struct vm_area_struct *vma,
+			 unsigned long vaddr, uprobe_opcode_t *new_opcode)
 {
 	uprobe_opcode_t old_opcode;
 	bool is_swbp;
@@ -288,7 +299,8 @@ static int verify_opcode(struct page *page, unsigned long vaddr, uprobe_opcode_t
 	 * is a trap variant; uprobes always wins over any other (gdb)
 	 * breakpoint.
 	 */
-	copy_from_page(page, vaddr, &old_opcode, UPROBE_SWBP_INSN_SIZE);
+	copy_from_page(page, uprobe_vma_page_offset(vma, vaddr),
+		       &old_opcode, UPROBE_SWBP_INSN_SIZE);
 	is_swbp = is_swbp_insn(&old_opcode);
 
 	if (is_swbp_insn(new_opcode)) {
@@ -384,9 +396,10 @@ find_ref_ctr_vma(struct uprobe *uprobe, struct mm_struct *mm)
 	return NULL;
 }
 
-static int
-__update_ref_ctr(struct mm_struct *mm, unsigned long vaddr, short d)
+static int __update_ref_ctr(struct vm_area_struct *vma, unsigned long vaddr,
+			    short d)
 {
+	struct mm_struct *mm = vma->vm_mm;
 	void *kaddr;
 	struct page *page;
 	int ret;
@@ -406,7 +419,7 @@ __update_ref_ctr(struct mm_struct *mm, unsigned long vaddr, short d)
 	}
 
 	kaddr = kmap_atomic(page);
-	ptr = kaddr + (vaddr & ~PAGE_MASK);
+	ptr = kaddr + uprobe_vma_page_offset(vma, vaddr);
 
 	if (unlikely(*ptr + d < 0)) {
 		pr_warn("ref_ctr going negative. vaddr: 0x%lx, "
@@ -444,7 +457,7 @@ static int update_ref_ctr(struct uprobe *uprobe, struct mm_struct *mm,
 
 	if (rc_vma) {
 		rc_vaddr = offset_to_vaddr(rc_vma, uprobe->ref_ctr_offset);
-		ret = __update_ref_ctr(mm, rc_vaddr, d);
+		ret = __update_ref_ctr(rc_vma, rc_vaddr, d);
 		if (ret)
 			update_ref_ctr_warn(uprobe, mm, d);
 
@@ -501,7 +514,7 @@ retry:
 	if (IS_ERR(old_page))
 		return PTR_ERR(old_page);
 
-	ret = verify_opcode(old_page, vaddr, &opcode);
+	ret = verify_opcode(old_page, vma, vaddr, &opcode);
 	if (ret <= 0)
 		goto put_old;
 
@@ -540,7 +553,8 @@ retry:
 
 	__SetPageUptodate(new_page);
 	copy_highpage(new_page, old_page);
-	copy_to_page(new_page, vaddr, &opcode, UPROBE_SWBP_INSN_SIZE);
+	copy_to_page(new_page, uprobe_vma_page_offset(vma, vaddr), &opcode,
+		     UPROBE_SWBP_INSN_SIZE);
 
 	if (!is_register) {
 		struct page *orig_page;
@@ -1392,7 +1406,7 @@ static int delayed_ref_ctr_inc(struct vm_area_struct *vma)
 			continue;
 
 		vaddr = offset_to_vaddr(vma, du->uprobe->ref_ctr_offset);
-		ret = __update_ref_ctr(vma->vm_mm, vaddr, 1);
+		ret = __update_ref_ctr(vma, vaddr, 1);
 		if (ret) {
 			update_ref_ctr_warn(du->uprobe, vma->vm_mm, 1);
 			if (!err)
@@ -1506,10 +1520,19 @@ static const struct vm_special_mapping xol_mapping = {
 
 unsigned long __weak arch_uprobe_get_xol_area(void)
 {
-	/* Try to map as high as possible, this is only a hint. */
-	return get_unmapped_area(NULL, TASK_SIZE - PAGE_SIZE, PAGE_SIZE, 0, 0);
-}
+	unsigned long size = PAGE_SIZE;
+	unsigned long addr;
 
+	if (ppps_mm_is_compat(current->mm))
+		size += PAGE_SIZE;
+
+	/* Try to map as high as possible, this is only a hint. */
+	addr = get_unmapped_area(NULL, TASK_SIZE - size, size, 0, 0);
+	if (!IS_ERR_VALUE(addr) && size != PAGE_SIZE)
+		addr = PAGE_ALIGN(addr);
+
+	return addr;
+}
 /* Slot allocation for XOL */
 static int xol_add_vma(struct mm_struct *mm, struct xol_area *area)
 {
