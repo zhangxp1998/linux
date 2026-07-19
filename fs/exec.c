@@ -441,15 +441,19 @@ static const char __user *get_user_arg_ptr(struct user_arg_ptr argv, int nr)
 		compat_uptr_t compat;
 
 		if (get_user(compat, argv.ptr.compat + nr))
-			return ERR_PTR(-EFAULT);
-
-		return compat_ptr(compat);
+			native = ERR_PTR(-EFAULT);
+		else
+			native = compat_ptr(compat);
+		goto out;
 	}
 #endif
 
 	if (get_user(native, argv.ptr.native + nr))
-		return ERR_PTR(-EFAULT);
+		native = ERR_PTR(-EFAULT);
 
+#ifdef CONFIG_COMPAT
+out:
+#endif
 	return native;
 }
 
@@ -654,7 +658,9 @@ static int copy_strings(int argc, struct user_arg_ptr argv,
 				kpos = pos & proc_page_mask;
 				flush_arg_page(bprm, kpos, kmapped_page);
 			}
-			if (copy_from_user(kaddr + (pos % proc_page_size), str, bytes_to_copy)) {
+			ret = copy_from_user(kaddr + (pos % proc_page_size), str,
+					     bytes_to_copy);
+			if (ret) {
 				ret = -EFAULT;
 				goto out;
 			}
