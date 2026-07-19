@@ -1844,8 +1844,13 @@ static int ublk_ch_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct ublk_device *ub = filp->private_data;
 	size_t sz = vma->vm_end - vma->vm_start;
+	size_t page_size = ppps_mm_is_compat(vma->vm_mm) ?
+			   MM_PAGE_SIZE(vma->vm_mm) : PAGE_SIZE;
+	size_t mmap_sz = round_up(ub->dev_info.queue_depth *
+				  sizeof(struct ublksrv_io_desc), page_size);
 	unsigned max_sz = ublk_max_cmd_buf_size();
-	unsigned long pfn, end, phys_off = vma->vm_pgoff << PAGE_SHIFT;
+	unsigned long pfn;
+	loff_t end, phys_off = vma_file_offset(vma);
 	int q_id, ret = 0;
 
 	spin_lock(&ub->lock);
@@ -1865,12 +1870,12 @@ static int ublk_ch_mmap(struct file *filp, struct vm_area_struct *vma)
 	if (phys_off < UBLKSRV_CMD_BUF_OFFSET || phys_off >= end)
 		return -EINVAL;
 
-	q_id = (phys_off - UBLKSRV_CMD_BUF_OFFSET) / max_sz;
-	pr_devel("%s: qid %d, pid %d, addr %lx pg_off %lx sz %lu\n",
+	q_id = (unsigned long)(phys_off - UBLKSRV_CMD_BUF_OFFSET) / max_sz;
+	pr_devel("%s: qid %d, pid %d, addr %lx offset %llx sz %lu\n",
 			__func__, q_id, current->pid, vma->vm_start,
-			phys_off, (unsigned long)sz);
+			(unsigned long long)phys_off, (unsigned long)sz);
 
-	if (sz != ublk_queue_cmd_buf_size(ub))
+	if (sz != mmap_sz)
 		return -EINVAL;
 
 	pfn = virt_to_phys(ublk_queue_cmd_buf(ub, q_id)) >> PAGE_SHIFT;
