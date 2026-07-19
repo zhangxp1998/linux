@@ -2,6 +2,8 @@
 
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/fcntl.h>
+#include <linux/ioctl.h>
 #include <linux/sizes.h>
 #include <linux/videodev2.h>
 #include <media/videobuf2-core.h>
@@ -10,6 +12,7 @@
 #include "../../ppps/ppps_misc_module.h"
 
 #define TEST_PLANE_SIZE (6 * SZ_1K)
+#define VB2_MMAP_PPPS_EXPBUF _IO('v', 0x70)
 
 static DEFINE_MUTEX(test_queue_lock);
 static struct vb2_queue test_queue;
@@ -43,9 +46,26 @@ static int test_mmap(struct file *file, struct vm_area_struct *vma)
 	return vb2_mmap(&test_queue, vma);
 }
 
+static long test_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	struct vb2_buffer *vb = test_queue.bufs[0];
+	int fd;
+	int ret;
+
+	if (cmd != VB2_MMAP_PPPS_EXPBUF)
+		return -ENOTTY;
+	if (!vb)
+		return -ENODEV;
+
+	ret = vb2_core_expbuf(&test_queue, &fd, test_queue.type, vb, 0,
+			      O_RDWR);
+	return ret ? ret : fd;
+}
+
 static const struct file_operations test_fops = {
 	.owner = THIS_MODULE,
 	.mmap = test_mmap,
+	.unlocked_ioctl = test_ioctl,
 };
 
 static int test_setup(void)
