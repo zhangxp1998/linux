@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/io_uring.h>
+#include <linux/memfd.h>
 #include <linux/ublk_cmd.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -25,6 +26,7 @@
 #endif
 
 #define USER_PAGE_SIZE 4096UL
+#define NATIVE_TEST_PAGE_SIZE 16384UL
 #define USER_DATA 0x75626c6b2d707070ULL
 #define SQE_SIZE_128 128UL
 
@@ -105,7 +107,9 @@ static bool map_ring(int fd, const struct io_uring_params *params,
 static int submit_ctrl_cmd(int ring_fd, const struct io_uring_params *params,
 			   struct ring_mapping *map, int ctrl_fd,
 			   unsigned int cmd_op,
-			   struct ublksrv_ctrl_dev_info *info)
+			   struct ublksrv_ctrl_dev_info *info,
+			   void *payload, size_t payload_len,
+			   uint64_t data)
 {
 	unsigned int *sq_head = map->sq_ring + params->sq_off.head;
 	unsigned int *sq_tail = map->sq_ring + params->sq_off.tail;
@@ -135,10 +139,11 @@ static int submit_ctrl_cmd(int ring_fd, const struct io_uring_params *params,
 	cmd = (struct ublksrv_ctrl_cmd *)&sqe->cmd;
 	cmd->dev_id = info->dev_id;
 	cmd->queue_id = (uint16_t)-1;
-	if (_IOC_NR(cmd_op) == UBLK_CMD_ADD_DEV) {
-		cmd->addr = (uintptr_t)info;
-		cmd->len = sizeof(*info);
+	if (payload) {
+		cmd->addr = (uintptr_t)payload;
+		cmd->len = payload_len;
 	}
+	cmd->data[0] = data;
 	sq_array[index] = index;
 	__atomic_store_n(sq_tail, tail + 1, __ATOMIC_RELEASE);
 	if (enter_ring(ring_fd, 1, 1, IORING_ENTER_GETEVENTS) != 1)
@@ -223,6 +228,10 @@ static int run_test(void)
 		.queue_depth = 1,
 		.max_io_buf_bytes = 64 * 1024,
 		.dev_id = UINT32_MAX,
+		.flags = UBLK_F_SHMEM_ZC,
+	};
+	struct ublk_shmem_buf_reg buf_reg = {
+		.len = 2 * USER_PAGE_SIZE,
 	};
 	struct io_uring_params params = {
 		.flags = IORING_SETUP_SQE128,
@@ -230,18 +239,23 @@ static int run_test(void)
 	struct ring_mapping map;
 	void *queue0 = MAP_FAILED;
 	void *queue1 = MAP_FAILED;
+	void *shared = MAP_FAILED;
 	size_t cmd_size;
 	off_t queue1_offset;
 	bool ring_mapped = false;
 	bool added = false;
+	bool registered = false;
+	bool registration_cycle = false;
 	bool deleted = false;
 	int ctrl_fd;
 	int ring_fd = -1;
 	int char_fd = -1;
+	int memfd = -1;
+	int buf_index = -1;
 	int ret;
 
 	ksft_print_header();
-	ksft_set_plan(8);
+	ksft_set_plan(9);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	ctrl_fd = open_ublk_control();
@@ -254,12 +268,48 @@ static int run_test(void)
 	ksft_test_result(ring_mapped, "map ublk control ring\n");
 	if (ring_mapped) {
 		ret = submit_ctrl_cmd(ring_fd, &params, &map, ctrl_fd,
-				      UBLK_U_CMD_ADD_DEV, &info);
+				      UBLK_U_CMD_ADD_DEV, &info, &info,
+				      sizeof(info), 0);
 		added = ret == 0;
 		if (!added)
 			ksft_print_msg("add device failed: %d\n", ret);
 	}
 	ksft_test_result(added, "add a two-queue ublk device\n");
+	if (added) {
+		memfd = syscall(__NR_memfd_create, "ublk-ppps", MFD_CLOEXEC);
+		if (memfd >= 0 && !ftruncate(memfd, 4 * USER_PAGE_SIZE))
+			shared = mmap(NULL, 4 * USER_PAGE_SIZE,
+				      PROT_READ | PROT_WRITE, MAP_SHARED,
+				      memfd, 0);
+		if (shared != MAP_FAILED) {
+			buf_reg.addr = (uintptr_t)shared;
+			if (!(buf_reg.addr & (NATIVE_TEST_PAGE_SIZE - 1)))
+				buf_reg.addr += USER_PAGE_SIZE;
+			buf_index = submit_ctrl_cmd(ring_fd, &params, &map,
+						    ctrl_fd, UBLK_U_CMD_REG_BUF,
+						    &info, &buf_reg,
+						    sizeof(buf_reg), 0);
+			registered = buf_index >= 0;
+			if (registered) {
+				ret = submit_ctrl_cmd(ring_fd, &params, &map,
+						      ctrl_fd,
+						      UBLK_U_CMD_UNREG_BUF,
+						      &info, NULL, 0, buf_index);
+				if (!ret) {
+					registered = false;
+					buf_index = submit_ctrl_cmd(ring_fd, &params,
+								    &map, ctrl_fd,
+								    UBLK_U_CMD_REG_BUF,
+								    &info, &buf_reg,
+								    sizeof(buf_reg), 0);
+					registered = buf_index >= 0;
+					registration_cycle = registered;
+				}
+			}
+		}
+	}
+	ksft_test_result(registration_cycle,
+			 "re-register two non-native-aligned process pages\n");
 	if (added)
 		char_fd = open_ublk_char(info.dev_id);
 	if (char_fd >= 0) {
@@ -283,9 +333,18 @@ static int run_test(void)
 		munmap(queue1, cmd_size);
 	if (char_fd >= 0)
 		close(char_fd);
+	if (registered)
+		submit_ctrl_cmd(ring_fd, &params, &map, ctrl_fd,
+				UBLK_U_CMD_UNREG_BUF, &info, NULL, 0,
+				buf_index);
+	if (shared != MAP_FAILED)
+		munmap(shared, 4 * USER_PAGE_SIZE);
+	if (memfd >= 0)
+		close(memfd);
 	if (added) {
 		ret = submit_ctrl_cmd(ring_fd, &params, &map, ctrl_fd,
-				      UBLK_U_CMD_DEL_DEV_ASYNC, &info);
+				      UBLK_U_CMD_DEL_DEV_ASYNC, &info,
+				      NULL, 0, 0);
 		deleted = ret == 0;
 	}
 	ksft_test_result(deleted, "delete the ublk device\n");
