@@ -3479,6 +3479,18 @@ static vm_fault_t filemap_fault_recheck_pte_none(struct vm_fault *vmf)
 	return ret;
 }
 
+static bool filemap_fault_page_beyond_eof(struct vm_fault *vmf, loff_t isize)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	u64 offset;
+
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return false;
+
+	offset = vma_file_offset(vma) + vmf->address - vma->vm_start;
+	return offset >= isize;
+}
+
 /**
  * filemap_fault - read in file data for page fault handling
  * @vmf:	struct vm_fault containing details of the fault
@@ -3510,12 +3522,15 @@ vm_fault_t filemap_fault(struct vm_fault *vmf)
 	struct address_space *mapping = file->f_mapping;
 	struct inode *inode = mapping->host;
 	pgoff_t max_idx, index = vmf->pgoff;
+	loff_t isize;
 	struct folio *folio;
 	vm_fault_t ret = 0;
 	bool mapping_locked = false;
 
-	max_idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
-	if (unlikely(index >= max_idx))
+	isize = i_size_read(inode);
+	max_idx = DIV_ROUND_UP(isize, PAGE_SIZE);
+	if (unlikely(index >= max_idx ||
+		     filemap_fault_page_beyond_eof(vmf, isize)))
 		return VM_FAULT_SIGBUS;
 
 	trace_mm_filemap_fault(mapping, index);
@@ -3622,8 +3637,10 @@ retry_find:
 	 * Found the page and have a reference on it.
 	 * We must recheck i_size under page lock.
 	 */
-	max_idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
-	if (unlikely(index >= max_idx)) {
+	isize = i_size_read(inode);
+	max_idx = DIV_ROUND_UP(isize, PAGE_SIZE);
+	if (unlikely(index >= max_idx ||
+		     filemap_fault_page_beyond_eof(vmf, isize))) {
 		folio_unlock(folio);
 		folio_put(folio);
 		return VM_FAULT_SIGBUS;
