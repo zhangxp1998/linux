@@ -4666,8 +4666,10 @@ static int packet_mmap(struct file *file, struct socket *sock,
 			int pg_num;
 
 			for (pg_num = 0; pg_num < rb->pg_vec_pages; pg_num++) {
+				unsigned long nr_pages = 1;
+
 				page = pgv_to_page(kaddr);
-				err = vm_insert_page(vma, start, page);
+				err = vm_insert_pages(vma, start, &page, &nr_pages);
 				if (unlikely(err))
 					goto out;
 				start += PAGE_SIZE;
