@@ -20,6 +20,7 @@
 
 struct module;
 struct uio_map;
+struct uio_device;
 
 /**
  * struct uio_mem - description of a UIO memory region
@@ -85,7 +86,6 @@ struct uio_device {
 	struct mutex		info_lock;
 	struct kobject          *map_dir;
 	struct kobject          *portio_dir;
-
 	ANDROID_KABI_RESERVE(1);
 };
 
