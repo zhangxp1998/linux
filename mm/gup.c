@@ -3585,13 +3585,25 @@ long pin_user_pages_remote(struct mm_struct *mm,
 			   int *locked)
 {
 	int local_locked = 1;
+	long ret;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	struct mm_struct *prev_pgtable_mm;
+#endif
 
 	if (!is_valid_gup_args(pages, locked, &gup_flags,
 			       FOLL_PIN | FOLL_TOUCH | FOLL_REMOTE))
 		return 0;
-	return __gup_longterm_locked(mm, start, nr_pages, pages,
-				     locked ? locked : &local_locked,
-				     gup_flags);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	prev_pgtable_mm = current->pgtable_mm;
+	current->pgtable_mm = mm;
+#endif
+	ret = __gup_longterm_locked(mm, start, nr_pages, pages,
+				    locked ? locked : &local_locked,
+				    gup_flags);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	current->pgtable_mm = prev_pgtable_mm;
+#endif
+	return ret;
 }
 EXPORT_SYMBOL(pin_user_pages_remote);
 
