@@ -228,6 +228,7 @@ int get_futex_key(u32 __user *uaddr, unsigned int flags, union futex_key *key,
 	struct page *page;
 	struct folio *folio;
 	struct address_space *mapping;
+	unsigned int futex_offset;
 	int err, ro = 0;
 	bool fshared;
 
@@ -236,10 +237,11 @@ int get_futex_key(u32 __user *uaddr, unsigned int flags, union futex_key *key,
 	/*
 	 * The futex address must be "naturally" aligned.
 	 */
-	key->both.offset = address % PAGE_SIZE;
+	futex_offset = mm_offset_in_page(mm, address);
+	key->both.offset = futex_offset;
 	if (unlikely((address % sizeof(u32)) != 0))
 		return -EINVAL;
-	address -= key->both.offset;
+	address -= futex_offset;
 
 	if (unlikely(!access_ok(uaddr, sizeof(u32))))
 		return -EFAULT;
@@ -275,6 +277,14 @@ again:
 	if (unlikely(should_fail_futex(true)))
 		return -EFAULT;
 
+	/*
+	 * File-backed futex offsets are relative to a native page-cache page:
+	 * include the slice the process page occupies within it.
+	 */
+	key->both.offset = futex_offset;
+	if (ppps_mm_is_compat(mm))
+		key->both.offset += mm_user_slice_offset(mm,
+							 untagged_addr(address));
 	err = get_user_pages_fast(address, 1, FOLL_WRITE, &page);
 	/*
 	 * If write access is not required (eg. FUTEX_WAIT), try
