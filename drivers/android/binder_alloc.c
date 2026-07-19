@@ -69,6 +69,25 @@ static size_t binder_alloc_buffer_size(struct binder_alloc *alloc,
 	return binder_buffer_next(buffer)->user_data - buffer->user_data;
 }
 
+static unsigned long binder_alloc_page_start(struct binder_alloc *alloc,
+					     unsigned long address)
+{
+	return alloc->buffer +
+		ALIGN_DOWN(address - alloc->buffer, PAGE_SIZE);
+}
+
+static unsigned long binder_alloc_page_end(struct binder_alloc *alloc,
+					   unsigned long address)
+{
+	return alloc->buffer + PAGE_ALIGN(address - alloc->buffer);
+}
+
+static bool binder_alloc_page_aligned(struct binder_alloc *alloc,
+				      unsigned long address)
+{
+	return IS_ALIGNED(address - alloc->buffer, PAGE_SIZE);
+}
+
 static void binder_insert_free_buffer(struct binder_alloc *alloc,
 				      struct binder_buffer *new_buffer)
 {
@@ -257,6 +276,19 @@ static struct page *binder_page_lookup(struct binder_alloc *alloc,
 	return npages > 0 ? page : NULL;
 }
 
+static int binder_vm_insert_page(struct vm_area_struct *vma,
+				 unsigned long addr, struct page *page)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm)) {
+		unsigned long num = 1;
+
+		return vm_insert_pages(vma, addr, &page, &num);
+	}
+#endif
+	return vm_insert_page(vma, addr, page);
+}
+
 static int binder_page_insert(struct binder_alloc *alloc,
 			      unsigned long addr,
 			      struct page *page)
@@ -269,7 +301,7 @@ static int binder_page_insert(struct binder_alloc *alloc,
 	vma = lock_vma_under_rcu(mm, addr);
 	if (vma) {
 		if (binder_alloc_is_mapped(alloc))
-			ret = vm_insert_page(vma, addr, page);
+			ret = binder_vm_insert_page(vma, addr, page);
 		vma_end_read(vma);
 		return ret;
 	}
@@ -278,7 +310,7 @@ static int binder_page_insert(struct binder_alloc *alloc,
 	mmap_read_lock(mm);
 	vma = vma_lookup(mm, addr);
 	if (vma && binder_alloc_is_mapped(alloc))
-		ret = vm_insert_page(vma, addr, page);
+		ret = binder_vm_insert_page(vma, addr, page);
 	mmap_read_unlock(mm);
 
 	return ret;
@@ -371,8 +403,8 @@ static int binder_install_buffer_pages(struct binder_alloc *alloc,
 	unsigned long start, final;
 	unsigned long page_addr;
 
-	start = buffer->user_data & PAGE_MASK;
-	final = PAGE_ALIGN(buffer->user_data + size);
+	start = binder_alloc_page_start(alloc, buffer->user_data);
+	final = binder_alloc_page_end(alloc, buffer->user_data + size);
 
 	for (page_addr = start; page_addr < final; page_addr += PAGE_SIZE) {
 		unsigned long index;
@@ -528,6 +560,7 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 	struct rb_node *best_fit = NULL;
 	struct binder_buffer *buffer;
 	unsigned long next_used_page;
+	unsigned long curr_first_page;
 	unsigned long curr_last_page;
 	bool should_fail = false;
 	size_t buffer_size;
@@ -598,9 +631,11 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 	 * adjacent in-use buffer. In such case, the page has been already
 	 * removed from the freelist so we trim our range short.
 	 */
-	next_used_page = (buffer->user_data + buffer_size) & PAGE_MASK;
-	curr_last_page = PAGE_ALIGN(buffer->user_data + size);
-	binder_lru_freelist_del(alloc, PAGE_ALIGN(buffer->user_data),
+	next_used_page = buffer->user_data + buffer_size;
+	next_used_page = binder_alloc_page_start(alloc, next_used_page);
+	curr_first_page = binder_alloc_page_end(alloc, buffer->user_data);
+	curr_last_page = binder_alloc_page_end(alloc, buffer->user_data + size);
+	binder_lru_freelist_del(alloc, curr_first_page,
 				min(next_used_page, curr_last_page));
 
 	rb_erase(&buffer->rb_node, &alloc->free_buffers);
@@ -715,14 +750,16 @@ out:
 	return buffer;
 }
 
-static unsigned long buffer_start_page(struct binder_buffer *buffer)
+static unsigned long buffer_start_page(struct binder_alloc *alloc,
+				       struct binder_buffer *buffer)
 {
-	return buffer->user_data & PAGE_MASK;
+	return binder_alloc_page_start(alloc, buffer->user_data);
 }
 
-static unsigned long prev_buffer_end_page(struct binder_buffer *buffer)
+static unsigned long prev_buffer_end_page(struct binder_alloc *alloc,
+					  struct binder_buffer *buffer)
 {
-	return (buffer->user_data - 1) & PAGE_MASK;
+	return binder_alloc_page_start(alloc, buffer->user_data - 1);
 }
 
 static void binder_delete_free_buffer(struct binder_alloc *alloc,
@@ -730,23 +767,25 @@ static void binder_delete_free_buffer(struct binder_alloc *alloc,
 {
 	struct binder_buffer *prev, *next;
 
-	if (PAGE_ALIGNED(buffer->user_data))
+	if (binder_alloc_page_aligned(alloc, buffer->user_data))
 		goto skip_freelist;
 
 	BUG_ON(alloc->buffers.next == &buffer->entry);
 	prev = binder_buffer_prev(buffer);
 	BUG_ON(!prev->free);
-	if (prev_buffer_end_page(prev) == buffer_start_page(buffer))
+	if (prev_buffer_end_page(alloc, prev) ==
+	    buffer_start_page(alloc, buffer))
 		goto skip_freelist;
 
 	if (!list_is_last(&buffer->entry, &alloc->buffers)) {
 		next = binder_buffer_next(buffer);
-		if (buffer_start_page(next) == buffer_start_page(buffer))
+		if (buffer_start_page(alloc, next) ==
+		    buffer_start_page(alloc, buffer))
 			goto skip_freelist;
 	}
 
-	binder_lru_freelist_add(alloc, buffer_start_page(buffer),
-				buffer_start_page(buffer) + PAGE_SIZE);
+	binder_lru_freelist_add(alloc, buffer_start_page(alloc, buffer),
+				buffer_start_page(alloc, buffer) + PAGE_SIZE);
 skip_freelist:
 	list_del(&buffer->entry);
 	kfree(buffer);
@@ -755,6 +794,7 @@ skip_freelist:
 static void binder_free_buf_locked(struct binder_alloc *alloc,
 				   struct binder_buffer *buffer)
 {
+	unsigned long start_page, end_page;
 	size_t size, buffer_size;
 
 	buffer_size = binder_alloc_buffer_size(alloc, buffer);
@@ -780,8 +820,10 @@ static void binder_free_buf_locked(struct binder_alloc *alloc,
 			      alloc->pid, size, alloc->free_async_space);
 	}
 
-	binder_lru_freelist_add(alloc, PAGE_ALIGN(buffer->user_data),
-				(buffer->user_data + buffer_size) & PAGE_MASK);
+	start_page = binder_alloc_page_end(alloc, buffer->user_data);
+	end_page = buffer->user_data + buffer_size;
+	end_page = binder_alloc_page_start(alloc, end_page);
+	binder_lru_freelist_add(alloc, start_page, end_page);
 
 	rb_erase(&buffer->rb_node, &alloc->allocated_buffers);
 	buffer->free = 1;
@@ -931,7 +973,8 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 
 	alloc->buffer = vma->vm_start;
 
-	alloc_to_wrap(alloc)->pages = kvcalloc(alloc->buffer_size / PAGE_SIZE,
+	alloc_to_wrap(alloc)->pages = kvcalloc(
+				DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE),
 				sizeof(alloc_to_wrap(alloc)->pages[0]),
 				GFP_KERNEL);
 	if (!alloc_to_wrap(alloc)->pages) {
@@ -1014,7 +1057,8 @@ void binder_alloc_deferred_release(struct binder_alloc *alloc)
 	if (alloc_to_wrap(alloc)->pages) {
 		int i;
 
-		for (i = 0; i < alloc->buffer_size / PAGE_SIZE; i++) {
+		for (i = 0; i < DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE);
+		     i++) {
 			struct page *page;
 			bool on_lru;
 
@@ -1091,7 +1135,8 @@ void binder_alloc_print_pages(struct seq_file *m,
 	 * read inconsistent state.
 	 */
 	if (binder_alloc_is_mapped(alloc)) {
-		for (i = 0; i < alloc->buffer_size / PAGE_SIZE; i++) {
+		for (i = 0; i < DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE);
+		     i++) {
 			page = binder_get_installed_page(alloc, i);
 			if (!page)
 				free++;
