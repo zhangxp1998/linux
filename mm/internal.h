@@ -1049,11 +1049,11 @@ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
 	unsigned long address;
 
 	/* Common case, plus ->pgoff is invalid for KSM */
-	if (pvmw->nr_pages == 1)
+	if (pvmw->nr_pages == 1 && !ppps_vma_has_slices(vma))
 		return pvmw->address + PAGE_SIZE;
 
 	pgoff = pvmw->pgoff + pvmw->nr_pages;
-	address = vma->vm_start + ((pgoff - vma->vm_pgoff) << PAGE_SHIFT);
+	address = vma_pgoff_to_address(vma, pgoff);
 	/* Check for address beyond vma (or wrapped through 0?) */
 	if (address < vma->vm_start || address > vma->vm_end)
 		address = vma->vm_end;
