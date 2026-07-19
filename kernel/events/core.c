@@ -6231,7 +6231,7 @@ static void perf_event_init_userpage(struct perf_event *event)
 	/* Allow new userspace to detect that bit 0 is deprecated */
 	userpg->cap_bit0_is_deprecated = 1;
 	userpg->size = offsetof(struct perf_event_mmap_page, __reserved);
-	userpg->data_offset = PAGE_SIZE;
+	userpg->data_offset = rb->mmap_page_size;
 	userpg->data_size = perf_data_size(rb);
 
 unlock:
@@ -6439,6 +6439,12 @@ void ring_buffer_put(struct perf_buffer *rb)
 	call_rcu(&rb->rcu_head, rb_free_rcu);
 }
 
+static bool perf_mmap_is_aux(struct perf_buffer *rb,
+			     struct vm_area_struct *vma)
+{
+	return rb_has_aux(rb) && vma_file_offset(vma) == rb->aux_offset;
+}
+
 static void perf_mmap_open(struct vm_area_struct *vma)
 {
 	struct perf_event *event = vma->vm_file->private_data;
@@ -6446,7 +6452,7 @@ static void perf_mmap_open(struct vm_area_struct *vma)
 	atomic_inc(&event->mmap_count);
 	atomic_inc(&event->rb->mmap_count);
 
-	if (vma->vm_pgoff)
+	if (perf_mmap_is_aux(event->rb, vma))
 		atomic_inc(&event->rb->aux_mmap_count);
 
 	if (event->pmu->event_mapped)
@@ -6469,7 +6475,6 @@ static void perf_mmap_close(struct vm_area_struct *vma)
 	struct perf_buffer *rb = ring_buffer_get(event);
 	struct user_struct *mmap_user = rb->mmap_user;
 	int mmap_locked = rb->mmap_locked;
-	unsigned long size = perf_data_size(rb);
 	bool detach_rest = false;
 
 	if (event->pmu->event_unmapped)
@@ -6479,7 +6484,7 @@ static void perf_mmap_close(struct vm_area_struct *vma)
 	 * The AUX buffer is strictly a sub-buffer, serialize using aux_mutex
 	 * to avoid complications.
 	 */
-	if (rb_has_aux(rb) && vma->vm_pgoff == rb->aux_pgoff &&
+	if (perf_mmap_is_aux(rb, vma) &&
 	    atomic_dec_and_mutex_lock(&rb->aux_mmap_count, &rb->aux_mutex)) {
 		/*
 		 * Stop all AUX events that are writing to this buffer,
@@ -6564,7 +6569,7 @@ again:
 	 * undo the VM accounting.
 	 */
 
-	atomic_long_sub((size >> PAGE_SHIFT) + 1 - mmap_locked,
+	atomic_long_sub(data_page_nr(rb) + 1 - mmap_locked,
 			&mmap_user->locked_vm);
 	atomic64_sub(mmap_locked, &vma->vm_mm->pinned_vm);
 	free_uid(mmap_user);
@@ -6573,11 +6578,102 @@ out_put:
 	ring_buffer_put(rb); /* could be last */
 }
 
+static vm_fault_t perf_mmap_pfn_mkwrite(struct vm_fault *vmf)
+{
+	/* The process-page metadata area is writable; data and AUX are not. */
+	if (vma_file_offset(vmf->vma) ||
+	    vmf->address >= vmf->vma->vm_start +
+	    MM_PAGE_SIZE(vmf->vma->vm_mm))
+		return VM_FAULT_SIGBUS;
+	return 0;
+}
+
+static int perf_mmap_may_split(struct vm_area_struct *vma, unsigned long addr)
+{
+	return -EINVAL;
+}
+
+static int perf_map_main_ppps(struct perf_buffer *rb,
+			      struct vm_area_struct *vma)
+{
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
+	unsigned long data_size = perf_data_size(rb);
+	unsigned long data_offset = 0;
+	unsigned long uaddr = vma->vm_start;
+	pgprot_t prot = vm_get_page_prot(vma->vm_flags & ~VM_SHARED);
+	struct page *page;
+	int ret;
+
+	page = perf_mmap_to_page(rb, 0);
+	if (!page) {
+		ret = -EINVAL;
+		goto out;
+	}
+	ret = remap_pfn_range_slice(vma, uaddr, page_to_pfn(page), 0,
+				    page_size, prot);
+	if (ret)
+		goto out;
+	uaddr += page_size;
+
+	while (data_offset < data_size) {
+		unsigned int slice = offset_in_page(data_offset) / page_size;
+
+		page = perf_mmap_to_page(rb, 1 + data_offset / PAGE_SIZE);
+		if (!page) {
+			ret = -EINVAL;
+			goto out;
+		}
+		ret = remap_pfn_range_slice(vma, uaddr, page_to_pfn(page),
+					    slice, page_size, prot);
+		if (ret)
+			goto out;
+		uaddr += page_size;
+		data_offset += page_size;
+	}
+
+	ret = uaddr == vma->vm_end ? 0 : -EINVAL;
+out:
+	if (ret)
+		zap_page_range_single(vma, vma->vm_start,
+				      vma->vm_end - vma->vm_start, NULL);
+	return ret;
+}
+
+static int perf_map_aux_ppps(struct perf_buffer *rb,
+			     struct vm_area_struct *vma)
+{
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
+	unsigned long size = vma->vm_end - vma->vm_start;
+	unsigned long offset = 0;
+	unsigned long uaddr = vma->vm_start;
+	pgprot_t prot = vm_get_page_prot(vma->vm_flags & ~VM_SHARED);
+	int ret = 0;
+
+	while (offset < size) {
+		unsigned int slice = offset_in_page(offset) / page_size;
+		struct page *page;
+
+		page = virt_to_page(rb->aux_pages[offset / PAGE_SIZE]);
+		ret = remap_pfn_range_slice(vma, uaddr, page_to_pfn(page),
+					    slice, page_size, prot);
+		if (ret)
+			break;
+		uaddr += page_size;
+		offset += page_size;
+	}
+
+	if (ret)
+		zap_page_range_single(vma, vma->vm_start, size, NULL);
+	return ret;
+}
+
 static const struct vm_operations_struct perf_mmap_vmops = {
 	.open		= perf_mmap_open,
 	.close		= perf_mmap_close, /* non mergeable */
 	.fault		= perf_mmap_fault,
 	.page_mkwrite	= perf_mmap_fault,
+	.pfn_mkwrite	= perf_mmap_pfn_mkwrite,
+	.may_split	= perf_mmap_may_split,
 };
 
 static int perf_mmap(struct file *file, struct vm_area_struct *vma)
@@ -6590,6 +6686,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long locked, lock_limit;
 	unsigned long vma_size;
 	unsigned long nr_pages;
+	unsigned long data_size = 0;
 	u64 mmap_offset;
 	long user_extra = 0, extra = 0;
 	int ret = 0, flags = 0;
@@ -6617,7 +6714,10 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 
 		if (vma_size < metadata_size)
 			return -EINVAL;
-		nr_pages = (vma_size - metadata_size) / PAGE_SIZE;
+		data_size = vma_size - metadata_size;
+		if (data_size && !is_power_of_2(data_size))
+			return -EINVAL;
+		nr_pages = DIV_ROUND_UP(data_size, PAGE_SIZE);
 	} else {
 		/*
 		 * AUX area mapping: if rb->aux_nr_pages != 0, it's already
@@ -6630,6 +6730,8 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 			return -EINVAL;
 
 		nr_pages = vma_size / PAGE_SIZE;
+		if (!nr_pages || vma_size != nr_pages * PAGE_SIZE)
+			return -EINVAL;
 		if (nr_pages > INT_MAX)
 			return -ENOMEM;
 
@@ -6646,14 +6748,14 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 		aux_offset = READ_ONCE(rb->user_page->aux_offset);
 		aux_size = READ_ONCE(rb->user_page->aux_size);
 
-		if (aux_offset < perf_data_size(rb) + PAGE_SIZE)
+		if (aux_offset < perf_data_size(rb) + rb->mmap_page_size)
 			goto aux_unlock;
 
 		if (aux_offset != mmap_offset)
 			goto aux_unlock;
 
 		/* already mapped with a different offset */
-		if (rb_has_aux(rb) && rb->aux_pgoff != vma->vm_pgoff)
+		if (rb_has_aux(rb) && rb->aux_offset != aux_offset)
 			goto aux_unlock;
 
 		if (aux_size != vma_size || aux_size != nr_pages * PAGE_SIZE)
@@ -6692,7 +6794,9 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 again:
 	mutex_lock(&event->mmap_mutex);
 	if (event->rb) {
-		if (data_page_nr(event->rb) != nr_pages) {
+		if (data_page_nr(event->rb) != nr_pages ||
+		    perf_data_size(event->rb) != data_size ||
+		    event->rb->mmap_page_size != MM_PAGE_SIZE(vma->vm_mm)) {
 			ret = -EINVAL;
 			goto unlock;
 		}
@@ -6755,7 +6859,7 @@ accounting:
 		flags |= RING_BUFFER_WRITABLE;
 
 	if (!rb) {
-		rb = rb_alloc(nr_pages,
+		rb = rb_alloc(nr_pages, data_size,
 			      event->attr.watermark ? event->attr.wakeup_watermark : 0,
 			      event->cpu, flags);
 
@@ -6767,6 +6871,7 @@ accounting:
 		atomic_set(&rb->mmap_count, 1);
 		rb->mmap_user = get_current_user();
 		rb->mmap_locked = extra;
+		rb->mmap_page_size = MM_PAGE_SIZE(vma->vm_mm);
 
 		ring_buffer_attach(event, rb);
 
@@ -6776,8 +6881,10 @@ accounting:
 	} else {
 		ret = rb_alloc_aux(rb, event, vma->vm_pgoff, nr_pages,
 				   event->attr.aux_watermark, flags);
-		if (!ret)
+		if (!ret) {
+			rb->aux_offset = mmap_offset;
 			rb->aux_mmap_locked = extra;
+		}
 	}
 
 unlock:
@@ -6803,6 +6910,18 @@ aux_unlock:
 
 	if (event->pmu->event_mapped)
 		event->pmu->event_mapped(event, vma->vm_mm);
+
+	if (!ret && ppps_mm_is_compat(vma->vm_mm)) {
+		rb = event->rb;
+		if (!mmap_offset)
+			ret = perf_map_main_ppps(rb, vma);
+		else if (perf_mmap_is_aux(rb, vma))
+			ret = perf_map_aux_ppps(rb, vma);
+		else
+			ret = -EINVAL;
+		if (ret)
+			perf_mmap_close(vma);
+	}
 
 	return ret;
 }

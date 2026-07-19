@@ -18,6 +18,7 @@ struct perf_buffer {
 	int				page_order;	/* allocation order  */
 #endif
 	int				nr_pages;	/* nr of data pages  */
+	unsigned long			data_size;	/* logical data size */
 	int				overwrite;	/* can overwrite itself */
 	int				paused;		/* can write into ring buffer */
 
@@ -37,6 +38,7 @@ struct perf_buffer {
 
 	atomic_t			mmap_count;
 	unsigned long			mmap_locked;
+	unsigned long			mmap_page_size;
 	struct user_struct		*mmap_user;
 
 	/* AUX area */
@@ -45,6 +47,7 @@ struct perf_buffer {
 	unsigned int			aux_nest;
 	long				aux_wakeup;	/* last aux_watermark boundary crossed by aux_head */
 	unsigned long			aux_pgoff;
+	u64				aux_offset;
 	int				aux_nr_pages;
 	int				aux_overwrite;
 	atomic_t			aux_mmap_count;
@@ -78,7 +81,8 @@ static inline void rb_toggle_paused(struct perf_buffer *rb, bool pause)
 }
 
 extern struct perf_buffer *
-rb_alloc(int nr_pages, long watermark, int cpu, int flags);
+rb_alloc(int nr_pages, unsigned long data_size, long watermark, int cpu,
+	 int flags);
 extern void perf_event_wakeup(struct perf_event *event);
 extern int rb_alloc_aux(struct perf_buffer *rb, struct perf_event *event,
 			pgoff_t pgoff, int nr_pages, long watermark, int flags);
@@ -124,7 +128,7 @@ static inline int data_page_nr(struct perf_buffer *rb)
 
 static inline unsigned long perf_data_size(struct perf_buffer *rb)
 {
-	return rb->nr_pages << (PAGE_SHIFT + page_order(rb));
+	return rb->data_size;
 }
 
 static inline unsigned long perf_aux_size(struct perf_buffer *rb)
@@ -152,7 +156,9 @@ static inline unsigned long perf_aux_size(struct perf_buffer *rb)
 			handle->page++;					\
 			handle->page &= rb->nr_pages - 1;		\
 			handle->addr = rb->data_pages[handle->page];	\
-			handle->size = PAGE_SIZE << page_order(rb);	\
+			handle->size = min_t(unsigned long,		\
+					     PAGE_SIZE << page_order(rb),	\
+					     perf_data_size(rb));	\
 		}							\
 	} while (len && written == size);				\
 									\
