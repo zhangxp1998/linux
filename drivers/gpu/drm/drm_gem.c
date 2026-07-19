@@ -1380,7 +1380,8 @@ int drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 	int ret;
 
 	obj = drm_gem_object_lookup_at_offset(filp, vma->vm_pgoff,
-					      vma_pages(vma));
+					      DIV_ROUND_UP(vma->vm_end - vma->vm_start,
+							   PAGE_SIZE));
 	if (IS_ERR(obj))
 		return PTR_ERR(obj);
 
