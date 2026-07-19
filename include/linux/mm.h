@@ -2804,6 +2804,10 @@ long pin_user_pages_remote(struct mm_struct *mm,
 			   unsigned long start, unsigned long nr_pages,
 			   unsigned int gup_flags, struct page **pages,
 			   int *locked);
+long pin_user_pages_with_offsets(struct mm_struct *mm, unsigned long start,
+				 unsigned long nr_pages, unsigned int gup_flags,
+				 struct page **pages, unsigned int *offsets);
+unsigned long mm_user_slice_offset(struct mm_struct *mm, unsigned long addr);
 
 /*
  * Retrieves a single page alongside its VMA. Does not support FOLL_NOWAIT.
