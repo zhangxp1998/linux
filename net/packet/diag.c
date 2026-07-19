@@ -77,7 +77,7 @@ static int pdiag_put_ring(struct packet_ring_buffer *ring, int ver, int nl_type,
 	if (!ring->pg_vec)
 		return 0;
 
-	pdr.pdr_block_size = ring->pg_vec_pages << PAGE_SHIFT;
+	pdr.pdr_block_size = ring->block_size;
 	pdr.pdr_block_nr = ring->pg_vec_len;
 	pdr.pdr_frame_size = ring->frame_size;
 	pdr.pdr_frame_nr = ring->frame_max + 1;

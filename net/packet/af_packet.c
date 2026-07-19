@@ -4461,7 +4461,8 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 		err = -EINVAL;
 		if (unlikely((int)req->tp_block_size <= 0))
 			goto out;
-		if (unlikely(!PAGE_ALIGNED(req->tp_block_size)))
+		if (unlikely(!MM_PAGE_ALIGNED(current->mm,
+					      req->tp_block_size)))
 			goto out;
 		min_frame_size = po->tp_hdrlen + po->tp_reserve;
 		if (po->tp_version >= TPACKET_V3 &&
@@ -4543,13 +4544,14 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 			swap(rb->rx_owner_map, rx_owner_map);
 		rb->frame_max = (req->tp_frame_nr - 1);
 		rb->head = 0;
+		rb->block_size = req->tp_block_size;
 		rb->frame_size = req->tp_frame_size;
 		spin_unlock_bh(&rb_queue->lock);
 
 		swap(rb->pg_vec_order, order);
 		swap(rb->pg_vec_len, req->tp_block_nr);
 
-		rb->pg_vec_pages = req->tp_block_size/PAGE_SIZE;
+		rb->pg_vec_pages = DIV_ROUND_UP(req->tp_block_size, PAGE_SIZE);
 		po->prot_hook.func = (po->rx_ring.pg_vec) ?
 						tpacket_rcv : packet_rcv;
 		skb_queue_purge(rb_queue);
@@ -4599,9 +4601,9 @@ static int packet_mmap(struct file *file, struct socket *sock,
 	expected_size = 0;
 	for (rb = &po->rx_ring; rb <= &po->tx_ring; rb++) {
 		if (rb->pg_vec) {
-			expected_size += rb->pg_vec_len
-						* rb->pg_vec_pages
-						* PAGE_SIZE;
+			if (!MM_PAGE_ALIGNED(vma->vm_mm, rb->block_size))
+				goto out;
+			expected_size += rb->pg_vec_len * rb->block_size;
 		}
 	}
 
@@ -4621,12 +4623,29 @@ static int packet_mmap(struct file *file, struct socket *sock,
 			struct page *page;
 			void *kaddr = rb->pg_vec[i].buffer;
 			int pg_num;
+			unsigned long block_offset;
+
+			if (ppps_mm_is_compat(vma->vm_mm)) {
+				for (block_offset = 0;
+				     block_offset < rb->block_size;
+				     block_offset += MM_PAGE_SIZE(vma->vm_mm)) {
+					unsigned int slice =
+						offset_in_page(block_offset) >>
+						MM_PAGE_SHIFT(vma->vm_mm);
+
+					page = pgv_to_page(kaddr + block_offset);
+					err = vm_insert_page_slice(vma, start, page,
+								   slice);
+					if (unlikely(err))
+						goto out;
+					start += MM_PAGE_SIZE(vma->vm_mm);
+				}
+				continue;
+			}
 
 			for (pg_num = 0; pg_num < rb->pg_vec_pages; pg_num++) {
-				unsigned long nr_pages = 1;
-
 				page = pgv_to_page(kaddr);
-				err = vm_insert_pages(vma, start, &page, &nr_pages);
+				err = vm_insert_page(vma, start, page);
 				if (unlikely(err))
 					goto out;
 				start += PAGE_SIZE;
