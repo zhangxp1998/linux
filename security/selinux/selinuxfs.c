@@ -428,16 +428,18 @@ static ssize_t sel_read_policy(struct file *filp, char __user *buf,
 static vm_fault_t sel_mmap_policy_fault(struct vm_fault *vmf)
 {
 	struct policy_load_memory *plm = vmf->vma->vm_file->private_data;
+	loff_t file_offset = vma_file_offset(vmf->vma) +
+		(vmf->address - vmf->vma->vm_start);
 	unsigned long offset;
 	struct page *page;
 
 	if (vmf->flags & (FAULT_FLAG_MKWRITE | FAULT_FLAG_WRITE))
 		return VM_FAULT_SIGBUS;
 
-	offset = vmf->pgoff << PAGE_SHIFT;
-	if (offset >= roundup(plm->len, PAGE_SIZE))
+	if (file_offset >= plm->len)
 		return VM_FAULT_SIGBUS;
 
+	offset = vmf->pgoff << PAGE_SHIFT;
 	page = vmalloc_to_page(plm->data + offset);
 	get_page(page);
 
