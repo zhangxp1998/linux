@@ -84,6 +84,11 @@ static bool binder_alloc_page_aligned(struct binder_alloc *alloc,
 	return IS_ALIGNED(address - alloc->buffer, PAGE_SIZE);
 }
 
+static size_t binder_alloc_nr_pages(const struct binder_alloc *alloc)
+{
+	return DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE);
+}
+
 static void binder_insert_free_buffer(struct binder_alloc *alloc,
 				      struct binder_buffer *new_buffer)
 {
@@ -846,7 +851,8 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 {
 	struct binder_buffer *buffer;
 	const char *failure_string;
-	int ret, i;
+	size_t i;
+	int ret;
 
 	if (unlikely(vma->vm_mm != alloc->mm)) {
 		ret = -EINVAL;
@@ -866,7 +872,7 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 
 	alloc->buffer = vma->vm_start;
 
-	alloc->pages = kvcalloc(DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE),
+	alloc->pages = kvcalloc(binder_alloc_nr_pages(alloc),
 				sizeof(alloc->pages[0]),
 				GFP_KERNEL);
 	if (alloc->pages == NULL) {
@@ -875,7 +881,7 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 		goto err_alloc_pages_failed;
 	}
 
-	for (i = 0; i < DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE); i++) {
+	for (i = 0; i < binder_alloc_nr_pages(alloc); i++) {
 		alloc->pages[i].alloc = alloc;
 		INIT_LIST_HEAD(&alloc->pages[i].lru);
 	}
@@ -952,9 +958,9 @@ void binder_alloc_deferred_release(struct binder_alloc *alloc)
 
 	page_count = 0;
 	if (alloc->pages) {
-		int i;
+		size_t i;
 
-		for (i = 0; i < DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE); i++) {
+		for (i = 0; i < binder_alloc_nr_pages(alloc); i++) {
 			bool on_lru;
 
 			if (!alloc->pages[i].page_ptr)
@@ -963,7 +969,7 @@ void binder_alloc_deferred_release(struct binder_alloc *alloc)
 			on_lru = list_lru_del_obj(&binder_freelist,
 						  &alloc->pages[i].lru);
 			binder_alloc_debug(BINDER_DEBUG_BUFFER_ALLOC,
-				     "%s: %d: page %d %s\n",
+				     "%s: %d: page %zu %s\n",
 				     __func__, alloc->pid, i,
 				     on_lru ? "on lru" : "active");
 			__free_page(alloc->pages[i].page_ptr);
@@ -1016,7 +1022,7 @@ void binder_alloc_print_pages(struct seq_file *m,
 			      struct binder_alloc *alloc)
 {
 	struct binder_lru_page *page;
-	int i;
+	size_t i;
 	int active = 0;
 	int lru = 0;
 	int free = 0;
@@ -1027,7 +1033,7 @@ void binder_alloc_print_pages(struct seq_file *m,
 	 * read inconsistent state.
 	 */
 	if (binder_alloc_get_vma(alloc) != NULL) {
-		for (i = 0; i < DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE); i++) {
+		for (i = 0; i < binder_alloc_nr_pages(alloc); i++) {
 			page = &alloc->pages[i];
 			if (!page->page_ptr)
 				free++;
