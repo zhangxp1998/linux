@@ -99,6 +99,12 @@ static struct vfsmount *shm_mnt __ro_after_init;
 
 #define VM_ACCT(size)    (PAGE_ALIGN(size) >> PAGE_SHIFT)
 
+static inline int shmem_vm_enough_memory(long pages)
+{
+	return security_vm_enough_memory_mm(current->mm,
+		vm_native_pages_to_mm_pages(current->mm, pages));
+}
+
 /* Pretend that each entry is of this size in directory's i_size */
 #define BOGO_DIRENT_SIZE 20
 
@@ -186,7 +192,7 @@ static inline struct shmem_sb_info *SHMEM_SB(struct super_block *sb)
 static inline int shmem_acct_size(unsigned long flags, loff_t size)
 {
 	return (flags & VM_NORESERVE) ?
-		0 : security_vm_enough_memory_mm(current->mm, VM_ACCT(size));
+		0 : shmem_vm_enough_memory(VM_ACCT(size));
 }
 
 static inline void shmem_unacct_size(unsigned long flags, loff_t size)
@@ -200,8 +206,8 @@ static inline int shmem_reacct_size(unsigned long flags,
 {
 	if (!(flags & VM_NORESERVE)) {
 		if (VM_ACCT(newsize) > VM_ACCT(oldsize))
-			return security_vm_enough_memory_mm(current->mm,
-					VM_ACCT(newsize) - VM_ACCT(oldsize));
+			return shmem_vm_enough_memory(VM_ACCT(newsize) -
+						      VM_ACCT(oldsize));
 		else if (VM_ACCT(newsize) < VM_ACCT(oldsize))
 			vm_unacct_memory(VM_ACCT(oldsize) - VM_ACCT(newsize));
 	}
@@ -219,8 +225,7 @@ static inline int shmem_acct_blocks(unsigned long flags, long pages)
 	if (!(flags & VM_NORESERVE))
 		return 0;
 
-	return security_vm_enough_memory_mm(current->mm,
-			pages * VM_ACCT(PAGE_SIZE));
+	return shmem_vm_enough_memory(pages * VM_ACCT(PAGE_SIZE));
 }
 
 static inline void shmem_unacct_blocks(unsigned long flags, long pages)
