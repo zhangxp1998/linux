@@ -129,6 +129,25 @@ static bool map_metadata_only(struct perf_event_attr *attr)
 	return true;
 }
 
+static bool reject_subpage_ring_offset(struct perf_event_attr *attr,
+				       int *saved_errno)
+{
+	void *mapping;
+	int fd;
+
+	fd = perf_event_open(attr);
+	if (fd < 0)
+		return false;
+	errno = 0;
+	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, USER_PAGE_SIZE);
+	*saved_errno = errno;
+	if (mapping != MAP_FAILED)
+		munmap(mapping, USER_PAGE_SIZE);
+	close(fd);
+	return mapping == MAP_FAILED;
+}
+
 static int run_test(void)
 {
 	struct perf_event_attr attr = {
@@ -147,15 +166,19 @@ static int run_test(void)
 	size_t data_size;
 	void *file_mapping;
 	bool found;
+	int offset_errno = 0;
 	int memfd;
 	int perf_fd;
 
 	ksft_print_header();
-	ksft_set_plan(7);
+	ksft_set_plan(8);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	ksft_test_result(map_metadata_only(&attr),
 			 "map a metadata-only perf event with one process page\n");
+	ksft_test_result(reject_subpage_ring_offset(&attr, &offset_errno),
+			 "reject a perf ring mmap at subpage offset 4K (errno=%d)\n",
+			 offset_errno);
 
 	perf_fd = open_perf_ring(&attr, &metadata, &page_size, &ring_size);
 	ksft_test_result(page_size && perf_fd >= 0 && metadata != MAP_FAILED,
