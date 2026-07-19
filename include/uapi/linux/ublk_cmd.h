@@ -51,6 +51,25 @@
 	_IOR('u', 0x13, struct ublksrv_ctrl_cmd)
 #define UBLK_U_CMD_DEL_DEV_ASYNC	\
 	_IOR('u', 0x14, struct ublksrv_ctrl_cmd)
+/*
+ * Register a shared memory buffer for zero-copy I/O.
+ * ctrl_cmd.addr points to struct ublk_shmem_buf_reg and the command result is
+ * the assigned buffer index.
+ */
+#define UBLK_U_CMD_REG_BUF		\
+	_IOWR('u', 0x18, struct ublksrv_ctrl_cmd)
+/* ctrl_cmd.data[0] contains the buffer index to unregister. */
+#define UBLK_U_CMD_UNREG_BUF		\
+	_IOWR('u', 0x19, struct ublksrv_ctrl_cmd)
+
+struct ublk_shmem_buf_reg {
+	__u64	addr;
+	__u64	len;
+	__u32	flags;
+	__u32	reserved;
+};
+
+#define UBLK_SHMEM_BUF_READ_ONLY	(1U << 0)
 
 /*
  * 64bits are enough now, and it should be easy to extend in case of
@@ -190,6 +209,12 @@
  */
 #define UBLK_F_ZONED (1ULL << 8)
 
+/*
+ * Enable registered shared-memory zero copy. I/O descriptors that match a
+ * registered buffer carry UBLK_IO_F_SHMEM_ZC and an encoded buffer location.
+ */
+#define UBLK_F_SHMEM_ZC	(1ULL << 19)
+
 /* device state */
 #define UBLK_S_DEV_DEAD	0
 #define UBLK_S_DEV_LIVE	1
@@ -275,6 +300,7 @@ struct ublksrv_ctrl_dev_info {
 #define		UBLK_IO_F_FUA			(1U << 13)
 #define		UBLK_IO_F_NOUNMAP		(1U << 15)
 #define		UBLK_IO_F_SWAP			(1U << 16)
+#define		UBLK_IO_F_SHMEM_ZC		(1U << 19)
 
 /*
  * io cmd is described by this structure, and stored in share memory, indexed
@@ -402,5 +428,28 @@ struct ublk_params {
 	struct ublk_param_devt		devt;
 	struct ublk_param_zoned	zoned;
 };
+
+/*
+ * Shared-memory zero-copy address encoding:
+ * bits 0..31 contain the byte offset and bits 32..47 the buffer index.
+ */
+#define UBLK_SHMEM_ZC_OFF_MASK		0xffffffffULL
+#define UBLK_SHMEM_ZC_IDX_OFF		32
+#define UBLK_SHMEM_ZC_IDX_MASK		0xffffULL
+
+static inline __u64 ublk_shmem_zc_addr(__u16 index, __u32 offset)
+{
+	return ((__u64)index << UBLK_SHMEM_ZC_IDX_OFF) | offset;
+}
+
+static inline __u16 ublk_shmem_zc_index(__u64 addr)
+{
+	return (addr >> UBLK_SHMEM_ZC_IDX_OFF) & UBLK_SHMEM_ZC_IDX_MASK;
+}
+
+static inline __u32 ublk_shmem_zc_offset(__u64 addr)
+{
+	return (__u32)(addr & UBLK_SHMEM_ZC_OFF_MASK);
+}
 
 #endif
