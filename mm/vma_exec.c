@@ -144,7 +144,7 @@ int create_init_stack_vma(struct mm_struct *mm, struct vm_area_struct **vmap,
 	 */
 	BUILD_BUG_ON(VM_STACK_FLAGS & VM_STACK_INCOMPLETE_SETUP);
 	vma->vm_end = STACK_TOP_MAX_OF(mm);
-	vma->vm_start = vma->vm_end - MM_PAGE_SIZE(mm);
+	vma->vm_start = vma->vm_end - MM_UAPI_PAGE_SIZE(mm);
 	vm_flags_init(vma, VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP);
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 
