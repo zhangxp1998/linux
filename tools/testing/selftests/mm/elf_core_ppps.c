@@ -174,7 +174,8 @@ static bool inspect_nt_file(int fd, uint64_t note_offset, uint64_t note_size,
 static bool inspect_core(const char *path, unsigned int *found,
 			 unsigned int *misaligned, bool *offset_segment_found,
 			 uint64_t *offset_dump_size, bool *nt_file_found,
-			 uint64_t *note_page_size, uint64_t *note_file_offset)
+			 uint64_t *note_page_size, uint64_t *note_file_offset,
+			 bool *contents_match)
 {
 	Elf64_Ehdr header;
 	Elf64_Phdr phdr;
@@ -188,6 +189,7 @@ static bool inspect_core(const char *path, unsigned int *found,
 	*nt_file_found = false;
 	*note_page_size = 0;
 	*note_file_offset = 0;
+	*contents_match = true;
 	fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (fd < 0)
 		return false;
@@ -217,6 +219,27 @@ static bool inspect_core(const char *path, unsigned int *found,
 		if (phdr.p_vaddr != TEST_BASE + target_index * TEST_STRIDE)
 			continue;
 		(*found)++;
+		if (phdr.p_filesz < USER_PAGE_SIZE) {
+			*contents_match = false;
+		} else {
+			unsigned char contents[USER_PAGE_SIZE];
+			unsigned char expected = 0x40 + target_index;
+			unsigned long byte;
+			ssize_t bytes_read;
+
+			bytes_read = pread(fd, contents, sizeof(contents),
+					   phdr.p_offset);
+			if (bytes_read != sizeof(contents)) {
+				*contents_match = false;
+			} else {
+				for (byte = 0; byte < sizeof(contents); byte++) {
+					if (contents[byte] != expected) {
+						*contents_match = false;
+						break;
+					}
+				}
+			}
+		}
 		if (!phdr.p_align ||
 		    phdr.p_offset % phdr.p_align != phdr.p_vaddr % phdr.p_align)
 			(*misaligned)++;
@@ -242,12 +265,13 @@ static int run_test(void)
 	bool inspected = false;
 	bool nt_file_found = false;
 	bool offset_segment_found = false;
+	bool contents_match = false;
 	int status = 0;
 	pid_t pid = -1;
 	pid_t waited;
 
 	ksft_print_header();
-	ksft_set_plan(7);
+	ksft_set_plan(8);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	if (!create_offset_file())
@@ -274,6 +298,7 @@ static int run_test(void)
 		ksft_test_result_fail("generate a core from the 4K process\n");
 		ksft_test_result_fail("parse the generated ELF core\n");
 		ksft_test_result_fail("keep 4K VMA offsets aligned in PT_LOAD headers\n");
+		ksft_test_result_fail("preserve each 4K VMA's contents in PT_LOAD data\n");
 		ksft_test_result_fail("do not dump a mapping that starts at file offset 4K\n");
 		ksft_test_result_fail("encode the 4K file offset in NT_FILE\n");
 		ksft_print_msg("fork failed: %s\n", strerror(errno));
@@ -286,6 +311,7 @@ static int run_test(void)
 		ksft_test_result_fail("generate a core from the 4K process\n");
 		ksft_test_result_fail("parse the generated ELF core\n");
 		ksft_test_result_fail("keep 4K VMA offsets aligned in PT_LOAD headers\n");
+		ksft_test_result_fail("preserve each 4K VMA's contents in PT_LOAD data\n");
 		ksft_test_result_fail("do not dump a mapping that starts at file offset 4K\n");
 		ksft_test_result_fail("encode the 4K file offset in NT_FILE\n");
 		ksft_print_msg("waitpid failed: %s\n", strerror(errno));
@@ -298,17 +324,20 @@ static int run_test(void)
 	inspected = inspect_core(core_path, &found, &misaligned,
 				 &offset_segment_found, &offset_dump_size,
 				 &nt_file_found, &note_page_size,
-				 &note_file_offset);
+				 &note_file_offset, &contents_match);
 	ksft_test_result(inspected, "parse the generated ELF core\n");
 	ksft_test_result(inspected && found == TEST_VMAS && !misaligned,
 			 "keep 4K VMA offsets aligned in PT_LOAD headers\n");
+	ksft_test_result(inspected && found == TEST_VMAS && contents_match,
+			 "preserve each 4K VMA's contents in PT_LOAD data\n");
 	ksft_test_result(inspected && offset_segment_found && !offset_dump_size,
 			 "do not dump a mapping that starts at file offset 4K\n");
 	ksft_test_result(inspected && nt_file_found &&
 			 note_page_size == USER_PAGE_SIZE && note_file_offset == 1,
 			 "encode the 4K file offset in NT_FILE\n");
-	ksft_print_msg("VMAs=%u misaligned=%u filesz=%llu page=%llu offset=%llu\n",
-		       found, misaligned, (unsigned long long)offset_dump_size,
+	ksft_print_msg("VMAs=%u misaligned=%u contents=%u filesz=%llu page=%llu offset=%llu\n",
+		       found, misaligned, contents_match,
+		       (unsigned long long)offset_dump_size,
 		       (unsigned long long)note_page_size,
 		       (unsigned long long)note_file_offset);
 
