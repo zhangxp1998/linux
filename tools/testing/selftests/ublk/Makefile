@@ -7,6 +7,8 @@ endif
 
 LDLIBS += -lpthread -lm -luring
 
+TEST_GEN_PROGS := ublk_mmap_ppps
+
 TEST_PROGS := test_generic_02.sh
 TEST_PROGS += test_generic_03.sh
 TEST_PROGS += test_generic_06.sh
