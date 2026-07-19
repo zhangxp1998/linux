@@ -110,6 +110,7 @@ TEST_GEN_FILES += rusage_ppps
 TEST_GEN_FILES += sysv_shm_ppps
 TEST_GEN_FILES += io_uring_mmap_ppps
 TEST_GEN_FILES += io_uring_fixed_buffer_ppps
+TEST_GEN_FILES += io_uring_mem_region_ppps
 TEST_GEN_FILES += mglru_ppps
 TEST_GEN_FILES += anon_pageout_ppps
 TEST_GEN_FILES += madvise_free_ppps

@@ -85,8 +85,10 @@ struct io_hash_table {
 struct io_mapped_region {
 	struct page		**pages;
 	void			*ptr;
+	size_t			size;
 	unsigned		nr_pages;
 	unsigned		flags;
+	unsigned		page_offset;
 };
 
 /*

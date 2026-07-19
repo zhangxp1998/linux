@@ -24,7 +24,7 @@ int io_create_region(struct io_ring_ctx *ctx, struct io_mapped_region *mr,
 
 static inline void *io_region_get_ptr(struct io_mapped_region *mr)
 {
-	return mr->ptr;
+	return mr->ptr + mr->page_offset;
 }
 
 static inline bool io_region_is_set(struct io_mapped_region *mr)
@@ -46,7 +46,7 @@ static inline void io_region_publish(struct io_ring_ctx *ctx,
 
 static inline size_t io_region_size(struct io_mapped_region *mr)
 {
-	return (size_t) mr->nr_pages << PAGE_SHIFT;
+	return mr->size;
 }
 
 #endif
