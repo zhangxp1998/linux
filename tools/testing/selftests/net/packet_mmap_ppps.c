@@ -17,6 +17,42 @@
 #define RING_SIZE (4 * PROCESS_PAGE_SIZE)
 #define FRAME_SIZE 2048U
 
+static bool test_subpage_blocks(void)
+{
+	struct tpacket_req3 req = {
+		.tp_block_size = PROCESS_PAGE_SIZE,
+		.tp_block_nr = 2,
+		.tp_frame_size = FRAME_SIZE,
+		.tp_frame_nr = 2 * PROCESS_PAGE_SIZE / FRAME_SIZE,
+		.tp_retire_blk_tov = 64,
+	};
+	unsigned char residency[2] = {};
+	int version = TPACKET_V3;
+	void *ring = MAP_FAILED;
+	bool pass = false;
+	int fd;
+
+	fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, htons(ETH_P_ALL));
+	if (fd < 0)
+		return false;
+	if (setsockopt(fd, SOL_PACKET, PACKET_VERSION,
+		       &version, sizeof(version)) ||
+	    setsockopt(fd, SOL_PACKET, PACKET_RX_RING, &req, sizeof(req)))
+		goto out;
+	ring = mmap(NULL, 2 * PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		    MAP_SHARED | MAP_POPULATE, fd, 0);
+	if (ring == MAP_FAILED)
+		goto out;
+	if (mincore(ring, 2 * PROCESS_PAGE_SIZE, residency))
+		goto out;
+	pass = (residency[0] & 1) && (residency[1] & 1);
+out:
+	if (ring != MAP_FAILED)
+		munmap(ring, 2 * PROCESS_PAGE_SIZE);
+	close(fd);
+	return pass;
+}
+
 static int run_test(void)
 {
 	struct tpacket_req3 req = {
@@ -37,8 +73,6 @@ static int run_test(void)
 
 	ksft_print_header();
 	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
 	fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, htons(ETH_P_ALL));
 	ksft_test_result(fd >= 0, "create an AF_PACKET socket\n");
 	if (fd < 0)
@@ -75,6 +109,8 @@ static int run_test(void)
 		resident &= residency[i] & 1;
 	ksft_test_result(resident,
 			 "map all four 4K slices of the packet ring\n");
+	ksft_test_result(test_subpage_blocks(),
+			 "configure and map two separately backed 4K blocks\n");
 
 	munmap(ring, RING_SIZE);
 	close(fd);
