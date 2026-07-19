@@ -84,7 +84,7 @@ int io_account_mem(struct io_ring_ctx *ctx, unsigned long nr_pages)
 int io_validate_user_buf_range(u64 uaddr, u64 ulen)
 {
 	unsigned long tmp, base = (unsigned long)uaddr;
-	unsigned long acct_len = (unsigned long)PAGE_ALIGN(ulen);
+	unsigned long acct_len = MM_PAGE_ALIGN(current->mm, ulen);
 
 	/* arbitrary limit, but we need something */
 	if (ulen > SZ_1G || !ulen)
@@ -666,6 +666,10 @@ static int io_buffer_account_pin(struct io_ring_ctx *ctx, struct page **pages,
 
 	imu->acct_pages = 0;
 	for (i = 0; i < nr_pages; i++) {
+		/* PPPS GUP can return one pin per slice of the same native page. */
+		if (ppps_mm_is_compat(current->mm) &&
+		    i && pages[i] == pages[i - 1])
+			continue;
 		if (!PageCompound(pages[i])) {
 			imu->acct_pages++;
 		} else {
@@ -775,6 +779,66 @@ bool io_check_coalesce_buffer(struct page **page_array, int nr_pages,
 	return true;
 }
 
+static struct page **io_pin_compat_buffer(unsigned long uaddr, size_t len,
+					  unsigned int **offsets_out,
+					  int *nr_pages_out)
+{
+	struct mm_struct *mm = current->mm;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
+	unsigned long first_offset;
+	unsigned long page_addr;
+	unsigned int *offsets;
+	struct page **pages;
+	unsigned long nr_pages;
+	unsigned long i;
+	long pinned;
+
+	uaddr = untagged_addr(uaddr);
+	first_offset = mm_offset_in_page(mm, uaddr);
+	nr_pages = DIV_ROUND_UP(first_offset + len, page_size);
+	if (nr_pages > INT_MAX)
+		return ERR_PTR(-EOVERFLOW);
+
+	pages = kvmalloc_array(nr_pages, sizeof(*pages), GFP_KERNEL_ACCOUNT);
+	if (!pages)
+		return ERR_PTR(-ENOMEM);
+	offsets = kvmalloc_array(nr_pages, sizeof(*offsets),
+				 GFP_KERNEL_ACCOUNT);
+	if (!offsets) {
+		kvfree(pages);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	page_addr = uaddr - first_offset;
+	mmap_read_lock(mm);
+	pinned = pin_user_pages(uaddr, nr_pages,
+				FOLL_WRITE | FOLL_LONGTERM, pages);
+	for (i = 0; pinned > 0 && i < pinned; i++, page_addr += page_size) {
+		struct vm_area_struct *vma = vma_lookup(mm, page_addr);
+
+		if (!vma) {
+			unpin_user_pages(pages, pinned);
+			pinned = -EFAULT;
+			break;
+		}
+		offsets[i] = vma_page_slice_offset(vma, pages[i], page_addr);
+	}
+	if (pinned > 0)
+		offsets[0] += first_offset;
+	mmap_read_unlock(mm);
+	if (pinned != nr_pages) {
+		if (pinned > 0)
+			unpin_user_pages(pages, pinned);
+		kvfree(offsets);
+		kvfree(pages);
+		return ERR_PTR(pinned < 0 ? pinned : -EFAULT);
+	}
+
+	*offsets_out = offsets;
+	*nr_pages_out = nr_pages;
+	return pages;
+}
+
 static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 						   struct iovec *iov,
 						   struct page **last_hpage)
@@ -782,7 +846,9 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	struct io_mapped_ubuf *imu = NULL;
 	struct page **pages = NULL;
 	struct io_rsrc_node *node;
+	unsigned int *compat_offsets = NULL;
 	unsigned long off;
+	unsigned long first_offset = 0;
 	size_t size;
 	int ret, nr_pages, i;
 	struct io_imu_folio_data data;
@@ -796,8 +862,15 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 		return ERR_PTR(-ENOMEM);
 
 	ret = -ENOMEM;
-	pages = io_pin_pages((unsigned long) iov->iov_base, iov->iov_len,
-				&nr_pages);
+	if (ppps_mm_is_compat(current->mm)) {
+		first_offset = mm_offset_in_page(current->mm, iov->iov_base);
+		pages = io_pin_compat_buffer((unsigned long)iov->iov_base,
+					     iov->iov_len, &compat_offsets,
+					     &nr_pages);
+	} else {
+		pages = io_pin_pages((unsigned long)iov->iov_base, iov->iov_len,
+				     &nr_pages);
+	}
 	if (IS_ERR(pages)) {
 		ret = PTR_ERR(pages);
 		pages = NULL;
@@ -805,7 +878,8 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	}
 
 	/* If it's huge page(s), try to coalesce them into fewer bvec entries */
-	if (nr_pages > 1 && io_check_coalesce_buffer(pages, nr_pages, &data)) {
+	if (!compat_offsets && nr_pages > 1 &&
+	    io_check_coalesce_buffer(pages, nr_pages, &data)) {
 		if (data.nr_pages_mid != 1)
 			coalesced = io_coalesce_buffer(&pages, &nr_pages, &data);
 	}
@@ -823,7 +897,8 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	/* store original address for later verification */
 	imu->ubuf = (unsigned long) iov->iov_base;
 	imu->len = iov->iov_len;
-	imu->folio_shift = PAGE_SHIFT;
+	imu->folio_shift = compat_offsets ? MM_PAGE_SHIFT(current->mm) :
+					   PAGE_SHIFT;
 	imu->release = io_release_ubuf;
 	imu->priv = imu;
 	imu->is_kbuf = false;
@@ -832,9 +907,13 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 		imu->folio_shift = data.folio_shift;
 	refcount_set(&imu->refs, 1);
 
-	off = (unsigned long)iov->iov_base & ~PAGE_MASK;
-	if (coalesced)
-		off += data.first_folio_page_idx << PAGE_SHIFT;
+	if (compat_offsets)
+		off = compat_offsets[0];
+	else {
+		off = (unsigned long)iov->iov_base & ~PAGE_MASK;
+		if (coalesced)
+			off += data.first_folio_page_idx << PAGE_SHIFT;
+	}
 
 	node->buf = imu;
 	ret = 0;
@@ -842,7 +921,15 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	for (i = 0; i < nr_pages; i++) {
 		size_t vec_len;
 
-		vec_len = min_t(size_t, size, (1UL << imu->folio_shift) - off);
+		if (compat_offsets) {
+			off = compat_offsets[i];
+			vec_len = min_t(size_t, size,
+					MM_PAGE_SIZE(current->mm) -
+					(i ? 0 : first_offset));
+		} else {
+			vec_len = min_t(size_t, size,
+					(1UL << imu->folio_shift) - off);
+		}
 		bvec_set_page(&imu->bvec[i], pages[i], vec_len, off);
 		off = 0;
 		size -= vec_len;
@@ -858,6 +945,7 @@ done:
 		io_cache_free(&ctx->node_cache, node);
 		node = ERR_PTR(ret);
 	}
+	kvfree(compat_offsets);
 	kvfree(pages);
 	return node;
 }
@@ -1113,7 +1201,10 @@ static int io_import_fixed(int ddir, struct iov_iter *iter,
 		bvec += seg_skip;
 		offset &= folio_mask;
 	}
-	nr_segs = (offset + len + bvec->bv_offset + folio_mask) >> imu->folio_shift;
+	nr_segs = 1;
+	if (offset + len > bvec->bv_len)
+		nr_segs += (offset + len - bvec->bv_len + folio_mask) >>
+			   imu->folio_shift;
 	iov_iter_bvec(iter, ddir, bvec, nr_segs, len);
 	iter->iov_offset = offset;
 	return 0;
@@ -1349,8 +1440,7 @@ static int io_vec_fill_bvec(int ddir, struct iov_iter *iter,
 				struct iovec *iovec, unsigned nr_iovs,
 				struct iou_vec *vec)
 {
-	unsigned long folio_size = 1 << imu->folio_shift;
-	unsigned long folio_mask = folio_size - 1;
+	unsigned long folio_mask = (1UL << imu->folio_shift) - 1;
 	struct bio_vec *res_bvec = vec->bvec;
 	size_t total_len = 0;
 	unsigned bvec_idx = 0;
@@ -1373,21 +1463,21 @@ static int io_vec_fill_bvec(int ddir, struct iov_iter *iter,
 			return -EOVERFLOW;
 
 		offset = buf_addr - imu->ubuf;
-		/*
-		 * Only the first bvec can have non zero bv_offset, account it
-		 * here and work with full folios below.
-		 */
-		offset += imu->bvec[0].bv_offset;
-
-		src_bvec = imu->bvec + (offset >> imu->folio_shift);
-		offset &= folio_mask;
+		/* Logical segment lengths, not native-page slice offsets. */
+		src_bvec = imu->bvec;
+		if (offset >= src_bvec->bv_len) {
+			offset -= src_bvec->bv_len;
+			src_bvec += 1 + (offset >> imu->folio_shift);
+			offset &= folio_mask;
+		}
 
 		for (; iov_len; offset = 0, bvec_idx++, src_bvec++) {
 			size_t seg_size = min_t(size_t, iov_len,
-						folio_size - offset);
+						src_bvec->bv_len - offset);
 
 			bvec_set_page(&res_bvec[bvec_idx],
-				      src_bvec->bv_page, seg_size, offset);
+				      src_bvec->bv_page, seg_size,
+				      src_bvec->bv_offset + offset);
 			iov_len -= seg_size;
 		}
 	}
