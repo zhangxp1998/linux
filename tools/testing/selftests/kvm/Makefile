@@ -177,6 +177,7 @@ TEST_GEN_PROGS_aarch64 += get-reg-list
 TEST_GEN_PROGS_aarch64 += kvm_create_max_vcpus
 TEST_GEN_PROGS_aarch64 += kvm_page_table_test
 TEST_GEN_PROGS_aarch64 += kvm_pkvm_memlock_ppps
+TEST_GEN_PROGS_aarch64 += kvm_pfnmap_ppps
 TEST_GEN_PROGS_aarch64 += kvm_vcpu_mmap_ppps
 TEST_PROGS_aarch64 += kvm_pfnmap_ppps.sh
 TEST_FILES_aarch64 += ../ppps/ppps_run_module.sh
@@ -223,8 +224,10 @@ SPLIT_TESTS += arch_timer
 SPLIT_TESTS += get-reg-list
 
 TEST_PROGS += $(TEST_PROGS_$(ARCH_DIR))
+TEST_FILES += $(TEST_FILES_$(ARCH_DIR))
 TEST_GEN_PROGS += $(TEST_GEN_PROGS_$(ARCH_DIR))
 TEST_GEN_PROGS_EXTENDED += $(TEST_GEN_PROGS_EXTENDED_$(ARCH_DIR))
+TEST_GEN_MODS_DIR := $(TEST_GEN_MODS_DIR_$(ARCH_DIR))
 LIBKVM += $(LIBKVM_$(ARCH_DIR))
 
 OVERRIDE_TARGETS = 1
