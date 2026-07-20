@@ -15,7 +15,8 @@
 #include "kselftest_ppps.h"
 
 #define MAP_ENTRIES	4
-#define MAP_SIZE	(MAP_ENTRIES * USER_PAGE_SIZE)
+#define MAP_SIZE	(MAP_ENTRIES * PROCESS_PAGE_SIZE)
+#define SMALL_VALUE_SIZE	64
 
 static int sys_bpf(enum bpf_cmd command, union bpf_attr *attr)
 {
@@ -29,6 +30,19 @@ static int create_array(void)
 		.key_size = sizeof(unsigned int),
 		.value_size = PROCESS_PAGE_SIZE,
 		.max_entries = MAP_ENTRIES,
+		.map_flags = BPF_F_MMAPABLE,
+	};
+
+	return sys_bpf(BPF_MAP_CREATE, &attr);
+}
+
+static int create_small_array(void)
+{
+	union bpf_attr attr = {
+		.map_type = BPF_MAP_TYPE_ARRAY,
+		.key_size = sizeof(unsigned int),
+		.value_size = SMALL_VALUE_SIZE,
+		.max_entries = 1,
 		.map_flags = BPF_F_MMAPABLE,
 	};
 
@@ -87,16 +101,17 @@ static int run_test(void)
 		.rlim_max = RLIM_INFINITY,
 	};
 	unsigned char *mapping;
+	void *small_mapping;
+	void *small_padding;
 	void *past_end;
 	bool initialized;
 	bool bounds_ok;
 	bool values_ok;
 	int map_fd;
+	int small_map_fd;
 
 	ksft_print_header();
-	ksft_set_plan(5);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(6);
 	setrlimit(RLIMIT_MEMLOCK, &memlock);
 
 	map_fd = create_array();
@@ -130,8 +145,31 @@ static int run_test(void)
 	ksft_test_result(bounds_ok, "reject an mmap extending past the array\n");
 	ksft_print_msg("out-of-bounds mmap=%p errno=%d\n", past_end, errno);
 
+	small_map_fd = create_small_array();
+	if (small_map_fd < 0)
+		ksft_exit_fail_msg("small BPF_MAP_CREATE failed: %s\n",
+				   strerror(errno));
+	small_mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			     MAP_SHARED, small_map_fd, 0);
+	ksft_test_result(small_mapping != MAP_FAILED,
+			 "map one process page for a small BPF array\n");
+
+	errno = 0;
+	small_padding = mmap(NULL, 2 * PROCESS_PAGE_SIZE, PROT_READ,
+			     MAP_SHARED, small_map_fd, 0);
+	bounds_ok = small_padding == MAP_FAILED && errno == EINVAL;
+	ksft_test_result(bounds_ok,
+			 "reject mapping native-page padding of a small array\n");
+	ksft_print_msg("small-array padding mmap=%p errno=%d\n",
+		       small_padding, errno);
+
 	if (past_end != MAP_FAILED)
-		munmap(past_end, 2 * USER_PAGE_SIZE);
+		munmap(past_end, 2 * PROCESS_PAGE_SIZE);
+	if (small_padding != MAP_FAILED)
+		munmap(small_padding, 2 * PROCESS_PAGE_SIZE);
+	if (small_mapping != MAP_FAILED)
+		munmap(small_mapping, PROCESS_PAGE_SIZE);
+	close(small_map_fd);
 	munmap(mapping, MAP_SIZE);
 	close(map_fd);
 	ksft_finished();
