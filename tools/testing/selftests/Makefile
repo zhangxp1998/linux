@@ -11,6 +11,7 @@ TARGETS += cgroup
 TARGETS += clone3
 TARGETS += connector
 TARGETS += core
+TARGETS += coredump
 TARGETS += cpufreq
 TARGETS += cpu-hotplug
 TARGETS += damon
