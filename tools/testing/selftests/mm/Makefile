@@ -113,6 +113,7 @@ TEST_GEN_FILES += mglru_ppps
 TEST_GEN_FILES += mmu_notifier_ppps
 TEST_GEN_FILES += anon_pageout_ppps
 TEST_GEN_FILES += swapoff_ppps
+TEST_GEN_FILES += swap_vma_readahead_ppps
 TEST_GEN_FILES += madvise_free_ppps
 TEST_GEN_FILES += thp_mmap_offset_ppps
 TEST_GEN_FILES += shmem_mmap_offset_ppps
