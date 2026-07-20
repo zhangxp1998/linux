@@ -64,6 +64,8 @@ GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
 TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
 IOV_ITER_PPPS_MODULE := iov_iter_ppps_module/iov_iter_ppps_module.ko
 TEST_FILES += $(IOV_ITER_PPPS_MODULE)
+FAULT_IN_PPPS_MODULE := fault_in_ppps_module/fault_in_ppps_module.ko
+TEST_FILES += $(FAULT_IN_PPPS_MODULE)
 MREMAP_PGOFF_PPPS_MODULE := mremap_pgoff_ppps_module/mremap_pgoff_ppps_module.ko
 TEST_FILES += $(MREMAP_PGOFF_PPPS_MODULE)
 VM_IOMAP_MEMORY_PPPS_MODULE := vm_iomap_memory_ppps_module/vm_iomap_memory_ppps_module.ko
@@ -127,6 +129,7 @@ TEST_GEN_FILES += io_uring_fixed_buffer_ppps
 TEST_GEN_FILES += io_uring_mem_region_ppps
 TEST_GEN_FILES += mglru_ppps
 TEST_GEN_FILES += mmu_notifier_ppps
+TEST_GEN_FILES += fault_in_ppps
 TEST_GEN_FILES += anon_pageout_ppps
 TEST_GEN_FILES += swapoff_ppps
 TEST_GEN_FILES += swap_vma_readahead_ppps
@@ -330,6 +333,7 @@ TEST_FILES += test_iommu_dma_mmap_ppps.sh
 TEST_FILES += test_v9fs_mmap_close_ppps.sh
 TEST_FILES += test_pagewalk_ppps.sh
 TEST_FILES += test_mmu_notifier_ppps.sh
+TEST_FILES += test_fault_in_ppps.sh
 TEST_FILES += test_folio_within_range_ppps.sh
 TEST_FILES += test_vm_map_pages_ppps.sh
 TEST_FILES += test_vb2_mmap_ppps.sh
@@ -371,6 +375,20 @@ clean_iov_iter_ppps_module:
 	+$(MAKE) -C iov_iter_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_iov_iter_ppps_module
+endif
+
+ifneq ($(FAULT_IN_PPPS_MODULE),)
+all: $(FAULT_IN_PPPS_MODULE)
+
+$(FAULT_IN_PPPS_MODULE): fault_in_ppps_module/fault_in_ppps_module.c \
+			 fault_in_ppps_module/Makefile fault_in_ppps.h
+	+$(MAKE) -C fault_in_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_fault_in_ppps_module
+clean_fault_in_ppps_module:
+	+$(MAKE) -C fault_in_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_fault_in_ppps_module
 endif
 
 ifneq ($(MREMAP_PGOFF_PPPS_MODULE),)
