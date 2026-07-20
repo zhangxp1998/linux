@@ -161,6 +161,7 @@ TEST_GEN_FILES += brk_aslr_ppps
 TEST_GEN_FILES += brk_aslr_ppps_sample
 TEST_GEN_FILES += exec_stack_ppps
 TEST_GEN_FILES += exec_stack_random_ppps
+TEST_GEN_FILES += mmap_aslr_ppps
 TEST_GEN_FILES += stack_aslr_ppps
 TEST_GEN_FILES += uprobe_ppps
 endif
