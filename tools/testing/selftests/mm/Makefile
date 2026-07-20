@@ -154,6 +154,7 @@ TEST_GEN_FILES += anon_vma_name_ppps
 ifeq ($(ARCH),arm64)
 TEST_GEN_FILES += brk_aslr_ppps
 TEST_GEN_FILES += brk_aslr_ppps_sample
+TEST_GEN_FILES += elf_brk_gap_ppps
 TEST_GEN_FILES += exec_stack_ppps
 TEST_GEN_FILES += exec_stack_random_ppps
 TEST_GEN_FILES += mmap_aslr_ppps
