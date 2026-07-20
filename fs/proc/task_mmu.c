@@ -1096,16 +1096,16 @@ static void smaps_pmd_entry(pmd_t *pmd, unsigned long addr,
  * does not treat disjoint slices as aliases.  The caller drops its PTL before
  * this walk; page_vma_mapped_walk() takes the PTLs of every mapped VMA.
  */
-struct smaps_ppps_mapcounts {
+struct ppps_file_mapcounts {
 	struct page *page;
 	int count[PPPS_SLICES_PER_PAGE];
 };
 
-static bool smaps_ppps_mapcount_one(struct folio *folio,
-				    struct vm_area_struct *vma,
-				    unsigned long address, void *arg)
+static bool ppps_file_mapcount_one(struct folio *folio,
+				   struct vm_area_struct *vma,
+				   unsigned long address, void *arg)
 {
-	struct smaps_ppps_mapcounts *mapcounts = arg;
+	struct ppps_file_mapcounts *mapcounts = arg;
 	pgoff_t pgoff = folio->index +
 			folio_page_idx(folio, mapcounts->page);
 	struct page_vma_mapped_walk pvmw = {
@@ -1133,15 +1133,15 @@ static bool smaps_ppps_mapcount_one(struct folio *folio,
 	return true;
 }
 
-static void smaps_ppps_file_mapcounts(struct folio *folio, struct page *page,
-				      int count[PPPS_SLICES_PER_PAGE])
+static void ppps_file_page_mapcounts(struct folio *folio, struct page *page,
+				     int count[PPPS_SLICES_PER_PAGE])
 {
-	struct smaps_ppps_mapcounts mapcounts = {
+	struct ppps_file_mapcounts mapcounts = {
 		.page = page,
 	};
 	struct rmap_walk_control rwc = {
 		.arg = &mapcounts,
-		.rmap_one = smaps_ppps_mapcount_one,
+		.rmap_one = ppps_file_mapcount_one,
 	};
 
 	folio_lock(folio);
@@ -1204,7 +1204,7 @@ static int smaps_ppps_file_pte_range(pmd_t *pmd, unsigned long addr,
 				folio_put(cached_folio);
 			cached_folio = folio;
 			cached_page = page;
-			smaps_ppps_file_mapcounts(folio, page, mapcounts);
+			ppps_file_page_mapcounts(folio, page, mapcounts);
 		}
 
 		mapcount = mapcounts[vma_address_to_slice(vma, addr)];
@@ -2036,6 +2036,17 @@ static int add_to_pagemap(pagemap_entry_t *pme, struct pagemapread *pm)
 	return 0;
 }
 
+static bool __folio_page_mapped_exclusively(struct folio *folio,
+					    struct page *page,
+					    int precise_mapcount)
+{
+	if (precise_mapcount >= 0)
+		return precise_mapcount == 1;
+	if (IS_ENABLED(CONFIG_PAGE_MAPCOUNT))
+		return folio_precise_page_mapcount(folio, page) == 1;
+	return !folio_likely_mapped_shared(folio);
+}
+
 static int pagemap_pte_hole(unsigned long start, unsigned long end,
 			    __always_unused int depth, struct mm_walk *walk)
 {
@@ -2077,7 +2088,8 @@ out:
 }
 
 static pagemap_entry_t pte_to_pagemap_entry(struct pagemapread *pm,
-		struct vm_area_struct *vma, unsigned long addr, pte_t pte)
+		struct vm_area_struct *vma, unsigned long addr, pte_t pte,
+		int precise_mapcount)
 {
 	u64 frame = 0, flags = 0;
 	struct page *page = NULL;
@@ -2126,7 +2138,7 @@ static pagemap_entry_t pte_to_pagemap_entry(struct pagemapread *pm,
 		if (!folio_test_anon(folio))
 			flags |= PM_FILE;
 		if ((flags & PM_PRESENT) &&
-		    folio_precise_page_mapcount(folio, page) == 1)
+		    __folio_page_mapped_exclusively(folio, page, precise_mapcount))
 			flags |= PM_MMAP_EXCLUSIVE;
 	}
 	if (vma->vm_flags & VM_SOFTDIRTY)
@@ -2135,6 +2147,74 @@ static pagemap_entry_t pte_to_pagemap_entry(struct pagemapread *pm,
 	return make_pme(frame, flags);
 }
 
+#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && \
+	defined(CONFIG_PAGE_MAPCOUNT)
+static int pagemap_ppps_file_pte_range(pmd_t *pmdp, unsigned long addr,
+				       unsigned long end, struct mm_walk *walk)
+{
+	struct vm_area_struct *vma = walk->vma;
+	struct pagemapread *pm = walk->private;
+	struct folio *cached_folio = NULL;
+	struct page *cached_page = NULL;
+	int mapcounts[PPPS_SLICES_PER_PAGE];
+	unsigned long page_size = MM_PAGE_SIZE(walk->mm);
+	int err = 0;
+
+	for (; addr < end; addr += page_size) {
+		struct folio *folio;
+		struct page *page;
+		pagemap_entry_t pme;
+		/* Protects the PTE snapshot. */
+		spinlock_t *ptl;
+		pte_t *pte;
+		pte_t ptent;
+		int mapcount;
+
+		pte = pte_offset_map_lock(walk->mm, pmdp, addr, &ptl);
+		if (!pte) {
+			walk->action = ACTION_AGAIN;
+			break;
+		}
+
+		ptent = ptep_get(pte);
+		page = pte_present(ptent) ? vm_normal_page(vma, addr, ptent) : NULL;
+		if (!page || folio_test_anon(page_folio(page))) {
+			pme = pte_to_pagemap_entry(pm, vma, addr, ptent, -1);
+			pte_unmap_unlock(pte, ptl);
+			goto add_entry;
+		}
+
+		folio = page_folio(page);
+		if (page != cached_page && !folio_try_get(folio)) {
+			pme = pte_to_pagemap_entry(pm, vma, addr, ptent, -1);
+			pte_unmap_unlock(pte, ptl);
+			goto add_entry;
+		}
+		pte_unmap_unlock(pte, ptl);
+
+		if (page != cached_page) {
+			if (cached_folio)
+				folio_put(cached_folio);
+			cached_folio = folio;
+			cached_page = page;
+			ppps_file_page_mapcounts(folio, page, mapcounts);
+		}
+
+		mapcount = mapcounts[vma_address_to_slice(vma, addr)];
+		mapcount = max(mapcount, 1);
+		pme = pte_to_pagemap_entry(pm, vma, addr, ptent, mapcount);
+add_entry:
+		err = add_to_pagemap(&pme, pm);
+		if (err)
+			break;
+	}
+
+	if (cached_folio)
+		folio_put(cached_folio);
+	cond_resched();
+	return err;
+}
+#endif
 
 static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 			     struct mm_walk *walk)
@@ -2202,7 +2282,7 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 			pagemap_entry_t pme;
 
 			if (folio && (flags & PM_PRESENT) &&
-			    folio_precise_page_mapcount(folio, page + idx) == 1)
+			    __folio_page_mapped_exclusively(folio, page + idx, -1))
 				cur_flags |= PM_MMAP_EXCLUSIVE;
 
 			pme = make_pme(frame, cur_flags);
@@ -2221,6 +2301,12 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 	}
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
+#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && \
+	defined(CONFIG_PAGE_MAPCOUNT)
+	if (ppps_mm_is_compat(vma->vm_mm) && vma->vm_file)
+		return pagemap_ppps_file_pte_range(pmdp, addr, end, walk);
+#endif
+
 	/*
 	 * We can assume that @vma always points to a valid one and @end never
 	 * goes beyond vma->vm_end.
@@ -2233,7 +2319,7 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 	for (; addr < end; pte++, addr += MM_PAGE_SIZE(walk->mm)) {
 		pagemap_entry_t pme;
 
-		pme = pte_to_pagemap_entry(pm, vma, addr, ptep_get(pte));
+		pme = pte_to_pagemap_entry(pm, vma, addr, ptep_get(pte), -1);
 		err = add_to_pagemap(&pme, pm);
 		if (err)
 			break;
