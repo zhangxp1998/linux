@@ -1049,6 +1049,8 @@ EXPORT_SYMBOL_GPL(vma_kernel_pagesize);
  */
 __weak unsigned long vma_mmu_pagesize(struct vm_area_struct *vma)
 {
+	if (!vma->vm_ops || !vma->vm_ops->pagesize)
+		return MM_PAGE_SIZE(vma->vm_mm);
 	return vma_kernel_pagesize(vma);
 }
 
