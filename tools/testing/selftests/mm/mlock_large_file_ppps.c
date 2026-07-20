@@ -167,6 +167,84 @@ static size_t count_locked_large_pages(const struct page_info *pages,
 	return locked;
 }
 
+static void test_mlock_onfault(const char *file)
+{
+	struct page_info pages[MAP_SIZE / SLICE_SIZE];
+	char path[PATH_MAX] = "mlock-onfault-large-file-ppps.XXXXXX";
+	unsigned char *map = MAP_FAILED;
+	size_t checksum = 0;
+	size_t large_pages;
+	size_t locked_large;
+	size_t nr_pages;
+	size_t offset;
+	int fd = -1;
+	int rc;
+
+	if (file) {
+		if (snprintf(path, sizeof(path), "%s.onfault", file) >=
+		    (int)sizeof(path)) {
+			errno = ENAMETOOLONG;
+			rc = -1;
+			goto setup_done;
+		}
+		fd = open(path, O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0600);
+	} else {
+		fd = mkstemp(path);
+	}
+	rc = fd < 0 ? -1 : prepare_file(fd);
+	if (!rc)
+		map = mmap(MAP_ADDR, MAP_SIZE, PROT_READ,
+			   MAP_PRIVATE | MAP_FIXED_NOREPLACE, fd, 0);
+	if (map == MAP_FAILED && !rc)
+		rc = -1;
+	if (!rc && raise_memlock_limit())
+		rc = -1;
+	if (!rc && mlock2(map, MAP_SIZE, MLOCK_ONFAULT))
+		rc = -1;
+
+setup_done:
+	if (rc)
+		perror("MLOCK_ONFAULT setup");
+	result(!rc && map == MAP_ADDR,
+	       "enable MLOCK_ONFAULT before faulting a large file");
+	if (rc)
+		goto skip_remaining;
+
+	for (offset = 0; offset < MAP_SIZE; offset += SLICE_SIZE)
+		checksum += map[offset];
+	printf("# MLOCK_ONFAULT checksum=%zu\n", checksum);
+	result(checksum != 0, "fault the MLOCK_ONFAULT file mapping");
+
+	if (collect_pages(map, pages, &nr_pages)) {
+		skip("MLOCK_ONFAULT marks a large file folio unevictable",
+		     "PFNs or kpageflags are unavailable");
+	} else {
+		locked_large = count_locked_large_pages(pages, nr_pages, &large_pages);
+		printf("# MLOCK_ONFAULT unique=%zu large=%zu locked_large=%zu\n",
+		       nr_pages, large_pages, locked_large);
+		if (!large_pages)
+			skip("MLOCK_ONFAULT marks a large file folio unevictable",
+			     "filesystem did not allocate a large folio");
+		else
+			result(locked_large > 0,
+			       "MLOCK_ONFAULT marks a large file folio unevictable");
+	}
+	goto out;
+
+skip_remaining:
+	skip("fault the MLOCK_ONFAULT file mapping", "mapping is unavailable");
+	skip("MLOCK_ONFAULT marks a large file folio unevictable",
+	     "mapping is unavailable");
+out:
+	if (map != MAP_FAILED) {
+		munlock(map, MAP_SIZE);
+		munmap(map, MAP_SIZE);
+	}
+	if (fd >= 0)
+		close(fd);
+	unlink(path);
+}
+
 int main(int argc, char **argv)
 {
 	struct page_info pages[MAP_SIZE / SLICE_SIZE];
@@ -182,7 +260,7 @@ int main(int argc, char **argv)
 	int fd = -1;
 	int rc;
 
-	printf("TAP version 13\n1..4\n");
+	printf("TAP version 13\n1..7\n");
 	if (argc > 2) {
 		printf("Bail out! usage: %s [FILE]\n", argv[0]);
 		return 1;
@@ -254,6 +332,7 @@ out:
 	if (fd >= 0)
 		close(fd);
 	unlink(path);
+	test_mlock_onfault(argc == 2 ? argv[1] : NULL);
 	printf("# Totals: pass:%d fail:%d\n", test_no - failures, failures);
 	return failures ? 1 : 0;
 }
