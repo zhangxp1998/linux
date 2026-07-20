@@ -7,8 +7,10 @@
 #include <linux/tracepoint.h>
 #include <trace/events/mmflags.h>
 
-#define OOM_PAGES_TO_KB(mm, pages) \
+#define OOM_PROCESS_PAGES_TO_KB(mm, pages) \
 	((pages) << (MM_PAGE_SHIFT(mm) - 10))
+#define OOM_NATIVE_PAGES_TO_KB(pages) \
+	((pages) << (PAGE_SHIFT - 10))
 
 TRACE_EVENT(oom_score_adj_update,
 
@@ -99,10 +101,10 @@ TRACE_EVENT(mark_victim,
 
 		__entry->pid = task->pid;
 		__assign_str(comm);
-		__entry->total_vm = OOM_PAGES_TO_KB(mm, mm->total_vm);
-		__entry->anon_rss = OOM_PAGES_TO_KB(mm, anon);
-		__entry->file_rss = OOM_PAGES_TO_KB(mm, file);
-		__entry->shmem_rss = OOM_PAGES_TO_KB(mm, shmem);
+		__entry->total_vm = OOM_PROCESS_PAGES_TO_KB(mm, mm->total_vm);
+		__entry->anon_rss = OOM_NATIVE_PAGES_TO_KB(anon);
+		__entry->file_rss = OOM_PROCESS_PAGES_TO_KB(mm, file);
+		__entry->shmem_rss = OOM_PROCESS_PAGES_TO_KB(mm, shmem);
 		__entry->uid = uid;
 		__entry->pgtables = mm_pgtables_bytes(task->mm) >> 10;
 		__entry->oom_score_adj = task->signal->oom_score_adj;
