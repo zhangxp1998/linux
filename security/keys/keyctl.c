@@ -12,6 +12,7 @@
 #include <linux/syscalls.h>
 #include <linux/key.h>
 #include <linux/keyctl.h>
+#include <linux/mm.h>
 #include <linux/fs.h>
 #include <linux/capability.h>
 #include <linux/cred.h>
@@ -331,7 +332,7 @@ long keyctl_update_key(key_serial_t id,
 	long ret;
 
 	ret = -EINVAL;
-	if (plen > PAGE_SIZE)
+	if (plen > MM_PAGE_SIZE(current->mm))
 		goto error;
 
 	/* pull the payload in if one was supplied */
