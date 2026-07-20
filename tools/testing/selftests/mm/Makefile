@@ -139,6 +139,7 @@ TEST_GEN_FILES += mlock_reclaim_ppps
 TEST_GEN_FILES += fadvise_dontneed_ppps
 TEST_GEN_FILES += smaps_page_size_ppps
 TEST_GEN_FILES += fork_page_size_ppps
+TEST_GEN_FILES += mmap_page_zero_ppps
 TEST_GEN_FILES += smaps_pss_ppps
 TEST_GEN_FILES += filemap_eof_ppps
 TEST_GEN_FILES += folio_within_range_ppps
