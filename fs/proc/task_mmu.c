@@ -1800,6 +1800,13 @@ static inline pagemap_entry_t make_pme(u64 frame, u64 flags)
 	return (pagemap_entry_t) { .pme = (frame & PM_PFRAME_MASK) | flags };
 }
 
+static u64 pagemap_pte_pfn(struct vm_area_struct *vma, pte_t pte)
+{
+	phys_addr_t phys = PFN_PHYS(pte_pfn(pte)) + pte_page_offset(pte);
+
+	return MM_PHYS_PFN(vma->vm_mm, phys);
+}
+
 static int add_to_pagemap(pagemap_entry_t *pme, struct pagemapread *pm)
 {
 	pm->buffer[pm->pos++] = *pme;
@@ -1869,7 +1876,7 @@ static pagemap_entry_t pte_to_pagemap_entry(struct pagemapread *pm,
 
 	if (pte_present(pte)) {
 		if (pm->show_pfn)
-			frame = pte_pfn(pte);
+			frame = pagemap_pte_pfn(vma, pte);
 		flags |= PM_PRESENT;
 		page = vm_normal_page(vma, addr, pte);
 		if (pte_soft_dirty(pte))
