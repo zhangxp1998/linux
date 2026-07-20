@@ -879,9 +879,12 @@ static bool coredump_file(struct core_name *cn, struct coredump_params *cprm,
 	struct mnt_idmap *idmap;
 	struct inode *inode;
 	struct file *file __free(fput) = NULL;
+	unsigned long min_coredump = binfmt->min_coredump;
 	int open_flags = O_CREAT | O_WRONLY | O_NOFOLLOW | O_LARGEFILE | O_EXCL;
 
-	if (cprm->limit < binfmt->min_coredump)
+	if (ppps_mm_is_compat(current->mm))
+		min_coredump = min(min_coredump, MM_PAGE_SIZE(current->mm));
+	if (cprm->limit < min_coredump)
 		return false;
 
 	if (coredump_force_suid_safe(cprm) && cn->corename[0] != '/') {
