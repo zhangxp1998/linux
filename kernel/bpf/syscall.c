@@ -34,6 +34,7 @@
 #include <linux/bpf-netns.h>
 #include <linux/rcupdate_trace.h>
 #include <linux/memcontrol.h>
+#include <linux/mm.h>
 #include <linux/trace_events.h>
 
 #include <net/netfilter/nf_bpf_link.h>
@@ -85,9 +86,11 @@ int bpf_check_uarg_tail_zero(bpfptr_t uaddr,
 			     size_t expected_size,
 			     size_t actual_size)
 {
+	size_t max_size = uaddr.is_kernel ? PAGE_SIZE :
+			  MM_PAGE_SIZE(current->mm);
 	int res;
 
-	if (unlikely(actual_size > PAGE_SIZE))	/* silly large */
+	if (unlikely(actual_size > max_size))	/* silly large */
 		return -E2BIG;
 
 	if (actual_size <= expected_size)
