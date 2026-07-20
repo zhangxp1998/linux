@@ -6,7 +6,7 @@ CFLAGS += -Wall -O2 $(KHDR_INCLUDES)
 LOCAL_HDRS += common.h
 
 TEST_GEN_PROGS := lsm_get_self_attr_test lsm_list_modules_test \
-		  lsm_set_self_attr_test
+		  lsm_set_self_attr_test lsm_attr_size_ppps
 
 include ../lib.mk
 
