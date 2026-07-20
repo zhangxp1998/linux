@@ -23,7 +23,7 @@
 #define USER_PAGE_SIZE 4096UL
 #define MAX_NATIVE_PAGE_SIZE 16384UL
 #define MAPPING_SIZE (2 * USER_PAGE_SIZE)
-#define DIRTY_RING_SIZE (64 * 1024)
+#define DIRTY_RING_SIZE 4096
 #define GUEST_CODE_GPA 0x40000000ULL
 #define GUEST_MMIO_GPA 0x10000000ULL
 #define GUEST_EXIT_MMIO_GPA 0x20000000ULL
@@ -267,7 +267,7 @@ static int run_test(void)
 	ret = ioctl(kvm_fd, KVM_CHECK_EXTENSION,
 		    KVM_CAP_DIRTY_LOG_RING_ACQ_REL);
 	ksft_test_result(ret >= DIRTY_RING_SIZE,
-			 "KVM dirty ring supports a 64K ring\n");
+			 "KVM dirty ring supports a 4K process-page ring\n");
 	if (ret < DIRTY_RING_SIZE)
 		ksft_exit_skip("KVM dirty ring is unavailable\n");
 
