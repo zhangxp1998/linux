@@ -1481,6 +1481,48 @@ static __always_inline void __folio_add_file_rmap(struct folio *folio,
 		mlock_vma_folio(folio, vma);
 }
 
+/*
+ * The PPPS file fault path installs one process-sized PTE at a time, so the
+ * rmap addition above cannot tell when the final slice of a large folio has
+ * been mapped.  The caller has installed the PTE and dropped its page table
+ * lock, but still holds the folio lock and mmap_lock.  This makes it safe to
+ * walk across page table boundaries before mlocking the fully mapped folio.
+ */
+void mlock_vma_folio_if_fully_mapped(struct folio *folio,
+				     struct vm_area_struct *vma)
+{
+	unsigned long nr_ptes = folio_size(folio) >> MM_PAGE_SHIFT(vma->vm_mm);
+	unsigned long address;
+	unsigned long ptes = 0;
+
+	if ((vma->vm_flags & (VM_LOCKED | VM_SPECIAL)) != VM_LOCKED ||
+	    !folio_within_vma(folio, vma))
+		return;
+	/* Avoid a page-table walk until this VMA could be a full mapping. */
+	if (folio_mapcount(folio) < nr_ptes)
+		return;
+
+	address = vma_address(vma, folio_pgoff(folio), folio_nr_pages(folio));
+	if (address == -EFAULT)
+		return;
+
+	{
+		DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, PVMW_SYNC);
+
+		while (page_vma_mapped_walk(&pvmw)) {
+			if (!pvmw.pte)
+				goto done;
+			if (++ptes == nr_ptes) {
+				mlock_vma_folio(folio, vma);
+				goto done;
+			}
+		}
+		return;
+done:
+		page_vma_mapped_walk_done(&pvmw);
+	}
+}
+
 /**
  * folio_add_file_rmap_ptes - add PTE mappings to a page range of a folio
  * @folio:	The folio to add the mappings to
