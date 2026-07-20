@@ -3118,7 +3118,7 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 	address += MM_PAGE_SIZE(mm);
 
 	/* Enforce stack_guard_gap */
-	gap_addr = address + stack_guard_gap;
+	gap_addr = address + mm_stack_guard_gap(mm);
 
 	/* Guard against overflow */
 	if (gap_addr < address || gap_addr > TASK_SIZE)
@@ -3206,7 +3206,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 	if (prev) {
 		if (!vma_test(prev, VMA_GROWSDOWN_BIT) &&
 		    vma_is_accessible(prev) &&
-		    (address - prev->vm_end < stack_guard_gap))
+		    (address - prev->vm_end < mm_stack_guard_gap(mm)))
 			return -ENOMEM;
 	}
 
