@@ -3,5 +3,5 @@ CFLAGS += -Wl,-no-as-needed -Wall $(KHDR_INCLUDES)
 LDFLAGS += -lpthread
 
 TEST_GEN_PROGS := sigtrap_threads remove_on_exec watermark_signal \
-	attr_size_ppps
+	attr_size_ppps filter_size_ppps
 include ../lib.mk
