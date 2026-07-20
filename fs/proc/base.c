@@ -1639,7 +1639,7 @@ static ssize_t timens_offsets_write(struct file *file, const char __user *buf,
 	int ret, noffsets;
 
 	/* Only allow < page size writes at the beginning of the file */
-	if ((*ppos != 0) || (count >= PAGE_SIZE))
+	if ((*ppos != 0) || (count >= MM_PAGE_SIZE(current->mm)))
 		return -EINVAL;
 
 	/* Slurp in the user data */
