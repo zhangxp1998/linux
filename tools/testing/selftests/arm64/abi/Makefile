@@ -3,7 +3,7 @@
 
 TEST_GEN_PROGS := hwcap ptrace syscall-abi tpidr2
 AARCH32_TESTS := aarch32-mmap2-ppps aarch32-task-size-ppps \
-		 aarch32-vdso-pages-ppps
+		 aarch32-shm-rnd-ppps aarch32-vdso-pages-ppps
 
 ifneq ($(LLVM),)
 TEST_GEN_PROGS += $(AARCH32_TESTS)

@@ -6,6 +6,10 @@
 #include <asm/page.h>
 #include <asm/shmparam.h>
 
+#ifndef SHMLBA_USER
+#define SHMLBA_USER	SHMLBA
+#endif
+
 struct file;
 struct task_struct;
 
