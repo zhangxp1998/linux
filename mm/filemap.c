@@ -4300,6 +4300,9 @@ EXPORT_SYMBOL_GPL(filemap_invalidate_inode);
  * @mapping:	The mapping to compute the statistics for.
  * @first_index:	The starting page cache index.
  * @last_index:	The final page index (inclusive).
+ * @first_page:	The starting process page index.
+ * @last_page:	The final process page index (inclusive).
+ * @page_shift:	The process page shift.
  * @cs:	the cachestat struct to write the result to.
  *
  * This will query the page cache statistics of a mapping in the
@@ -4308,10 +4311,13 @@ EXPORT_SYMBOL_GPL(filemap_invalidate_inode);
  * writeback, and the number of (recently) evicted pages.
  */
 static void filemap_cachestat(struct address_space *mapping,
-		pgoff_t first_index, pgoff_t last_index, struct cachestat *cs)
+		pgoff_t first_index, pgoff_t last_index,
+		pgoff_t first_page, pgoff_t last_page,
+		unsigned int page_shift, struct cachestat *cs)
 {
 	XA_STATE(xas, &mapping->i_pages, first_index);
 	struct folio *folio;
+	unsigned int page_order = PAGE_SHIFT - page_shift;
 
 	/* Flush stats (and potentially sleep) outside the RCU read section. */
 	mem_cgroup_flush_stats_ratelimited(NULL);
@@ -4321,6 +4327,7 @@ static void filemap_cachestat(struct address_space *mapping,
 		int order;
 		unsigned long nr_pages;
 		pgoff_t folio_first_index, folio_last_index;
+		pgoff_t folio_first_page, folio_last_page;
 
 		/*
 		 * Don't deref the folio. It is not pinned, and might
@@ -4341,12 +4348,12 @@ static void filemap_cachestat(struct address_space *mapping,
 		folio_first_index = round_down(xas.xa_index, 1 << order);
 		folio_last_index = folio_first_index + nr_pages - 1;
 
-		/* Folios might straddle the range boundaries, only count covered pages */
-		if (folio_first_index < first_index)
-			nr_pages -= first_index - folio_first_index;
-
-		if (folio_last_index > last_index)
-			nr_pages -= folio_last_index - last_index;
+		/* Report counts in pages as seen by the calling process. */
+		folio_first_page = folio_first_index << page_order;
+		folio_last_page = (folio_last_index << page_order) |
+				  ((1UL << page_order) - 1);
+		nr_pages = min(folio_last_page, last_page) -
+			   max(folio_first_page, first_page) + 1;
 
 		if (xa_is_value(folio)) {
 			/* page is evicted */
@@ -4446,6 +4453,8 @@ SYSCALL_DEFINE4(cachestat, unsigned int, fd,
 	struct cachestat_range csr;
 	struct cachestat cs;
 	pgoff_t first_index, last_index;
+	pgoff_t first_page, last_page;
+	unsigned int page_shift = MM_PAGE_SHIFT(current->mm);
 
 	if (!fd_file(f))
 		return -EBADF;
@@ -4470,9 +4479,13 @@ SYSCALL_DEFINE4(cachestat, unsigned int, fd,
 	first_index = csr.off >> PAGE_SHIFT;
 	last_index =
 		csr.len == 0 ? ULONG_MAX : (csr.off + csr.len - 1) >> PAGE_SHIFT;
+	first_page = csr.off >> page_shift;
+	last_page =
+		csr.len == 0 ? ULONG_MAX : (csr.off + csr.len - 1) >> page_shift;
 	memset(&cs, 0, sizeof(struct cachestat));
 	mapping = fd_file(f)->f_mapping;
-	filemap_cachestat(mapping, first_index, last_index, &cs);
+	filemap_cachestat(mapping, first_index, last_index, first_page, last_page,
+			  page_shift, &cs);
 	fdput(f);
 
 	if (copy_to_user(cstat, &cs, sizeof(struct cachestat)))
