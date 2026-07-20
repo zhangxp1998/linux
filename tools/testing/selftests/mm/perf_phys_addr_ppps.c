@@ -15,27 +15,10 @@
 #include "kselftest_ppps.h"
 
 #define RESERVE_SIZE		(8 * NATIVE_PAGE_SIZE)
-#define PAGEMAP_PRESENT		(1ULL << 63)
-#define PAGEMAP_PFN_MASK	((1ULL << 55) - 1)
 
 static int perf_event_open(struct perf_event_attr *attr)
 {
 	return syscall(__NR_perf_event_open, attr, 0, -1, -1, 0);
-}
-
-static int read_pagemap_entry(const void *address, uint64_t *entry)
-{
-	off_t offset = ((uintptr_t)address / USER_PAGE_SIZE) * sizeof(*entry);
-	int fd;
-	int ret = -1;
-
-	fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return -1;
-	if (pread(fd, entry, sizeof(*entry), offset) == sizeof(*entry))
-		ret = 0;
-	close(fd);
-	return ret;
 }
 
 static void copy_ring(void *destination, const unsigned char *data,
@@ -136,19 +119,13 @@ static int run_test(void)
 	uintptr_t base;
 	uint64_t phys0 = 0;
 	uint64_t phys1 = 0;
-	uint64_t pme0 = 0;
-	uint64_t pme1 = 0;
 	bool mappings_ok;
 	int memfd;
-	int pagemap0;
-	int pagemap1;
 	int sample0;
 	int sample1;
 
 	ksft_print_header();
-	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(5);
 
 	memfd = memfd_create("perf-phys-addr-ppps", MFD_CLOEXEC);
 	if (memfd < 0 || ftruncate(memfd, PROCESS_PAGE_SIZE))
@@ -194,25 +171,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "perf_phys_addr_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)
