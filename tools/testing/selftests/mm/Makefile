@@ -102,6 +102,7 @@ TEST_GEN_FILES += sysv_shm_lock_ppps
 TEST_GEN_FILES += io_uring_mmap_ppps
 TEST_GEN_FILES += io_uring_fixed_buffer_ppps
 TEST_GEN_FILES += aio_ring_ppps
+TEST_GEN_FILES += stack_guard_gap_ppps
 TEST_GEN_FILES += mglru_ppps
 TEST_GEN_FILES += mmu_notifier_ppps
 TEST_GEN_FILES += fault_in_ppps
