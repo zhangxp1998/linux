@@ -3211,9 +3211,11 @@ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
  *
  * Return: The default MMU page size granularity for this VMA.
  */
+#ifdef CONFIG_HUGETLB_PAGE
 __weak unsigned long vma_mmu_pagesize(struct vm_area_struct *vma)
 {
 	if (!vma->vm_ops || !vma->vm_ops->pagesize)
 		return MM_PAGE_SIZE(vma->vm_mm);
 	return vma_kernel_pagesize(vma);
 }
+#endif

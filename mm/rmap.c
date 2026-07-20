@@ -843,6 +843,19 @@ struct folio_referenced_arg {
 	struct mem_cgroup *memcg;
 };
 
+static unsigned long
+folio_referenced_nr_ptes(struct folio *folio, struct vm_area_struct *vma)
+{
+	/*
+	 * A PPPS anonymous PTE maps one native page, whereas a file PTE maps
+	 * one process-sized slice of the native folio.
+	 */
+	if (ppps_mm_is_compat(vma->vm_mm) && !folio_test_anon(folio))
+		return folio_size(folio) >> MM_PAGE_SHIFT(vma->vm_mm);
+
+	return folio_nr_pages(folio);
+}
+
 /*
  * arg: folio_referenced_arg will be passed
  */
@@ -851,7 +864,10 @@ static bool folio_referenced_one(struct folio *folio,
 {
 	struct folio_referenced_arg *pra = arg;
 	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
-	int ptes = 0, referenced = 0;
+	unsigned long nr_ptes = folio_referenced_nr_ptes(folio, vma);
+	unsigned long ptes = 0;
+	int referenced = 0;
+	unsigned int nr = 1;
 
 	while (page_vma_mapped_walk(&pvmw)) {
 		address = pvmw.address;
@@ -861,7 +877,7 @@ static bool folio_referenced_one(struct folio *folio,
 			pra->mapcount--;
 
 			/* Only mlock fully mapped pages */
-			if (pvmw.pte && ptes != pvmw.nr_pages)
+			if (pvmw.pte && ptes != nr_ptes)
 				continue;
 
 			/*
@@ -895,6 +911,17 @@ static bool folio_referenced_one(struct folio *folio,
 			return false;
 		}
 
+		nr = 1;
+		if (pvmw.pte && folio_test_large(folio) &&
+		    (!ppps_mm_is_compat(vma->vm_mm) || folio_test_anon(folio))) {
+			const unsigned long end_addr = pmd_addr_end(address, vma->vm_end);
+			const unsigned int max_nr =
+				(end_addr - address) >> MM_PAGE_SHIFT(vma->vm_mm);
+			pte_t pteval = ptep_get(pvmw.pte);
+
+			nr = folio_pte_batch(folio, pvmw.pte, pteval, max_nr);
+		}
+
 		if (lru_gen_enabled() && pvmw.pte) {
 			if (lru_gen_look_around(&pvmw))
 				referenced++;
@@ -911,7 +938,20 @@ static bool folio_referenced_one(struct folio *folio,
 			WARN_ON_ONCE(1);
 		}
 
-		pra->mapcount--;
+		ptes += nr;
+		pra->mapcount -= nr;
+		/*
+		 * If we are sure that we batched the entire folio,
+		 * we can just optimize and stop right here.
+		 */
+		if (ptes == nr_ptes) {
+			page_vma_mapped_walk_done(&pvmw);
+			break;
+		}
+
+		/* Skip the batched PTEs */
+		pvmw.pte += nr - 1;
+		pvmw.address += (nr - 1) * MM_PAGE_SIZE(vma->vm_mm);
 	}
 
 	if (referenced)
