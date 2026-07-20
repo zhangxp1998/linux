@@ -340,7 +340,8 @@ static int aarch32_kuser_helpers_setup(struct mm_struct *mm)
 	 * Avoid VM_MAYWRITE for compatibility with arch/arm/, where it's
 	 * not safe to CoW the page containing the CPU exception vectors.
 	 */
-	ret = _install_special_mapping(mm, AARCH32_VECTORS_BASE, PAGE_SIZE,
+	ret = _install_special_mapping(mm, AARCH32_VECTORS_BASE,
+				       MM_PAGE_SIZE(mm),
 				       VM_READ | VM_EXEC |
 				       VM_MAYREAD | VM_MAYEXEC,
 				       &aarch32_vdso_maps[AA32_MAP_VECTORS]);
@@ -350,10 +351,11 @@ static int aarch32_kuser_helpers_setup(struct mm_struct *mm)
 
 static int aarch32_sigreturn_setup(struct mm_struct *mm)
 {
+	unsigned long page_size = MM_PAGE_SIZE(mm);
 	unsigned long addr;
 	void *ret;
 
-	addr = get_unmapped_area(NULL, 0, PAGE_SIZE, 0, 0);
+	addr = get_unmapped_area(NULL, 0, page_size, 0, 0);
 	if (IS_ERR_VALUE(addr)) {
 		ret = ERR_PTR(addr);
 		goto out;
@@ -363,7 +365,7 @@ static int aarch32_sigreturn_setup(struct mm_struct *mm)
 	 * VM_MAYWRITE is required to allow gdb to Copy-on-Write and
 	 * set breakpoints.
 	 */
-	ret = _install_special_mapping(mm, addr, PAGE_SIZE,
+	ret = _install_special_mapping(mm, addr, page_size,
 				       VM_READ | VM_EXEC | VM_MAYREAD |
 				       VM_MAYWRITE | VM_MAYEXEC,
 				       &aarch32_vdso_maps[AA32_MAP_SIGPAGE]);
