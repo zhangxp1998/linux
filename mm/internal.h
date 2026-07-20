@@ -1931,7 +1931,7 @@ static inline bool clear_flush_young_ptes_notify(struct vm_area_struct *vma,
 
 	young = clear_flush_young_ptes(vma, addr, ptep, nr);
 	young |= mmu_notifier_clear_flush_young(vma->vm_mm, addr,
-						addr + nr * PAGE_SIZE);
+						addr + nr * MM_PAGE_SIZE(vma->vm_mm));
 	return young;
 }
 
@@ -1951,7 +1951,8 @@ static inline bool test_and_clear_young_ptes_notify(struct vm_area_struct *vma,
 	bool young;
 
 	young = test_and_clear_young_ptes(vma, addr, ptep, nr);
-	young |= mmu_notifier_clear_young(vma->vm_mm, addr, addr + nr * PAGE_SIZE);
+	young |= mmu_notifier_clear_young(vma->vm_mm, addr,
+					    addr + nr * MM_PAGE_SIZE(vma->vm_mm));
 	return young;
 }
 
