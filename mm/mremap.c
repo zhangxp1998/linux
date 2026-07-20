@@ -961,6 +961,17 @@ static unsigned long mremap_get_unmapped_area(struct file *file, unsigned long a
 			unsigned long extra = PAGE_SIZE;
 			unsigned long res;
 
+			/*
+			 * MREMAP_DONTUNMAP treats a non-zero destination as an
+			 * mmap-style hint.  Honor an available hint before adding
+			 * padding to preserve the source address slice.
+			 */
+			if (addr) {
+				res = get_unmapped_area(file, addr, len, pgoff, flags);
+				if (res == addr || IS_ERR_VALUE(res))
+					return res;
+			}
+
 			res = get_unmapped_area(file, addr, len + extra, pgoff, flags);
 			if (!IS_ERR_VALUE(res))
 				res = res + (slice << PAGE_SHIFT_COMPAT);
