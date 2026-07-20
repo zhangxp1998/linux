@@ -8,6 +8,7 @@ LOCAL_HDRS += $(selfdir)/mm/dma_mmap_attrs_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/dma_mmap_pages_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
 LOCAL_HDRS += $(selfdir)/mm/pagewalk_ppps.h
+LOCAL_HDRS += $(selfdir)/mm/mmu_notifier_ppps_module/mmu_notifier_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/folio_within_range_ppps.h
 LOCAL_HDRS += $(selfdir)/mm/iov_iter_ppps.h
 
@@ -56,6 +57,11 @@ IOMMU_DMA_MMAP_PPPS_MODULE := iommu_dma_mmap_ppps_module/iommu_dma_mmap_ppps_mod
 ifneq (,$(shell grep -s '^CONFIG_MAPPING_DIRTY_HELPERS=y$$' $(KDIR)/.config))
 PAGEWALK_PPPS_MODULE := pagewalk_ppps_module/pagewalk_ppps_module.ko
 endif
+ifneq (,$(shell grep -s '^CONFIG_MMU_NOTIFIER=y$$' $(KDIR)/.config))
+MMU_NOTIFIER_PPPS_MODULE := \
+	mmu_notifier_ppps_module/mmu_notifier_ppps_module.ko
+TEST_FILES += $(MMU_NOTIFIER_PPPS_MODULE)
+endif
 FOLIO_WITHIN_RANGE_PPPS_MODULE := \
 	folio_within_range_ppps_module/folio_within_range_ppps_test.ko
 ifneq (,$(shell grep -s '^CONFIG_VIDEOBUF2_VMALLOC=y$$' $(KDIR)/.config))
@@ -86,6 +92,7 @@ TEST_GEN_FILES += sysv_shm_lock_ppps
 TEST_GEN_FILES += io_uring_mmap_ppps
 TEST_GEN_FILES += io_uring_fixed_buffer_ppps
 TEST_GEN_FILES += mglru_ppps
+TEST_GEN_FILES += mmu_notifier_ppps
 TEST_GEN_FILES += anon_pageout_ppps
 TEST_GEN_FILES += swapoff_ppps
 TEST_GEN_FILES += madvise_free_ppps
@@ -256,6 +263,7 @@ TEST_FILES += $(IOMMU_DMA_MMAP_PPPS_MODULE)
 TEST_FILES += test_v9fs_mmap_close_ppps.sh
 TEST_FILES += test_pagewalk_ppps.sh
 TEST_FILES += $(PAGEWALK_PPPS_MODULE)
+TEST_FILES += test_mmu_notifier_ppps.sh
 TEST_FILES += test_folio_within_range_ppps.sh
 TEST_FILES += $(FOLIO_WITHIN_RANGE_PPPS_MODULE)
 TEST_FILES += test_vm_map_pages_ppps.sh
@@ -401,6 +409,22 @@ clean_pagewalk_ppps_module:
 	+$(MAKE) -C pagewalk_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_pagewalk_ppps_module
+endif
+
+ifneq ($(MMU_NOTIFIER_PPPS_MODULE),)
+all: $(MMU_NOTIFIER_PPPS_MODULE)
+
+$(MMU_NOTIFIER_PPPS_MODULE): \
+	mmu_notifier_ppps_module/mmu_notifier_ppps_module.c \
+	mmu_notifier_ppps_module/mmu_notifier_ppps.h \
+	mmu_notifier_ppps_module/Makefile
+	+$(MAKE) -C mmu_notifier_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_mmu_notifier_ppps_module
+clean_mmu_notifier_ppps_module:
+	+$(MAKE) -C mmu_notifier_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_mmu_notifier_ppps_module
 endif
 
 ifneq ($(FOLIO_WITHIN_RANGE_PPPS_MODULE),)
