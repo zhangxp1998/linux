@@ -2133,21 +2133,22 @@ static long __get_user_pages_locked(struct mm_struct *mm, unsigned long start,
 size_t fault_in_writeable(char __user *uaddr, size_t size)
 {
 	char __user *start = uaddr, *end;
+	unsigned long page_size = MM_PAGE_SIZE(current->mm);
 
 	if (unlikely(size == 0))
 		return 0;
 	if (!user_write_access_begin(uaddr, size))
 		return size;
-	if (!PAGE_ALIGNED(uaddr)) {
+	if (!IS_ALIGNED((unsigned long)uaddr, page_size)) {
 		unsafe_put_user(0, uaddr, out);
-		uaddr = (char __user *)PAGE_ALIGN((unsigned long)uaddr);
+		uaddr = (char __user *)ALIGN((unsigned long)uaddr, page_size);
 	}
-	end = (char __user *)PAGE_ALIGN((unsigned long)start + size);
+	end = (char __user *)ALIGN((unsigned long)start + size, page_size);
 	if (unlikely(end < start))
 		end = NULL;
 	while (uaddr != end) {
 		unsafe_put_user(0, uaddr, out);
-		uaddr += PAGE_SIZE;
+		uaddr += page_size;
 	}
 
 out:
@@ -2209,11 +2210,12 @@ size_t fault_in_safe_writeable(const char __user *uaddr, size_t size)
 {
 	unsigned long start = (unsigned long)uaddr, end;
 	struct mm_struct *mm = current->mm;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
 	bool unlocked = false;
 
 	if (unlikely(size == 0))
 		return 0;
-	end = PAGE_ALIGN(start + size);
+	end = ALIGN(start + size, page_size);
 	if (end < start)
 		end = 0;
 
@@ -2221,7 +2223,7 @@ size_t fault_in_safe_writeable(const char __user *uaddr, size_t size)
 	do {
 		if (fixup_user_fault(mm, start, FAULT_FLAG_WRITE, &unlocked))
 			break;
-		start = (start + PAGE_SIZE) & PAGE_MASK;
+		start = ALIGN_DOWN(start + page_size, page_size);
 	} while (start != end);
 	mmap_read_unlock(mm);
 
@@ -2242,22 +2244,25 @@ EXPORT_SYMBOL(fault_in_safe_writeable);
 size_t fault_in_readable(const char __user *uaddr, size_t size)
 {
 	const char __user *start = uaddr, *end;
+	unsigned long page_size = MM_PAGE_SIZE(current->mm);
 	volatile char c;
 
 	if (unlikely(size == 0))
 		return 0;
 	if (!user_read_access_begin(uaddr, size))
 		return size;
-	if (!PAGE_ALIGNED(uaddr)) {
+	if (!IS_ALIGNED((unsigned long)uaddr, page_size)) {
 		unsafe_get_user(c, uaddr, out);
-		uaddr = (const char __user *)PAGE_ALIGN((unsigned long)uaddr);
+		uaddr = (const char __user *)ALIGN((unsigned long)uaddr,
+						   page_size);
 	}
-	end = (const char __user *)PAGE_ALIGN((unsigned long)start + size);
+	end = (const char __user *)ALIGN((unsigned long)start + size,
+					 page_size);
 	if (unlikely(end < start))
 		end = NULL;
 	while (uaddr != end) {
 		unsafe_get_user(c, uaddr, out);
-		uaddr += PAGE_SIZE;
+		uaddr += page_size;
 	}
 
 out:
