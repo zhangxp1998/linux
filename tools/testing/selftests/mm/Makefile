@@ -105,6 +105,7 @@ TEST_GEN_FILES += elf_core_ppps
 TEST_GEN_FILES += taskstats_ppps
 TEST_GEN_FILES += rusage_ppps
 TEST_GEN_FILES += oom_score_ppps
+TEST_GEN_FILES += oom_anon_score_ppps
 TEST_GEN_FILES += oom_trace_ppps
 TEST_GEN_FILES += sysv_shm_ppps
 TEST_GEN_FILES += sysv_shm_lock_ppps
