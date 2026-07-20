@@ -820,8 +820,6 @@ generic_get_unmapped_area(struct file *filp, unsigned long addr,
 	info.low_limit = mm->mmap_base;
 	info.high_limit = mmap_end;
 	info.start_gap = stack_guard_placement(vm_flags);
-	if (!filp || !is_file_hugepages(filp))
-		info.align_mask = ppps_mm_is_compat(mm) ? (PAGE_SIZE - 1) : 0;
 	return vm_unmapped_area(&info);
 }
 
@@ -872,8 +870,6 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 	info.low_limit = PAGE_SIZE;
 	info.high_limit = arch_get_mmap_base(addr, mm->mmap_base);
 	info.start_gap = stack_guard_placement(vm_flags);
-	if (!filp || !is_file_hugepages(filp))
-		info.align_mask = ppps_mm_is_compat(mm) ? (PAGE_SIZE - 1) : 0;
 	addr = vm_unmapped_area(&info);
 
 	/*
@@ -882,7 +878,7 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 	 * can happen with large stack limits and large mmap()
 	 * allocations.
 	 */
-	if (offset_in_page(addr)) {
+	if (mm_offset_in_page(mm, addr)) {
 		VM_BUG_ON(addr != -ENOMEM);
 		info.flags = 0;
 		info.low_limit = TASK_UNMAPPED_BASE;
