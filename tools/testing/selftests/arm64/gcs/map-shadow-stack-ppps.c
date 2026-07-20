@@ -164,6 +164,42 @@ static bool test_kernel_selected_process_page(void)
 	return size == PROCESS_PAGE_SIZE;
 }
 
+static bool test_process_page_guard(void)
+{
+	void *reservation, *shadow_mapping = MAP_FAILED;
+	void *neighbor = MAP_FAILED;
+	uintptr_t candidate, shadow;
+	bool success = false;
+
+	reservation = mmap(NULL, 8 * NATIVE_16K_SIZE, PROT_NONE,
+			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (reservation == MAP_FAILED)
+		return false;
+
+	shadow = ((uintptr_t)reservation + NATIVE_16K_SIZE - 1) &
+		 ~(NATIVE_16K_SIZE - 1);
+	shadow += 2 * NATIVE_16K_SIZE;
+	candidate = shadow - 2 * PROCESS_PAGE_SIZE;
+	if (munmap((void *)candidate, 3 * PROCESS_PAGE_SIZE))
+		goto out;
+
+	shadow_mapping = (void *)syscall(__NR_map_shadow_stack, shadow,
+					 PROCESS_PAGE_SIZE, 0);
+	if (shadow_mapping != (void *)shadow)
+		goto out;
+
+	neighbor = mmap((void *)candidate, PROCESS_PAGE_SIZE, PROT_NONE,
+			MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	success = neighbor == (void *)candidate;
+out:
+	if (neighbor != MAP_FAILED)
+		munmap(neighbor, PROCESS_PAGE_SIZE);
+	if (shadow_mapping != MAP_FAILED)
+		munmap(shadow_mapping, PROCESS_PAGE_SIZE);
+	munmap(reservation, 8 * NATIVE_16K_SIZE);
+	return success;
+}
+
 static bool test_default_process_page_stack(void)
 {
 	struct child_status {
@@ -224,7 +260,7 @@ static bool test_default_process_page_stack(void)
 int main(void)
 {
 	printf("TAP version 13\n");
-	printf("1..4\n");
+	printf("1..5\n");
 
 	result(getpagesize() == PROCESS_PAGE_SIZE,
 	       "process reports a 4K page size");
@@ -232,6 +268,7 @@ int main(void)
 		printf("ok 2 - FEAT_GCS is available # SKIP\n");
 		printf("ok 3 - FEAT_GCS is available # SKIP\n");
 		printf("ok 4 - FEAT_GCS is available # SKIP\n");
+		printf("ok 5 - FEAT_GCS is available # SKIP\n");
 		return failures ? EXIT_FAILURE : 4;
 	}
 
@@ -239,6 +276,8 @@ int main(void)
 	       "map a GCS at a 4K-aligned, non-16K-aligned address");
 	result(test_kernel_selected_process_page(),
 	       "round a requested GCS mapping to one process page");
+	result(test_process_page_guard(),
+	       "leave one process-page guard below a GCS mapping");
 	result(test_default_process_page_stack(),
 	       "size the minimum default GCS stack in process pages");
 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
