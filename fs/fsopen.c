@@ -7,6 +7,7 @@
 
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
+#include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/syscalls.h>
@@ -130,7 +131,7 @@ SYSCALL_DEFINE2(fsopen, const char __user *, _fs_name, unsigned int, flags)
 	if (flags & ~FSOPEN_CLOEXEC)
 		return -EINVAL;
 
-	fs_name = strndup_user(_fs_name, PAGE_SIZE);
+	fs_name = strndup_user(_fs_name, MM_PAGE_SIZE(current->mm));
 	if (IS_ERR(fs_name))
 		return PTR_ERR(fs_name);
 
