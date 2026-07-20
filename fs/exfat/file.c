@@ -14,6 +14,7 @@
 #include <linux/writeback.h>
 #include <linux/filelock.h>
 #include <linux/falloc.h>
+#include <linux/ppps.h>
 
 #include "exfat_raw.h"
 #include "exfat_fs.h"
@@ -750,6 +751,7 @@ static ssize_t exfat_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 static vm_fault_t exfat_page_mkwrite(struct vm_fault *vmf)
 {
 	int err;
+	struct vm_area_struct *vma = vmf->vma;
 	struct inode *inode = file_inode(vmf->vma->vm_file);
 	struct exfat_inode_info *ei = EXFAT_I(inode);
 	loff_t new_valid_size;
@@ -757,7 +759,8 @@ static vm_fault_t exfat_page_mkwrite(struct vm_fault *vmf)
 	if (!inode_trylock(inode))
 		return VM_FAULT_RETRY;
 
-	new_valid_size = ((loff_t)vmf->pgoff + 1) << PAGE_SHIFT;
+	new_valid_size = vma_file_offset(vma) + vmf->address - vma->vm_start +
+		MM_PAGE_SIZE(vma->vm_mm);
 	new_valid_size = min(new_valid_size, i_size_read(inode));
 
 	if (ei->valid_size < new_valid_size) {

@@ -42,6 +42,7 @@ TARGETS += filesystems/mount-notify
 TARGETS += filesystems/fuse
 TARGETS += filesystems/move_mount
 TARGETS += filesystems/empty_mntns
+TARGETS += filesystems/exfat
 TARGETS += filesystems/fsmount_ns
 TARGETS += firmware
 TARGETS += fpu
