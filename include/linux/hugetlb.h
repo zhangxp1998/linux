@@ -1157,7 +1157,7 @@ static inline unsigned long vma_kernel_pagesize(struct vm_area_struct *vma)
 
 static inline unsigned long vma_mmu_pagesize(struct vm_area_struct *vma)
 {
-	return PAGE_SIZE;
+	return MM_PAGE_SIZE(vma->vm_mm);
 }
 
 static inline unsigned int huge_page_order(struct hstate *h)
