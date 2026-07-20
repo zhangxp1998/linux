@@ -29,13 +29,14 @@ static int verify_mapping(const unsigned char *mapping)
 
 static int run_test(void)
 {
+	unsigned char *second_mapping;
 	unsigned char *mapping;
 	int status;
 	int fd;
 	pid_t pid;
 
 	ksft_print_header();
-	ksft_set_plan(4);
+	ksft_set_plan(5);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -57,6 +58,13 @@ static int run_test(void)
 		ksft_exit_fail_msg("waitpid failed: %s\n", strerror(errno));
 	ksft_test_result(WIFEXITED(status) && WEXITSTATUS(status) == 0,
 			 "mapped VFIO platform page is accessible\n");
+	second_mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			      MAP_SHARED, fd, PROCESS_PAGE_SIZE);
+	ksft_test_result(second_mapping != MAP_FAILED &&
+			 second_mapping[0] == 0x22,
+			 "map the requested process-page MMIO offset\n");
+	if (second_mapping != MAP_FAILED)
+		munmap(second_mapping, USER_PAGE_SIZE);
 
 	munmap(mapping, PROCESS_PAGE_SIZE);
 	close(fd);
