@@ -835,7 +835,7 @@ struct folio_referenced_arg {
 };
 
 static unsigned long
-folio_referenced_nr_ptes(struct folio *folio, struct vm_area_struct *vma)
+folio_rmap_nr_ptes(struct folio *folio, struct vm_area_struct *vma)
 {
 	/*
 	 * A PPPS anonymous PTE maps one native page, whereas a file PTE maps
@@ -856,7 +856,7 @@ static bool folio_referenced_one(struct folio *folio,
 	struct folio_referenced_arg *pra = arg;
 	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
 	int referenced = 0;
-	unsigned long nr_ptes = folio_referenced_nr_ptes(folio, vma);
+	unsigned long nr_ptes = folio_rmap_nr_ptes(folio, vma);
 	unsigned long start = address, ptes = 0;
 
 	while (page_vma_mapped_walk(&pvmw)) {
@@ -1707,8 +1707,10 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 	bool anon_exclusive, ret = true;
 	struct mmu_notifier_range range;
 	enum ttu_flags flags = (enum ttu_flags)(long)arg;
+	unsigned long nr_ptes = folio_rmap_nr_ptes(folio, vma);
 	unsigned long pfn;
 	unsigned long hsz = 0;
+	unsigned long ptes = 0;
 
 	/*
 	 * When racing against e.g. zap_pte_range() on another cpu,
@@ -1749,10 +1751,35 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 		 */
 		if (!(flags & TTU_IGNORE_MLOCK) &&
 		    (vma->vm_flags & VM_LOCKED)) {
+			ptes++;
+
+			/*
+			 * Set 'ret' to indicate the page cannot be unmapped.
+			 *
+			 * Do not jump to walk_abort immediately as additional
+			 * iteration might be required to detect fully mapped
+			 * folio an mlock it.
+			 */
+			ret = false;
+
+			/* Only mlock fully mapped pages */
+			if (pvmw.pte && ptes != nr_ptes)
+				continue;
+
+			/*
+			 * All PTEs must be protected by page table lock in
+			 * order to mlock the page.
+			 *
+			 * If page table boundary has been cross, current ptl
+			 * only protect part of ptes.
+			 */
+			if (ALIGN_DOWN(address, MM_PMD_SIZE(mm)) !=
+			    ALIGN_DOWN(pvmw.address, MM_PMD_SIZE(mm)))
+				goto walk_done;
+
 			/* Restore the mlock which got missed */
-			if (!folio_test_large(folio))
-				mlock_vma_folio(folio, vma);
-			goto walk_abort;
+			mlock_vma_folio(folio, vma);
+			goto walk_done;
 		}
 
 		if (!pvmw.pte) {
