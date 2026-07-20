@@ -122,6 +122,7 @@ TEST_GEN_FILES += madv_populate
 TEST_GEN_FILES += madvise_remove_ppps
 TEST_GEN_FILES += madvise_willneed_ppps
 TEST_GEN_FILES += fadvise_dontneed_ppps
+TEST_GEN_FILES += smaps_page_size_ppps
 TEST_GEN_FILES += filemap_eof_ppps
 TEST_GEN_FILES += folio_within_range_ppps
 TEST_GEN_FILES += map_fixed_noreplace
