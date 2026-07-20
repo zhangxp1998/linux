@@ -6,6 +6,7 @@
 #define _TRACE_KMEM_H
 
 #include <linux/types.h>
+#include <linux/ppps.h>
 #include <linux/tracepoint.h>
 #include <trace/events/mmflags.h>
 #include <linux/dma-buf.h>
@@ -450,7 +451,9 @@ TRACE_EVENT(rss_stat,
 		__entry->curr = current->mm == mm && !(current->flags & PF_KTHREAD);
 		__entry->member = member;
 		__entry->size = (percpu_counter_sum_positive(&mm->rss_stat[member])
-							    << PAGE_SHIFT);
+				 << ((member == MM_FILEPAGES ||
+				      member == MM_SHMEMPAGES) ?
+				     MM_PAGE_SHIFT(mm) : PAGE_SHIFT));
 	),
 
 	TP_printk("mm_id=%u curr=%d type=%s size=%ldB",
