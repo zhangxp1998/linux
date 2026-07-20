@@ -77,6 +77,7 @@ static int run_test(bool native_16k)
 	socklen_t offsets_len = sizeof(offsets);
 	unsigned int entries = RING_ENTRIES;
 	void *reservation = MAP_FAILED;
+	void *invalid;
 	void *misaligned;
 	void *aligned;
 	void *umem;
@@ -89,8 +90,6 @@ static int run_test(bool native_16k)
 	ppps_require_compat();
 	ksft_print_header();
 	ksft_set_plan(9);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
 	fd = socket(AF_XDP, SOCK_RAW | SOCK_CLOEXEC, 0);
 	ksft_test_result(fd >= 0, "create an AF_XDP socket\n");
 	if (fd < 0)
@@ -134,6 +133,15 @@ static int run_test(bool native_16k)
 	map_size = offsets.rx.desc + entries * sizeof(struct xdp_desc);
 	ksft_test_result(map_size > NATIVE_PAGE_SIZE,
 			 "RX ring spans more than one native page\n");
+	errno = 0;
+	invalid = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, PROCESS_PAGE_SIZE);
+	saved_errno = errno;
+	ksft_test_result(invalid == MAP_FAILED && saved_errno == EINVAL,
+			 "reject a subpage RX ring offset cookie (errno=%d)\n",
+			 saved_errno);
+	if (invalid != MAP_FAILED)
+		munmap(invalid, PROCESS_PAGE_SIZE);
 
 	misaligned = map_ring(fd, MISALIGNED_HINT, map_size);
 	ksft_test_result(misaligned == MISALIGNED_HINT &&
