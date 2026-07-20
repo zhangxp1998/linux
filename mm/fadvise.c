@@ -13,6 +13,7 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
+#include <linux/ppps.h>
 #include <linux/backing-dev.h>
 #include <linux/fadvise.h>
 #include <linux/writeback.h>
@@ -36,6 +37,8 @@ int generic_fadvise(struct file *file, loff_t offset, loff_t len, int advice)
 	struct address_space *mapping;
 	struct backing_dev_info *bdi;
 	loff_t endbyte;			/* inclusive */
+	unsigned int process_page_shift = MM_PAGE_SHIFT(current->mm);
+	unsigned long process_page_size = MM_PAGE_SIZE(current->mm);
 	pgoff_t start_index;
 	pgoff_t end_index;
 	unsigned long nrpages;
@@ -124,8 +127,8 @@ int generic_fadvise(struct file *file, loff_t offset, loff_t len, int advice)
 		 * preserved on the expectation that it is better to preserve
 		 * needed memory than to discard unneeded memory.
 		 */
-		start_index = (offset+(PAGE_SIZE-1)) >> PAGE_SHIFT;
-		end_index = (endbyte >> PAGE_SHIFT);
+		start_index = (offset+(process_page_size-1)) >> process_page_shift;
+		end_index = (endbyte >> process_page_shift);
 		/*
 		 * The page at end_index will be inclusively discarded according
 		 * by invalidate_mapping_pages(), so subtracting 1 from
@@ -133,7 +136,7 @@ int generic_fadvise(struct file *file, loff_t offset, loff_t len, int advice)
 		 * is page aligned or is at the end of file, we should not skip
 		 * that page - discarding the last page is safe enough.
 		 */
-		if ((endbyte & ~PAGE_MASK) != ~PAGE_MASK &&
+		if ((endbyte & (process_page_size - 1)) != process_page_size - 1 &&
 				endbyte != inode->i_size - 1) {
 			/* First page is tricky as 0 - 1 = -1, but pgoff_t
 			 * is unsigned, so the end_index >= start_index
@@ -148,6 +151,10 @@ int generic_fadvise(struct file *file, loff_t offset, loff_t len, int advice)
 
 		if (end_index >= start_index) {
 			unsigned long nr_failed = 0;
+
+			/* Process pages to page-cache indices. */
+			start_index >>= PAGE_SHIFT - process_page_shift;
+			end_index >>= PAGE_SHIFT - process_page_shift;
 
 			/*
 			 * It's common to FADV_DONTNEED right after
