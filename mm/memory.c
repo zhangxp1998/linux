@@ -3353,10 +3353,13 @@ static inline int __wp_page_copy_user(struct page *dst, struct page *src,
 {
 	int ret;
 	void *kaddr;
+	void *dst_addr;
 	void __user *uaddr;
 	struct vm_area_struct *vma = vmf->vma;
 	struct mm_struct *mm = vma->vm_mm;
 	unsigned long addr = vmf->address;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
+	unsigned long dst_offset = vma_address_to_slice(vma, addr) * page_size;
 
 	if (likely(src)) {
 		if (copy_mc_user_highpage(dst, src, addr, vma))
@@ -3370,9 +3373,12 @@ static inline int __wp_page_copy_user(struct page *dst, struct page *src,
 	 * just copying from the original user address. If that
 	 * fails, we just zero-fill it. Live with it.
 	 */
+	if (page_size != PAGE_SIZE)
+		clear_user_highpage(dst, addr);
 	kaddr = kmap_local_page(dst);
+	dst_addr = kaddr + dst_offset;
 	pagefault_disable();
-	uaddr = (void __user *)(addr & PAGE_MASK);
+	uaddr = (void __user *)(addr & MM_PAGE_MASK(mm));
 
 	/*
 	 * On architectures with software "accessed" bits, we would
@@ -3405,7 +3411,7 @@ static inline int __wp_page_copy_user(struct page *dst, struct page *src,
 	 * in which case we just give up and fill the result with
 	 * zeroes.
 	 */
-	if (__copy_from_user_inatomic(kaddr, uaddr, PAGE_SIZE)) {
+	if (__copy_from_user_inatomic(dst_addr, uaddr, page_size)) {
 		if (vmf->pte)
 			goto warn;
 
@@ -3423,7 +3429,7 @@ static inline int __wp_page_copy_user(struct page *dst, struct page *src,
 		 * The same page can be mapped back since last copy attempt.
 		 * Try to copy again under PTL.
 		 */
-		if (__copy_from_user_inatomic(kaddr, uaddr, PAGE_SIZE)) {
+		if (__copy_from_user_inatomic(dst_addr, uaddr, page_size)) {
 			/*
 			 * Give a warn in case there can be some obscure
 			 * use-case
