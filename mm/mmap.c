@@ -715,7 +715,7 @@ retry:
 static inline unsigned long stack_guard_placement(vm_flags_t vm_flags)
 {
 	if (vm_flags & VM_SHADOW_STACK)
-		return PAGE_SIZE;
+		return MM_PAGE_SIZE(current->mm);
 
 	return 0;
 }
