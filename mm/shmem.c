@@ -2622,7 +2622,7 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 		return addr;
 	if (IS_ERR_VALUE(addr))
 		return addr;
-	if (addr & ~PAGE_MASK)
+	if (!MM_PAGE_ALIGNED(addr))
 		return addr;
 	if (addr > TASK_SIZE - len)
 		return addr;
@@ -2689,7 +2689,7 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 	if ((addr & (hpage_size - 1)) == offset)
 		return addr;
 
-	inflated_len = len + hpage_size - PAGE_SIZE;
+	inflated_len = len + hpage_size - MM_PAGE_SIZE();
 	if (inflated_len > TASK_SIZE)
 		return addr;
 	if (inflated_len < len)
@@ -2699,7 +2699,7 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 					     inflated_len, 0, flags);
 	if (IS_ERR_VALUE(inflated_addr))
 		return addr;
-	if (inflated_addr & ~PAGE_MASK)
+	if (!MM_PAGE_ALIGNED(inflated_addr))
 		return addr;
 
 	inflated_offset = inflated_addr & (hpage_size - 1);
