@@ -5436,6 +5436,9 @@ vm_fault_t finish_fault(struct vm_fault *vmf)
 
 unlock:
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
+	if (!ret && vma->vm_file && ppps_mm_is_compat(vma->vm_mm) &&
+	    folio_test_large(folio) && !folio_test_anon(folio))
+		mlock_vma_folio_if_fully_mapped(folio, vma);
 	return ret;
 }
 
