@@ -1444,7 +1444,7 @@ static int get_vma_page_shift(struct vm_area_struct *vma, unsigned long hva)
 
 	VM_BUG_ON(is_vm_hugetlb_page(vma));
 
-	pa = (vma->vm_pgoff << PAGE_SHIFT) + (hva - vma->vm_start);
+	pa = vma_file_offset(vma) + (hva - vma->vm_start);
 
 #ifndef __PAGETABLE_PMD_FOLDED
 	if ((hva & (PUD_SIZE - 1)) == (pa & (PUD_SIZE - 1)) &&
@@ -1754,6 +1754,8 @@ static short kvm_s2_resolve_vma_size(const struct kvm_s2_fault_desc *s2fd,
 	} else {
 		s2vi->max_map_size = PUD_SIZE;
 		vma_shift = get_vma_page_shift(vma, s2fd->hva);
+		if (vma_shift == PAGE_SHIFT && vma->vm_flags & VM_PFNMAP)
+			s2vi->max_map_size = PAGE_SIZE;
 	}
 
 	switch (vma_shift) {
