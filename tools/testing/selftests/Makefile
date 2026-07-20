@@ -39,6 +39,7 @@ TARGETS += filesystems/overlayfs
 TARGETS += filesystems/statmount
 TARGETS += filesystems/mount-notify
 TARGETS += filesystems/fuse
+TARGETS += filesystems/exfat
 TARGETS += firmware
 TARGETS += fpu
 TARGETS += ftrace
