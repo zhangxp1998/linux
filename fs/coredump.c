@@ -644,10 +644,14 @@ void do_coredump(const kernel_siginfo_t *siginfo)
 	} else {
 		struct mnt_idmap *idmap;
 		struct inode *inode;
+		unsigned long min_coredump = binfmt->min_coredump;
 		int open_flags = O_CREAT | O_WRONLY | O_NOFOLLOW |
 				 O_LARGEFILE | O_EXCL;
 
-		if (cprm.limit < binfmt->min_coredump)
+		if (ppps_mm_is_compat(current->mm))
+			min_coredump = min(min_coredump,
+					   MM_PAGE_SIZE(current->mm));
+		if (cprm.limit < min_coredump)
 			goto fail_unlock;
 
 		if (need_suid_safe && cn.corename[0] != '/') {
