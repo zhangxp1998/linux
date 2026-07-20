@@ -7819,10 +7819,12 @@ static u64 perf_virt_to_phys(u64 virt)
 		 */
 		if (is_user_task(current)) {
 			struct page *p;
+			unsigned long page_offset;
 
 			pagefault_disable();
-			if (get_user_page_fast_only(virt, 0, &p)) {
-				phys_addr = page_to_phys(p) + virt % PAGE_SIZE;
+			if (get_user_page_fast_only_with_offset(virt, 0, &p,
+								&page_offset)) {
+				phys_addr = page_to_phys(p) + page_offset;
 				put_page(p);
 			}
 			pagefault_enable();

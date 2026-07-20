@@ -2949,9 +2949,8 @@ static void __maybe_unused gup_fast_undo_dev_pagemap(int *nr, int nr_start,
  * pmdp_collapse_flush() in the THP collapse code path).
  */
 static int gup_fast_pte_range(struct mm_struct *mm, pmd_t pmd, pmd_t *pmdp,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	struct dev_pagemap *pgmap = NULL;
 	int nr_start = *nr, ret = 0;
@@ -3051,9 +3050,8 @@ pte_unmap:
  * useful to have gup_fast_pmd_leaf even if we can't operate on ptes.
  */
 static int gup_fast_pte_range(struct mm_struct *mm, pmd_t pmd, pmd_t *pmdp,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	return 0;
 }
@@ -3285,9 +3283,8 @@ static int gup_fast_pgd_leaf(pgd_t orig, pgd_t *pgdp, unsigned long addr,
 }
 
 static int gup_fast_pmd_range(struct mm_struct *mm, pud_t *pudp, pud_t pud,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	unsigned long next;
 	pmd_t *pmdp;
@@ -3318,9 +3315,8 @@ static int gup_fast_pmd_range(struct mm_struct *mm, pud_t *pudp, pud_t pud,
 }
 
 static int gup_fast_pud_range(struct mm_struct *mm, p4d_t *p4dp, p4d_t p4d,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	unsigned long next;
 	pud_t *pudp;
@@ -3345,9 +3341,8 @@ static int gup_fast_pud_range(struct mm_struct *mm, p4d_t *p4dp, p4d_t p4d,
 }
 
 static int gup_fast_p4d_range(struct mm_struct *mm, pgd_t *pgdp, pgd_t pgd,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	unsigned long next;
 	p4d_t *p4dp;
@@ -3392,9 +3387,9 @@ static void gup_fast_pgd_range(struct mm_struct *mm, unsigned long addr,
 	} while (pgdp++, addr = next, addr != end);
 }
 #else
-static inline void gup_fast_pgd_range(struct mm_struct *mm,
-		unsigned long addr, unsigned long end, unsigned int flags,
-		struct page **pages, int *nr)
+static inline void gup_fast_pgd_range(struct mm_struct *mm, unsigned long addr,
+		unsigned long end, unsigned int flags, struct page **pages,
+		int *nr)
 {
 }
 #endif /* CONFIG_HAVE_GUP_FAST */
@@ -3439,8 +3434,7 @@ static unsigned long gup_fast(unsigned long start, unsigned long end,
 	 * that come from THPs splitting.
 	 */
 	local_irq_save(flags);
-	gup_fast_pgd_range(current->mm, start, end, gup_flags, pages,
-			   &nr_pinned);
+	gup_fast_pgd_range(current->mm, start, end, gup_flags, pages, &nr_pinned);
 	local_irq_restore(flags);
 
 	/*
@@ -3544,6 +3538,83 @@ int get_user_pages_fast_only(unsigned long start, int nr_pages,
 	return gup_fast_fallback(start, nr_pages, gup_flags, pages);
 }
 EXPORT_SYMBOL_GPL(get_user_pages_fast_only);
+
+/*
+ * Lockless lookup of the leaf PTE mapping @addr in @mm, run with IRQs
+ * disabled like gup_fast().  Returns a pte_none() value when there is no
+ * PTE-level mapping (including under a huge leaf entry).
+ */
+static pte_t gup_fast_lookup_pte(struct mm_struct *mm, unsigned long addr)
+{
+	pgd_t *pgdp, pgd;
+	p4d_t *p4dp, p4d;
+	pud_t *pudp, pud;
+	pmd_t *pmdp, pmd;
+	pte_t *ptep, pte = __pte(0);
+
+	pgdp = pgd_offset(mm, addr);
+	pgd = pgdp_get(pgdp);
+	if (pgd_none(pgd) || pgd_leaf(pgd))
+		return pte;
+	p4dp = p4d_offset_lockless_mm(mm, pgdp, pgd, addr);
+	p4d = p4dp_get(p4dp);
+	if (!p4d_present(p4d))
+		return pte;
+	pudp = pud_offset_lockless_mm(mm, p4dp, p4d, addr);
+	pud = pudp_get(pudp);
+	if (!pud_present(pud) || pud_leaf(pud))
+		return pte;
+	pmdp = pmd_offset_lockless_mm(mm, pudp, pud, addr);
+	pmd = pmdp_get_lockless(pmdp);
+	if (!pmd_present(pmd) || pmd_leaf(pmd))
+		return pte;
+	ptep = pte_offset_map_mm(mm, &pmd, addr);
+	if (!ptep)
+		return pte;
+	pte = ptep_get_lockless(ptep);
+	pte_unmap(ptep);
+	return pte;
+}
+
+/**
+ * get_user_page_fast_only_with_offset() - get_user_page_fast_only() plus the
+ * byte offset of @addr within the returned native page
+ * @addr:        user address
+ * @gup_flags:   flags modifying pin behaviour
+ * @pagep:       receives the pinned native page
+ * @page_offset: receives the byte offset of @addr within *@pagep
+ *
+ * In a compat mm the PTE selects a slice of the native page, so the PTE is
+ * re-read locklessly after the pin and the pin is dropped if it changed.
+ */
+bool get_user_page_fast_only_with_offset(unsigned long addr,
+					 unsigned int gup_flags,
+					 struct page **pagep,
+					 unsigned long *page_offset)
+{
+	struct mm_struct *mm = current->mm;
+	unsigned long slice_offset = 0;
+
+	if (!page_offset || !get_user_page_fast_only(addr, gup_flags, pagep))
+		return false;
+
+	if (ppps_mm_is_compat(mm)) {
+		unsigned long flags;
+		pte_t pte;
+
+		local_irq_save(flags);
+		pte = gup_fast_lookup_pte(mm, untagged_addr(addr));
+		local_irq_restore(flags);
+		if (!pte_present(pte) || pte_pfn(pte) != page_to_pfn(*pagep)) {
+			put_page(*pagep);
+			return false;
+		}
+		slice_offset = pte_page_offset(pte);
+	}
+
+	*page_offset = slice_offset + mm_offset_in_page(mm, addr);
+	return true;
+}
 
 /**
  * mm_user_slice_offset() - byte offset of the process page at @addr within

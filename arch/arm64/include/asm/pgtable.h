@@ -102,6 +102,10 @@ static inline unsigned long pte_page_offset(pte_t pte)
 	return __pte_to_phys(pte) & ~PAGE_MASK;
 }
 
+/*
+ * Translation level of a leaf entry mapping @pgsize bytes in either the
+ * native or the PPPS compat geometry, or -1.
+ */
 static inline int pgsize_to_level(unsigned long pgsize)
 {
 	if (pgsize == PAGE_SIZE || pgsize == PAGE_SIZE_COMPAT)
