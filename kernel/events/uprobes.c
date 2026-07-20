@@ -1710,8 +1710,18 @@ static const struct vm_special_mapping xol_mapping = {
 
 unsigned long __weak arch_uprobe_get_xol_area(void)
 {
+	unsigned long size = PAGE_SIZE;
+	unsigned long addr;
+
+	if (ppps_mm_is_compat(current->mm))
+		size += PAGE_SIZE;
+
 	/* Try to map as high as possible, this is only a hint. */
-	return get_unmapped_area(NULL, TASK_SIZE - PAGE_SIZE, PAGE_SIZE, 0, 0);
+	addr = get_unmapped_area(NULL, TASK_SIZE - size, size, 0, 0);
+	if (!IS_ERR_VALUE(addr) && size != PAGE_SIZE)
+		addr = PAGE_ALIGN(addr);
+
+	return addr;
 }
 
 /* Slot allocation for XOL */
