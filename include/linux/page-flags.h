@@ -547,6 +547,8 @@ PAGEFLAG(Reserved, reserved, PF_NO_COMPOUND)
 FOLIO_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 	__FOLIO_CLEAR_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 	__FOLIO_SET_FLAG(swapbacked, FOLIO_HEAD_PAGE)
+/* Packed mappings are not introduced until the packed-anon commit. */
+FOLIO_FLAG_FALSE(ppps_packed_anon)
 
 /*
  * Private page markings that may be used by the filesystem that owns the page
