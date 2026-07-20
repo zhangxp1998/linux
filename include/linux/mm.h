@@ -1908,14 +1908,22 @@ static inline struct folio *pfn_folio(unsigned long pfn)
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 /*
- * Construct a PTE that points at one compat-page slice of a host folio.
+ * folio_mk_pte_slice - Construct a PTE pointing to a specific subpage slice
+ * @folio: the backing folio
+ * @pte: the base PTE (aligned to host page)
+ * @slice_idx: the index of the subpage slice within the host page
+ *
+ * Preserve the native page selected by the base PTE and adjust its physical
+ * address to the requested process-page slice.
  */
 static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
 				       unsigned int slice_idx)
 {
-	phys_addr_t folio_phys = page_to_phys(&folio->page);
-	phys_addr_t target_phys = folio_phys + slice_idx * PAGE_SIZE_COMPAT;
+	phys_addr_t page_phys = __pte_to_phys(pte) & PAGE_MASK;
+	phys_addr_t target_phys = page_phys + (slice_idx * PAGE_SIZE_COMPAT);
 	pte_t clean_pte = clear_pte_slice_offset(pte);
+
+	(void)folio;
 
 	return __pte(__phys_to_pte_val(target_phys) |
 		     pgprot_val(pte_pgprot(clean_pte)));
