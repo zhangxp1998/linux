@@ -6957,6 +6957,9 @@ static inline void pfnmap_args_setup(struct follow_pfnmap_args *args,
 	args->lock = lock;
 	args->ptep = ptep;
 	args->pfn = pfn_base + ((args->address & ~addr_mask) >> PAGE_SHIFT);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	args->phys_addr = PFN_PHYS(args->pfn) + offset_in_page(args->address);
+#endif
 	args->pgprot = pgprot;
 	args->writable = writable;
 	args->special = special;
@@ -7087,6 +7090,9 @@ retry:
 	pfnmap_args_setup(args, lock, ptep, pte_pgprot(pte),
 			  pte_pfn(pte), PAGE_MASK, pte_write(pte),
 			  pte_special(pte));
+	/* A compat PTE maps one slice of the native page. */
+	args->phys_addr = PFN_PHYS(args->pfn) + pte_page_offset(pte) +
+			  mm_offset_in_page(mm, address);
 	return 0;
 unlock:
 	pte_unmap_unlock(ptep, lock);
@@ -7128,9 +7134,12 @@ int generic_access_phys(struct vm_area_struct *vma, unsigned long addr,
 			void *buf, int len, int write)
 {
 	resource_size_t phys_addr;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	resource_size_t access_phys_addr;
+#endif
 	unsigned long prot = 0;
 	void __iomem *maddr;
-	int offset = offset_in_page(addr);
+	int offset;
 	int ret = -EINVAL;
 	bool writable;
 	struct follow_pfnmap_args args = { .vma = vma, .address = addr };
@@ -7139,7 +7148,14 @@ retry:
 	if (follow_pfnmap_start(&args))
 		return -EINVAL;
 	prot = pgprot_val(args.pgprot);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	access_phys_addr = args.phys_addr;
+	phys_addr = access_phys_addr & PAGE_MASK;
+	offset = access_phys_addr & ~PAGE_MASK;
+#else
 	phys_addr = (resource_size_t)args.pfn << PAGE_SHIFT;
+	offset = offset_in_page(addr);
+#endif
 	writable = args.writable;
 	follow_pfnmap_end(&args);
 
@@ -7154,7 +7170,11 @@ retry:
 		goto out_unmap;
 
 	if ((prot != pgprot_val(args.pgprot)) ||
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	    (access_phys_addr != args.phys_addr) ||
+#else
 	    (phys_addr != (args.pfn << PAGE_SHIFT)) ||
+#endif
 	    (writable != args.writable)) {
 		follow_pfnmap_end(&args);
 		iounmap(maddr);

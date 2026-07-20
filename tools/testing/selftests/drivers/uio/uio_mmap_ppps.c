@@ -11,16 +11,29 @@
 
 #include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
+#define MAPPING_SIZE (4 * PROCESS_PAGE_SIZE)
+#define PHYSICAL_MAP_HINT ((void *)0x100001000ULL)
+#define PHYSICAL_MARKER 0x11223344U
 
-#define USER_PAGE_SIZE 4096UL
-#define MAPPING_SIZE (4 * USER_PAGE_SIZE)
+static int read_proc_mem(void *address, void *value, size_t size)
+{
+	ssize_t bytes;
+	int fd;
+
+	fd = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	bytes = pread(fd, value, size, (off_t)(uintptr_t)address);
+	close(fd);
+	return bytes == (ssize_t)size ? 0 : -1;
+}
 
 static int run_test(void)
 {
 	static const uint8_t expected[] = { 0x11, 0x22, 0x33, 0x44 };
+	uint32_t direct_value;
+	uint32_t proc_value = 0;
+	uint8_t *physical;
 	uint8_t *map2;
 	uint8_t *map1;
 	uint8_t *mapping;
@@ -28,9 +41,7 @@ static int run_test(void)
 	int i;
 
 	ksft_print_header();
-	ksft_set_plan(11);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(14);
 
 	fd = ppps_open_fixture_or_skip("/dev/uio_mmap_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the UIO test device\n");
@@ -64,9 +75,34 @@ static int run_test(void)
 	ksft_test_result(map2[0] == 0x6b,
 			 "two-process-page offset selects UIO map2 (value=0x%02x)\n",
 			 map2[0]);
+	physical = mmap(PHYSICAL_MAP_HINT, PROCESS_PAGE_SIZE,
+			PROT_READ | PROT_WRITE,
+			MAP_SHARED | MAP_FIXED_NOREPLACE, fd,
+			3 * PROCESS_PAGE_SIZE);
+	if (physical == MAP_FAILED) {
+		ksft_test_result_skip("physical UIO fixture is unavailable\n");
+		ksft_test_result_skip("physical UIO fixture is unavailable\n");
+		ksft_test_result_skip("physical UIO fixture is unavailable\n");
+		ksft_test_result_skip("physical UIO fixture is unavailable\n");
+		goto unmap_virtual;
+	}
+	ksft_test_result(physical == PHYSICAL_MAP_HINT,
+			 "map a physical UIO page at a native-page-misaligned address\n");
+	memcpy(&direct_value, physical, sizeof(direct_value));
+	ksft_test_result(direct_value == PHYSICAL_MARKER,
+			 "direct access reads the physical marker (value=%#x)\n",
+			 direct_value);
+	ksft_test_result(read_proc_mem(physical, &proc_value,
+				       sizeof(proc_value)) == 0,
+			 "read the physical mapping through /proc/self/mem\n");
+	ksft_test_result(proc_value == direct_value,
+			 "/proc/self/mem preserves the mapped physical slice (value=%#x)\n",
+			 proc_value);
 
-	munmap(map2, USER_PAGE_SIZE);
-	munmap(map1, USER_PAGE_SIZE);
+	munmap(physical, PROCESS_PAGE_SIZE);
+unmap_virtual:
+	munmap(map2, PROCESS_PAGE_SIZE);
+	munmap(map1, PROCESS_PAGE_SIZE);
 	munmap(mapping, MAPPING_SIZE);
 	close(fd);
 	ksft_finished();
