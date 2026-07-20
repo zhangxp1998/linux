@@ -385,6 +385,8 @@ CATEGORY="mlock" run_test ./mlock2-tests
 
 CATEGORY="mlock" run_test ./mlock_large_file_ppps
 
+CATEGORY="mlock" run_test ./mlock_reclaim_ppps
+
 CATEGORY="process_mrelease" run_test ./mrelease_test
 
 CATEGORY="mremap" run_test ./mremap_test
