@@ -1298,7 +1298,8 @@ out_free_interp:
 			mm->brk = mm->start_brk = ELF_ET_DYN_BASE;
 		} else {
 			/* Otherwise leave a gap between .bss and brk. */
-			mm->brk = mm->start_brk = mm->brk + PAGE_SIZE;
+			mm->brk = mm->start_brk =
+				mm->brk + MM_PAGE_SIZE(mm);
 		}
 
 		mm->brk = mm->start_brk = arch_randomize_brk(mm);
