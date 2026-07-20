@@ -2061,6 +2061,7 @@ size_t fault_in_writeable(char __user *uaddr, size_t size)
 {
 	const unsigned long start = (unsigned long)uaddr;
 	const unsigned long end = start + size;
+	const unsigned long page_size = MM_PAGE_SIZE(current->mm);
 	unsigned long cur;
 
 	if (unlikely(size == 0))
@@ -2069,7 +2070,8 @@ size_t fault_in_writeable(char __user *uaddr, size_t size)
 		return size;
 
 	/* Stop once we overflow to 0. */
-	for (cur = start; cur && cur < end; cur = PAGE_ALIGN_DOWN(cur + PAGE_SIZE))
+	for (cur = start; cur && cur < end;
+	     cur = ALIGN_DOWN(cur + page_size, page_size))
 		unsafe_put_user(0, (char __user *)cur, out);
 out:
 	user_write_access_end();
@@ -2132,6 +2134,7 @@ size_t fault_in_safe_writeable(const char __user *uaddr, size_t size)
 	const unsigned long end = start + size;
 	unsigned long cur;
 	struct mm_struct *mm = current->mm;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
 	bool unlocked = false;
 
 	if (unlikely(size == 0))
@@ -2139,7 +2142,8 @@ size_t fault_in_safe_writeable(const char __user *uaddr, size_t size)
 
 	mmap_read_lock(mm);
 	/* Stop once we overflow to 0. */
-	for (cur = start; cur && cur < end; cur = PAGE_ALIGN_DOWN(cur + PAGE_SIZE))
+	for (cur = start; cur && cur < end;
+	     cur = ALIGN_DOWN(cur + page_size, page_size))
 		if (fixup_user_fault(mm, cur, FAULT_FLAG_WRITE, &unlocked))
 			break;
 	mmap_read_unlock(mm);
@@ -2162,6 +2166,7 @@ size_t fault_in_readable(const char __user *uaddr, size_t size)
 {
 	const unsigned long start = (unsigned long)uaddr;
 	const unsigned long end = start + size;
+	const unsigned long page_size = MM_PAGE_SIZE(current->mm);
 	unsigned long cur;
 	volatile char c;
 
@@ -2171,7 +2176,8 @@ size_t fault_in_readable(const char __user *uaddr, size_t size)
 		return size;
 
 	/* Stop once we overflow to 0. */
-	for (cur = start; cur && cur < end; cur = PAGE_ALIGN_DOWN(cur + PAGE_SIZE))
+	for (cur = start; cur && cur < end;
+	     cur = ALIGN_DOWN(cur + page_size, page_size))
 		unsafe_get_user(c, (const char __user *)cur, out);
 out:
 	user_read_access_end();
