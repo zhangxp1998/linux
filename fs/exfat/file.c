@@ -12,6 +12,7 @@
 #include <linux/security.h>
 #include <linux/msdos_fs.h>
 #include <linux/writeback.h>
+#include <linux/ppps.h>
 
 #include "exfat_raw.h"
 #include "exfat_fs.h"
@@ -711,17 +712,17 @@ static vm_fault_t exfat_page_mkwrite(struct vm_fault *vmf)
 	struct file *file = vma->vm_file;
 	struct inode *inode = file_inode(file);
 	struct exfat_inode_info *ei = EXFAT_I(inode);
-	loff_t start, end;
+	loff_t new_valid_size;
 
 	if (!inode_trylock(inode))
 		return VM_FAULT_RETRY;
 
-	start = ((loff_t)vma->vm_pgoff << PAGE_SHIFT);
-	end = min_t(loff_t, i_size_read(inode),
-			start + vma->vm_end - vma->vm_start);
+	new_valid_size = vma_file_offset(vma) + vmf->address - vma->vm_start +
+		MM_PAGE_SIZE(vma->vm_mm);
+	new_valid_size = min(new_valid_size, i_size_read(inode));
 
-	if (ei->valid_size < end) {
-		err = exfat_extend_valid_size(inode, end);
+	if (ei->valid_size < new_valid_size) {
+		err = exfat_extend_valid_size(inode, new_valid_size);
 		if (err < 0) {
 			inode_unlock(inode);
 			return vmf_fs_error(err);

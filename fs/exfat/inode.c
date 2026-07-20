@@ -336,7 +336,12 @@ static int exfat_get_block(struct inode *inode, sector_t iblock,
 	/* The area has not been written, map and mark as new for create case */
 	if (create) {
 		set_buffer_new(bh_result);
-		ei->valid_size = EXFAT_BLK_TO_B(iblock + max_blocks, sb);
+		/*
+		 * Allocation does not make data valid. In particular, mmap
+		 * writeback can map every buffer in a native folio even when a
+		 * PPPS process dirtied only one subpage. The write paths update
+		 * valid_size to the precise written length.
+		 */
 		mark_inode_dirty(inode);
 		goto done;
 	}
