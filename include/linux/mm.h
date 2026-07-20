@@ -2562,12 +2562,14 @@ struct follow_pfnmap_args {
 	 * Outputs:
 	 *
 	 * @pfn: the PFN of the address
+	 * @phys_addr: the exact physical address of @address
 	 * @addr_mask: address mask covering pfn
 	 * @pgprot: the pgprot_t of the mapping
 	 * @writable: whether the mapping is writable
 	 * @special: whether the mapping is a special mapping (real PFN maps)
 	 */
 	unsigned long pfn;
+	phys_addr_t phys_addr;
 	unsigned long addr_mask;
 	pgprot_t pgprot;
 	bool writable;

@@ -6955,6 +6955,7 @@ static inline void pfnmap_args_setup(struct follow_pfnmap_args *args,
 	args->lock = lock;
 	args->ptep = ptep;
 	args->pfn = pfn_base + ((args->address & ~addr_mask) >> PAGE_SHIFT);
+	args->phys_addr = PFN_PHYS(args->pfn) + offset_in_page(args->address);
 	args->addr_mask = addr_mask;
 	args->pgprot = pgprot;
 	args->writable = writable;
@@ -7074,6 +7075,13 @@ retry:
 	pfnmap_args_setup(args, lock, ptep, pte_pgprot(pte),
 			  pte_pfn(pte), PAGE_MASK, pte_write(pte),
 			  pte_special(pte));
+	if (ppps_mm_is_compat(mm)) {
+		phys_addr_t slice = pte_val(pte) &
+			((PAGE_SIZE - 1) & PAGE_MASK_COMPAT);
+
+		args->phys_addr = PFN_PHYS(args->pfn) + slice +
+			mm_offset_in_page(mm, address);
+	}
 	return 0;
 unlock:
 	pte_unmap_unlock(ptep, lock);
@@ -7115,9 +7123,10 @@ int generic_access_phys(struct vm_area_struct *vma, unsigned long addr,
 			void *buf, int len, int write)
 {
 	resource_size_t phys_addr;
+	resource_size_t access_phys_addr;
 	pgprot_t prot = __pgprot(0);
 	void __iomem *maddr;
-	int offset = offset_in_page(addr);
+	int offset;
 	int ret = -EINVAL;
 	bool writable;
 	struct follow_pfnmap_args args = { .vma = vma, .address = addr };
@@ -7126,7 +7135,9 @@ retry:
 	if (follow_pfnmap_start(&args))
 		return -EINVAL;
 	prot = args.pgprot;
-	phys_addr = (resource_size_t)args.pfn << PAGE_SHIFT;
+	access_phys_addr = args.phys_addr;
+	phys_addr = access_phys_addr & PAGE_MASK;
+	offset = access_phys_addr & ~PAGE_MASK;
 	writable = args.writable;
 	follow_pfnmap_end(&args);
 
@@ -7141,7 +7152,7 @@ retry:
 		goto out_unmap;
 
 	if ((pgprot_val(prot) != pgprot_val(args.pgprot)) ||
-	    (phys_addr != (args.pfn << PAGE_SHIFT)) ||
+	    (access_phys_addr != args.phys_addr) ||
 	    (writable != args.writable)) {
 		follow_pfnmap_end(&args);
 		iounmap(maddr);
