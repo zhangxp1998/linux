@@ -125,12 +125,10 @@ static int run_test(void)
 	int sample1;
 
 	ksft_print_header();
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(5);
 
 	memfd = memfd_create("perf-phys-addr-ppps", MFD_CLOEXEC);
-	if (memfd < 0 || ftruncate(memfd, USER_PAGE_SIZE))
+	if (memfd < 0 || ftruncate(memfd, PROCESS_PAGE_SIZE))
 		ksft_exit_fail_msg("memfd setup failed: %s\n", strerror(errno));
 	reservation = mmap(NULL, RESERVE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -167,31 +165,10 @@ static int run_test(void)
 	ksft_test_result(sample0 == 0 && sample1 == 0 && phys0 == phys1,
 			 "PERF_SAMPLE_PHYS_ADDR identifies the same physical byte\n");
 
-	munmap(alias1, USER_PAGE_SIZE);
-	munmap(alias0, USER_PAGE_SIZE);
+	munmap(alias1, PROCESS_PAGE_SIZE);
+	munmap(alias0, PROCESS_PAGE_SIZE);
 	close(memfd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "perf_phys_addr_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)
