@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -11,6 +12,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/personality.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "kselftest.h"
@@ -30,6 +32,8 @@
 #define XOL_HINT_47	((void *)((1UL << 47) - XOL_RESERVE_SIZE))
 #define TARGET_PATH	"/tmp/uprobe-ppps-target"
 #define TRACE_ROOT	"/sys/kernel/tracing"
+#define UPROBE_BRK_INSN	0xd42000a0U
+#define RET_INSN	0xd65f03c0U
 
 typedef unsigned long (*target_fn_t)(unsigned long);
 
@@ -47,13 +51,50 @@ static bool write_text(const char *path, const char *text, int flags)
 	return written == length;
 }
 
+static void trap_child_exit(int signal)
+{
+	_exit(signal == SIGTRAP ? EXIT_SUCCESS : EXIT_FAILURE);
+}
+
+static bool unmatched_xom_trap_is_delivered(void *mapping)
+{
+	struct sigaction action = {
+		.sa_handler = trap_child_exit,
+	};
+	int status;
+	pid_t pid;
+
+	pid = fork();
+	if (pid < 0)
+		return false;
+	if (!pid) {
+		sigemptyset(&action.sa_mask);
+		sigaction(SIGTRAP, &action, NULL);
+		sigaction(SIGALRM, &action, NULL);
+		if (mprotect(mapping, USER_PAGE_SIZE, PROT_EXEC))
+			_exit(EXIT_FAILURE);
+		alarm(2);
+		((void (*)(void))mapping)();
+		_exit(EXIT_FAILURE);
+	}
+
+	do {
+		pid = waitpid(pid, &status, 0);
+	} while (pid < 0 && errno == EINTR);
+
+	return pid > 0 && WIFEXITED(status) &&
+		WEXITSTATUS(status) == EXIT_SUCCESS;
+}
+
 static void *map_target(void **ref_mapping)
 {
 #ifdef __aarch64__
 	const uint32_t instructions[] = {
 		0x91000400, /* add x0, x0, #1 */
-		0xd65f03c0, /* ret */
+		RET_INSN, /* ret */
 	};
+	const uint32_t unmatched_trap = UPROBE_BRK_INSN;
+	const uint32_t wrong_slice = RET_INSN;
 	void *mapping = MAP_FAILED;
 	int fd;
 
@@ -62,6 +103,10 @@ static void *map_target(void **ref_mapping)
 	if (fd < 0)
 		return MAP_FAILED;
 	if (ftruncate(fd, NATIVE_PAGE_SIZE) ||
+	    pwrite(fd, &unmatched_trap, sizeof(unmatched_trap), 0) !=
+		    sizeof(unmatched_trap) ||
+	    pwrite(fd, &wrong_slice, sizeof(wrong_slice), USER_PAGE_SIZE) !=
+		    sizeof(wrong_slice) ||
 	    pwrite(fd, instructions, sizeof(instructions), TARGET_OFFSET) !=
 		    sizeof(instructions))
 		goto out;
@@ -120,7 +165,7 @@ static int run_test(void)
 	unsigned int i;
 
 	ksft_print_header();
-	ksft_set_plan(10);
+	ksft_set_plan(11);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -166,6 +211,8 @@ static int run_test(void)
 				   strerror(errno));
 	ksft_test_result(*ref_ctr == 1,
 			 "increment the sliced userspace reference counter\n");
+	ksft_test_result(unmatched_xom_trap_is_delivered(mapping),
+			 "deliver an unmatched trap from a sliced execute-only VMA\n");
 
 	ksft_test_result(target(41) == 42,
 			 "execute the probed instruction from the fallback XOL area\n");
