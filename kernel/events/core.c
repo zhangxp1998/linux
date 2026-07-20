@@ -7863,6 +7863,17 @@ static u64 perf_virt_to_phys(u64 virt)
 /*
  * Return the pagetable size of a given virtual address.
  */
+#ifdef CONFIG_HAVE_GUP_FAST
+static u64 perf_adjust_leaf_size(u64 size, u64 native_size, u64 process_size)
+{
+	/*
+	 * Leaf helpers use native geometry for their default mapping. Replace
+	 * only that value so architecture-specific large mappings stay intact.
+	 */
+	return size == native_size ? process_size : size;
+}
+#endif
+
 static u64 perf_get_pgtable_size(struct mm_struct *mm, unsigned long addr)
 {
 	u64 size = 0;
@@ -7880,7 +7891,8 @@ static u64 perf_get_pgtable_size(struct mm_struct *mm, unsigned long addr)
 		return 0;
 
 	if (pgd_leaf(pgd))
-		return pgd_leaf_size(pgd);
+		return perf_adjust_leaf_size(pgd_leaf_size(pgd), PGDIR_SIZE,
+					     MM_PGDIR_SIZE(mm));
 
 	p4dp = p4d_offset_lockless_mm(mm, pgdp, pgd, addr);
 	p4d = READ_ONCE(*p4dp);
@@ -7888,7 +7900,8 @@ static u64 perf_get_pgtable_size(struct mm_struct *mm, unsigned long addr)
 		return 0;
 
 	if (p4d_leaf(p4d))
-		return p4d_leaf_size(p4d);
+		return perf_adjust_leaf_size(p4d_leaf_size(p4d), P4D_SIZE,
+					     MM_P4D_SIZE(mm));
 
 	pudp = pud_offset_lockless_mm(mm, p4dp, p4d, addr);
 	pud = READ_ONCE(*pudp);
@@ -7896,7 +7909,8 @@ static u64 perf_get_pgtable_size(struct mm_struct *mm, unsigned long addr)
 		return 0;
 
 	if (pud_leaf(pud))
-		return pud_leaf_size(pud);
+		return perf_adjust_leaf_size(pud_leaf_size(pud), PUD_SIZE,
+					     MM_PUD_SIZE(mm));
 
 	pmdp = pmd_offset_lockless_mm(mm, pudp, pud, addr);
 again:
@@ -7905,7 +7919,8 @@ again:
 		return 0;
 
 	if (pmd_leaf(pmd))
-		return pmd_leaf_size(pmd);
+		return perf_adjust_leaf_size(pmd_leaf_size(pmd), PMD_SIZE,
+					     MM_PMD_SIZE(mm));
 
 	ptep = pte_offset_map_mm(mm, &pmd, addr);
 	if (!ptep)
@@ -7913,7 +7928,8 @@ again:
 
 	pte = ptep_get_lockless(ptep);
 	if (pte_present(pte))
-		size = __pte_leaf_size(pmd, pte);
+		size = perf_adjust_leaf_size(__pte_leaf_size(pmd, pte),
+					     PAGE_SIZE, MM_PAGE_SIZE(mm));
 	pte_unmap(ptep);
 #endif /* CONFIG_HAVE_GUP_FAST */
 
