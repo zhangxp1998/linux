@@ -20,6 +20,7 @@
 #include <linux/kernel_read_file.h>
 #include <linux/lsm_hooks.h>
 #include <linux/fsnotify.h>
+#include <linux/mm.h>
 #include <linux/mman.h>
 #include <linux/mount.h>
 #include <linux/personality.h>
@@ -4189,7 +4190,7 @@ int security_setselfattr(unsigned int attr, struct lsm_ctx __user *uctx,
 		return -EINVAL;
 	if (size < sizeof(*lctx))
 		return -EINVAL;
-	if (size > PAGE_SIZE)
+	if (size > MM_PAGE_SIZE(current->mm))
 		return -E2BIG;
 
 	lctx = memdup_user(uctx, size);
