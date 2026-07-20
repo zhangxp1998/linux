@@ -5004,9 +5004,10 @@ static int kvm_vm_ioctl_enable_dirty_log_ring(struct kvm *kvm, u32 size)
 	if (!size || (size & (size - 1)))
 		return -EINVAL;
 
-	/* Should be bigger to keep the reserved entries, or a page */
+	/* Should be bigger to keep the reserved entries, or a process page */
 	if (size < kvm_dirty_ring_get_rsvd_entries(kvm) *
-	    sizeof(struct kvm_dirty_gfn) || size < PAGE_SIZE)
+	    sizeof(struct kvm_dirty_gfn) ||
+	    size < MM_PAGE_SIZE(current->mm))
 		return -EINVAL;
 
 	if (size > KVM_DIRTY_RING_MAX_ENTRIES *
