@@ -11469,7 +11469,7 @@ static int perf_event_set_filter(struct perf_event *event, void __user *arg)
 	int ret = -EINVAL;
 	char *filter_str;
 
-	filter_str = strndup_user(arg, PAGE_SIZE);
+	filter_str = strndup_user(arg, MM_PAGE_SIZE(current->mm));
 	if (IS_ERR(filter_str))
 		return PTR_ERR(filter_str);
 
