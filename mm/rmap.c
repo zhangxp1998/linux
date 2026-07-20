@@ -913,7 +913,7 @@ struct folio_referenced_arg {
 };
 
 static unsigned long
-folio_referenced_nr_ptes(struct folio *folio, struct vm_area_struct *vma)
+folio_rmap_nr_ptes(struct folio *folio, struct vm_area_struct *vma)
 {
 	/*
 	 * A PPPS anonymous PTE maps one native page, whereas a file PTE maps
@@ -933,7 +933,7 @@ static bool folio_referenced_one(struct folio *folio,
 {
 	struct folio_referenced_arg *pra = arg;
 	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
-	unsigned long nr_ptes = folio_referenced_nr_ptes(folio, vma);
+	unsigned long nr_ptes = folio_rmap_nr_ptes(folio, vma);
 	unsigned long ptes = 0;
 	int referenced = 0;
 	unsigned int nr;
@@ -2052,9 +2052,10 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 	struct mmu_notifier_range range;
 	enum ttu_flags flags = (enum ttu_flags)(long)arg;
 	unsigned long nr_pages = 1, end_addr;
+	unsigned long nr_ptes = folio_rmap_nr_ptes(folio, vma);
 	unsigned long pfn;
 	unsigned long hsz = 0;
-	int ptes = 0;
+	unsigned long ptes = 0;
 
 	/*
 	 * When racing against e.g. zap_pte_range() on another cpu,
@@ -2109,7 +2110,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			ret = false;
 
 			/* Only mlock fully mapped pages */
-			if (pvmw.pte && ptes != pvmw.nr_pages)
+			if (pvmw.pte && ptes != nr_ptes)
 				continue;
 
 			/*
