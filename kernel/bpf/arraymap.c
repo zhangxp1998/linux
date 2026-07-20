@@ -606,10 +606,10 @@ static int array_map_mmap(struct bpf_map *map, struct vm_area_struct *vma)
 	if (!(map->map_flags & BPF_F_MMAPABLE))
 		return -EINVAL;
 
-	offset = ppps_mm_is_compat(vma->vm_mm) ?
-		 vma_file_offset(vma) : vma->vm_pgoff * PAGE_SIZE;
+	offset = vma_file_offset(vma);
 	data_size = ppps_mm_is_compat(vma->vm_mm) ?
-		    PAGE_ALIGN((u64)array->map.max_entries * array->elem_size) :
+		    MM_PAGE_ALIGN(vma->vm_mm,
+				  (u64)array->map.max_entries * array->elem_size) :
 		    __PAGE_ALIGN((u64)array->map.max_entries * array->elem_size);
 	if (offset > data_size || size > data_size - offset)
 		return -EINVAL;
