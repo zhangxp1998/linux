@@ -921,6 +921,8 @@ folio_within_vma(struct folio *folio, struct vm_area_struct *vma)
  * folio_add_lru_vma() calling mlock_new_folio().
  */
 void mlock_folio(struct folio *folio);
+void mlock_vma_folio_if_fully_mapped(struct folio *folio,
+				     struct vm_area_struct *vma);
 static inline void mlock_vma_folio(struct folio *folio,
 				struct vm_area_struct *vma)
 {
