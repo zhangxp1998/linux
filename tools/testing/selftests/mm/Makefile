@@ -194,6 +194,7 @@ TEST_GEN_FILES += process_mrelease_ppps
 TEST_GEN_FILES += process_vm_access_ppps
 TEST_GEN_FILES += remap_pfn_range_ppps
 TEST_GEN_FILES += remap_file_pages_ppps
+TEST_GEN_FILES += rmap_file_referenced_ppps
 TEST_GEN_FILES += shmem_swap_usage_ppps
 TEST_GEN_FILES += thuge-gen
 TEST_GEN_FILES += transhuge-stress
