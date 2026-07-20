@@ -291,6 +291,7 @@ CATEGORY="mmap" run_test ./sysv_shm_ppps
 CATEGORY="mlock" run_test ./sysv_shm_lock_ppps
 CATEGORY="mmap" run_test ./io_uring_mmap_ppps
 CATEGORY="mmap" run_test ./io_uring_fixed_buffer_ppps
+CATEGORY="mmap" run_test ./aio_ring_ppps
 CATEGORY="mmap" run_test ./mglru_ppps
 CATEGORY="mmap" run_test ./test_mmu_notifier_ppps.sh
 CATEGORY="mmap" run_test ./anon_pageout_ppps
