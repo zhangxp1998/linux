@@ -203,10 +203,12 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	 */
 	vma_iter_init(&vmi, mm, oldbrk);
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	next = vma_find(&vmi, newbrk + MM_PAGE_SIZE(mm) + stack_guard_gap);
+	next = vma_find(&vmi, newbrk + MM_PAGE_SIZE(mm) +
+			mm_stack_guard_gap(mm));
 	if (next && newbrk + MM_PAGE_SIZE(mm) > vm_start_gap(next))
 #else
-	next = vma_find(&vmi, newbrk + __PAGE_SIZE + stack_guard_gap);
+	next = vma_find(&vmi, newbrk + __PAGE_SIZE +
+			mm_stack_guard_gap(mm));
 	if (next && newbrk + __PAGE_SIZE > vm_start_gap(next))
 #endif
 		goto out;
@@ -1105,7 +1107,7 @@ static int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 	address += MM_PAGE_SIZE(mm);
 
 	/* Enforce stack_guard_gap */
-	gap_addr = address + stack_guard_gap;
+	gap_addr = address + mm_stack_guard_gap(mm);
 
 	/* Guard against overflow */
 	if (gap_addr < address || gap_addr > TASK_SIZE)
@@ -1211,7 +1213,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 	if (prev) {
 		if (!(prev->vm_flags & VM_GROWSDOWN) &&
 		    vma_is_accessible(prev) &&
-		    (address - prev->vm_end < stack_guard_gap))
+		    (address - prev->vm_end < mm_stack_guard_gap(mm)))
 			return -ENOMEM;
 	}
 
@@ -1280,7 +1282,11 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 	return error;
 }
 
-/* enforced gap between the expanding stack and other mappings. */
+/*
+ * Enforced gap between an expanding stack and other mappings. Store it in
+ * native-page bytes for existing architecture users; mm_stack_guard_gap()
+ * scales the configured page count for a per-process page size.
+ */
 unsigned long stack_guard_gap = 256UL<<PAGE_SHIFT;
 
 static int __init cmdline_parse_stack_guard_gap(char *p)
