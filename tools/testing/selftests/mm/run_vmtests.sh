@@ -345,6 +345,7 @@ CATEGORY="mmap" run_test ./brk_aslr_ppps
 CATEGORY="mmap" run_test ./mmap_aslr_ppps
 CATEGORY="mmap" run_test ./shmem_thp_mmap_ppps
 CATEGORY="mmap" run_test ./smaps_page_size_ppps
+CATEGORY="mmap" run_test ./fork_page_size_ppps
 CATEGORY="mmap" run_test ./exec_stack_random_ppps
 CATEGORY="mmap" run_test ./stack_aslr_ppps
 CATEGORY="mmap" run_test ./perf_mmap_offset_ppps

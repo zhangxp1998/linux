@@ -52,6 +52,12 @@ unsigned long mm_default_map_window64_of(struct mm_struct *mm)
 }
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm)
 {
+	/* fork() must preserve the geometry of the page tables it copies. */
+	if (!bprm && current->mm) {
+		mm->page_shift = current->mm->page_shift;
+		return;
+	}
+
 	if (current->personality & ADDR_4KB_COMPAT_PAGE_SIZE)
 		mm->page_shift = PAGE_SHIFT_COMPAT;
 	else
@@ -59,4 +65,3 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm)
 }
 
 #endif
-
