@@ -71,7 +71,7 @@
  */
 #define TASK_SIZE_32		UL(0x100000000)
 #else
-#define TASK_SIZE_32		(UL(0x100000000) - PAGE_SIZE)
+#define TASK_SIZE_32		(UL(0x100000000) - PAGE_SIZE_COMPAT)
 #endif /* CONFIG_ARM64_64K_PAGES */
 #define TASK_SIZE		(test_thread_flag(TIF_32BIT) ? \
 				TASK_SIZE_32 : TASK_SIZE_64)
