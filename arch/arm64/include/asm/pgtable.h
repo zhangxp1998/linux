@@ -96,6 +96,12 @@ static inline pteval_t __phys_to_pte_val(phys_addr_t phys)
 }
 #endif
 
+#define pte_page_offset pte_page_offset
+static inline unsigned long pte_page_offset(pte_t pte)
+{
+	return __pte_to_phys(pte) & ~PAGE_MASK;
+}
+
 #define pte_pfn(pte)		(__pte_to_phys(pte) >> PAGE_SHIFT)
 #define pfn_pte(pfn,prot)	\
 	__pte(__phys_to_pte_val((phys_addr_t)(pfn) << PAGE_SHIFT) | pgprot_val(prot))

@@ -43,6 +43,20 @@
 #endif
 
 /*
+ * Return the byte offset encoded by a PTE within its native struct page.
+ * Most architectures only encode native-page-aligned physical addresses.
+ */
+#ifndef pte_page_offset
+static inline unsigned long pte_page_offset(pte_t pte)
+{
+	(void)pte;
+	return 0;
+}
+
+#define pte_page_offset pte_page_offset
+#endif
+
+/*
  * This defines the generic helper for accessing PMD page
  * table page. Although platforms can still override this
  * via their respective <asm/pgtable.h>.
