@@ -701,7 +701,8 @@ void do_coredump(const kernel_siginfo_t *siginfo)
 		int open_flags = O_CREAT | O_WRONLY | O_NOFOLLOW |
 				 O_LARGEFILE | O_EXCL;
 
-		if (cprm.limit < binfmt->min_coredump)
+		if (cprm.limit < min(binfmt->min_coredump,
+				     MM_PAGE_SIZE(current->mm)))
 			goto fail_unlock;
 
 		if (need_suid_safe && cn.corename[0] != '/') {
