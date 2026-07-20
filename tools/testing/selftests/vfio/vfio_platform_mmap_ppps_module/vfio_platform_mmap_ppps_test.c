@@ -12,7 +12,7 @@
 
 struct vfio_platform_mmap_fixture {
 	struct vfio_platform_device vdev;
-	struct vfio_platform_region region;
+	struct vfio_platform_region regions[2];
 	unsigned long backing;
 };
 
@@ -46,13 +46,15 @@ static int __init fixture_init(void)
 	*(unsigned char *)fixture.backing = 0x11;
 	*(unsigned char *)(fixture.backing + SZ_4K) = 0x22;
 
-	fixture.region.addr = virt_to_phys((void *)fixture.backing);
-	fixture.region.size = TEST_REGION_SIZE;
-	fixture.region.flags = VFIO_REGION_INFO_FLAG_READ |
+	fixture.regions[0].addr = virt_to_phys((void *)fixture.backing);
+	fixture.regions[0].size = TEST_REGION_SIZE;
+	fixture.regions[0].flags = VFIO_REGION_INFO_FLAG_READ |
 		VFIO_REGION_INFO_FLAG_WRITE | VFIO_REGION_INFO_FLAG_MMAP;
-	fixture.region.type = VFIO_PLATFORM_REGION_TYPE_MMIO;
-	fixture.vdev.regions = &fixture.region;
-	fixture.vdev.num_regions = 1;
+	fixture.regions[0].type = VFIO_PLATFORM_REGION_TYPE_MMIO;
+	fixture.regions[1] = fixture.regions[0];
+	fixture.regions[1].size = SZ_4K;
+	fixture.vdev.regions = fixture.regions;
+	fixture.vdev.num_regions = ARRAY_SIZE(fixture.regions);
 
 	ret = misc_register(&fixture_miscdev);
 	if (ret)
