@@ -9,21 +9,14 @@
 
 #include <setjmp.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 
 #include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define NATIVE_16K_SIZE	(4 * USER_PAGE_SIZE)
+#define PRIVATE_RESERVATION_SIZE (3 * NATIVE_PAGE_SIZE)
 #define FIRST_MARKER	0x71
+#define COW_MARKER	0xa5
+#define COW_OFFSET	37
 
 static sigjmp_buf fault_environment;
 
@@ -40,6 +33,24 @@ static bool read_byte(const unsigned char *address, unsigned char *value)
 	return true;
 }
 
+static bool mapping_has_values(const unsigned char *mapping,
+			       unsigned long changed_offset)
+{
+	unsigned long offset;
+
+	for (offset = 0; offset < PROCESS_PAGE_SIZE; offset++) {
+		unsigned char expected = offset == changed_offset ?
+			COW_MARKER : FIRST_MARKER;
+
+		if (mapping[offset] != expected) {
+			ksft_print_msg("offset %lu contains %#x instead of %#x\n",
+				       offset, mapping[offset], expected);
+			return false;
+		}
+	}
+	return true;
+}
+
 static int run_test(void)
 {
 	struct sigaction action = {
@@ -48,15 +59,15 @@ static int run_test(void)
 	unsigned char *reservation;
 	unsigned char *mapping;
 	unsigned char value = 0;
+	uintptr_t target_address;
 	bool guards_fault = true;
+	bool mapping_ok;
 	unsigned int guard;
 	void *past_end;
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(9);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(11);
 
 	fd = ppps_open_fixture_or_skip("/dev/vm_iomap_memory_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the vm_iomap_memory test device\n");
@@ -95,7 +106,31 @@ static int run_test(void)
 			 "vm_iomap_memory does not populate adjacent guard slices\n");
 	munmap(reservation, NATIVE_PAGE_SIZE);
 
-	reservation = mmap(NULL, NATIVE_16K_SIZE, PROT_NONE,
+	reservation = mmap(NULL, PRIVATE_RESERVATION_SIZE, PROT_NONE,
+			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (reservation == MAP_FAILED)
+		ksft_exit_fail_msg("private guard reservation failed: %s\n",
+				   strerror(errno));
+	target_address = ((uintptr_t)reservation + NATIVE_PAGE_SIZE - 1) &
+		~(NATIVE_PAGE_SIZE - 1);
+	mapping = mmap((void *)target_address, PROCESS_PAGE_SIZE,
+		       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, 0);
+	ksft_test_result(mapping == (void *)target_address,
+			 "map one private PFN-backed process page\n");
+	if (mapping != (void *)target_address)
+		ksft_exit_fail_msg("private mmap failed: %s\n",
+				   strerror(errno));
+	mapping_ok = mapping_has_values(mapping, PROCESS_PAGE_SIZE);
+	ksft_test_result(mapping_ok,
+			 "private PFN mapping initially contains device data\n");
+	if (!mapping_ok)
+		ksft_exit_fail_msg("private mapping data mismatch\n");
+	mapping[COW_OFFSET] = COW_MARKER;
+	ksft_test_result(mapping_has_values(mapping, COW_OFFSET),
+			 "COW preserves the complete process page\n");
+	munmap(reservation, PRIVATE_RESERVATION_SIZE);
+
+	reservation = mmap(NULL, NATIVE_PAGE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reservation == MAP_FAILED)
 		ksft_exit_fail_msg("offset guard reservation failed: %s\n",
