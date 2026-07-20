@@ -337,6 +337,7 @@ CATEGORY="mmap" run_test ./mmap_page_zero_ppps
 CATEGORY="mmap" run_test ./exec_stack_random_ppps
 CATEGORY="mmap" run_test ./stack_aslr_ppps
 CATEGORY="mmap" run_test ./perf_mmap_offset_ppps
+CATEGORY="mmap" run_test ./perf_phys_addr_ppps
 CATEGORY="mmap" run_test ./pci_mmap_ppps
 CATEGORY="mmap" run_test ./anon_vma_name_ppps
 CATEGORY="mmap" run_test ./print_vma_addr_ppps
