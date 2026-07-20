@@ -308,18 +308,19 @@ void munlock_folio(struct folio *folio)
 }
 
 static inline unsigned int folio_mlock_step(struct folio *folio,
-		pte_t *pte, unsigned long addr, unsigned long end,
-		unsigned int page_shift)
+		struct vm_area_struct *vma, pte_t *pte, unsigned long addr,
+		unsigned long end)
 {
 	const fpb_t fpb_flags = FPB_IGNORE_DIRTY | FPB_IGNORE_SOFT_DIRTY;
-	unsigned int count = (end - addr) >> page_shift;
+	unsigned int count = (end - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
 	pte_t ptent = ptep_get(pte);
 
 	if (!folio_test_large(folio))
 		return 1;
 
-	return folio_pte_batch(folio, addr, pte, ptent, count, fpb_flags, NULL,
-			       NULL, NULL);
+	count = min_t(unsigned int, count, folio_nr_ptes(folio, vma));
+	return vma_folio_pte_batch(vma, folio, addr, pte, ptent, count,
+				   fpb_flags, NULL, NULL);
 }
 
 static inline bool allow_mlock_munlock(struct folio *folio,
@@ -347,7 +348,7 @@ static inline bool allow_mlock_munlock(struct folio *folio,
 		return false;
 
 	/* folio is not fully mapped, skip mlock */
-	if (step != folio_nr_pages(folio))
+	if (step != folio_nr_ptes(folio, vma))
 		return false;
 
 	return true;
@@ -396,7 +397,7 @@ static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
 		if (!folio || folio_is_zone_device(folio))
 			continue;
 
-		step = folio_mlock_step(folio, pte, addr, end, page_shift);
+		step = folio_mlock_step(folio, vma, pte, addr, end);
 		if (!allow_mlock_munlock(folio, vma, start, end, step))
 			goto next_entry;
 
