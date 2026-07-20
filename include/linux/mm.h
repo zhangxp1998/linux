@@ -3661,6 +3661,17 @@ extern vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 extern vm_fault_t filemap_page_mkwrite(struct vm_fault *vmf);
 
 extern unsigned long stack_guard_gap;
+
+static inline unsigned long mm_stack_guard_gap(const struct mm_struct *mm)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return (stack_guard_gap >> PAGE_SHIFT) << MM_PAGE_SHIFT(mm);
+#else
+	(void)mm;
+	return (stack_guard_gap >> PAGE_SHIFT) << __PAGE_SHIFT;
+#endif
+}
+
 /* Generic expand stack which grows the stack according to GROWS{UP,DOWN} */
 int expand_stack_locked(struct vm_area_struct *vma, unsigned long address);
 struct vm_area_struct *expand_stack(struct mm_struct * mm, unsigned long addr);
@@ -3696,7 +3707,7 @@ struct vm_area_struct *vma_lookup(struct mm_struct *mm, unsigned long addr)
 static inline unsigned long stack_guard_start_gap(struct vm_area_struct *vma)
 {
 	if (vma->vm_flags & VM_GROWSDOWN)
-		return stack_guard_gap;
+		return mm_stack_guard_gap(vma->vm_mm);
 
 	/* See reasoning around the VM_SHADOW_STACK definition */
 	if (vma->vm_flags & VM_SHADOW_STACK)
@@ -3721,9 +3732,9 @@ static inline unsigned long vm_end_gap(struct vm_area_struct *vma)
 	unsigned long vm_end = vma->vm_end;
 
 	if (vma->vm_flags & VM_GROWSUP) {
-		vm_end += stack_guard_gap;
+		vm_end += mm_stack_guard_gap(vma->vm_mm);
 		if (vm_end < vma->vm_end)
-			vm_end = -PAGE_SIZE;
+			vm_end = -MM_PAGE_SIZE(vma->vm_mm);
 	}
 	return vm_end;
 }
