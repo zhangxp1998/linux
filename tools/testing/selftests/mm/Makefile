@@ -47,34 +47,50 @@ LDLIBS = -lrt -lpthread -lm
 # warnings.
 CFLAGS += -U_FORTIFY_SOURCE
 
-KDIR ?= /lib/modules/$(shell uname -r)/build
-ifneq (,$(wildcard $(KDIR)/Module.symvers))
-GUP_RETRY_PPPS_MODULE := gup_retry_ppps_module/gup_retry_ppps_module.ko
-IOV_ITER_PPPS_MODULE := iov_iter_ppps_module/iov_iter_ppps_module.ko
-MREMAP_PGOFF_PPPS_MODULE := mremap_pgoff_ppps_module/mremap_pgoff_ppps_module.ko
-VM_IOMAP_MEMORY_PPPS_MODULE := vm_iomap_memory_ppps_module/vm_iomap_memory_ppps_module.ko
-DMA_MMAP_ATTRS_PPPS_MODULE := dma_mmap_attrs_ppps_module/dma_mmap_attrs_ppps_module.ko
-DMA_MMAP_PAGES_PPPS_MODULE := dma_mmap_pages_ppps_module/dma_mmap_pages_ppps_module.ko
-VM_MAP_PAGES_PPPS_MODULE := vm_map_pages_ppps_module/vm_map_pages_ppps_module.ko
-IOMMU_DMA_MMAP_PPPS_MODULE := iommu_dma_mmap_ppps_module/iommu_dma_mmap_ppps_module.ko
-ifneq (,$(shell grep -s '^CONFIG_MAPPING_DIRTY_HELPERS=y$$' $(KDIR)/.config))
-PAGEWALK_PPPS_MODULE := pagewalk_ppps_module/pagewalk_ppps_module.ko
-endif
-ifneq (,$(shell grep -s '^CONFIG_MMU_NOTIFIER=y$$' $(KDIR)/.config))
-MMU_NOTIFIER_PPPS_MODULE := \
-	mmu_notifier_ppps_module/mmu_notifier_ppps_module.ko
-TEST_FILES += $(MMU_NOTIFIER_PPPS_MODULE)
-endif
-FOLIO_WITHIN_RANGE_PPPS_MODULE := \
-	folio_within_range_ppps_module/folio_within_range_ppps_test.ko
-ifneq (,$(shell grep -s '^CONFIG_VIDEOBUF2_VMALLOC=y$$' $(KDIR)/.config))
-VB2_MMAP_PPPS_MODULE := vb2_mmap_ppps_module/vb2_mmap_ppps_test.ko
-ifneq (,$(shell grep -s '^CONFIG_VIDEOBUF2_DMA_SG=y$$' $(KDIR)/.config))
-VB2_USERPTR_PPPS_MODULE := \
-	vb2_userptr_ppps_module/vb2_userptr_ppps_test.ko
-endif
-endif
-endif
+# PPPS (per-process page size) tests.  Those needing a kernel-side fixture get
+# it from the modules in ppps_modules/, loaded by ../ppps/ppps_run_module.sh.
+PPPS_TESTS := \
+	aio_ring_ppps anon_pageout_ppps anon_vma_name_ppps \
+	bpf_array_mmap_ppps bpf_ringbuf_mmap_ppps bpf_stack_build_id_ppps \
+	dma_mmap_ppps elf_4k_align_ppps elf_4k_align_probe elf_core_ppps \
+	exec_user_args_ppps fadvise_dontneed_ppps fault_in_ppps \
+	file_cow_ppps filemap_eof_ppps folio_within_range_ppps \
+	fork_filemap_ppps fork_page_size_ppps futex_shared_ppps \
+	gup_retry_ppps hole_anon_ppps io_uring_fixed_buffer_ppps \
+	io_uring_mmap_ppps iommu_dma_mmap_ppps iov_iter_ppps kcov_ppps \
+	madv_cold_large_file_ppps madvise_free_ppps madvise_guard_ppps \
+	madvise_remove_ppps madvise_willneed_ppps mbind_ppps memfd_eof_ppps \
+	mglru_folded_ppps mglru_ppps mincore_ppps mixed_context_switch_ppps \
+	mixed_mm_access_ppps mlock_large_file_ppps mlock_reclaim_ppps \
+	mmap_action_cleanup_ppps mmap_hint_ppps mmap_page_zero_ppps \
+	mmu_notifier_ppps mremap_commit_ppps mremap_hint_ppps \
+	mremap_pgoff_ppps mremap_rlimit_ppps msync_offset_ppps munmap_ppps \
+	oom_anon_score_ppps oom_score_ppps oom_trace_ppps packed_anon_ppps \
+	packed_swap_ppps pagemap_exclusive_ppps pagewalk_ppps pci_mmap_ppps \
+	perf_mmap_offset_ppps perf_page_size_ppps perf_phys_addr_ppps \
+	print_vma_addr_ppps proc_pagewalk_ppps process_madvise_ppps \
+	process_mrelease_ppps process_vm_access_ppps remap_file_pages_ppps \
+	remap_pfn_range_ppps rmap_file_referenced_ppps rss_stat_trace_ppps \
+	rusage_ppps selinux_status_mmap_ppps shmem_mmap_offset_ppps \
+	shmem_swap_usage_ppps smaps_page_size_ppps smaps_pss_ppps \
+	stack_guard_gap_ppps swap_vma_readahead_ppps swapoff_ppps \
+	sysv_shm_lock_ppps sysv_shm_ppps taskstats_ppps \
+	tcp_zerocopy_align_ppps thp_mmap_offset_ppps \
+	trace_ring_buffer_mmap_ppps truncate_ppps truncate_remote_ppps \
+	userfaultfd_continue_remote_ppps userfaultfd_eof_ppps \
+	userfaultfd_mixed_ppps userfaultfd_poison_remote_ppps \
+	userfaultfd_remap_ppps userfaultfd_remote_ppps \
+	userfaultfd_retry_ppps userfaultfd_shmem_ppps \
+	userfaultfd_unregister_remote_ppps userfaultfd_wp_remote_ppps \
+	userfaultfd_zeropage_ppps v9fs_mmap_close_ppps vb2_mmap_ppps \
+	vb2_userptr_ppps vhost_dirty_log_ppps vm_iomap_memory_ppps \
+	vm_map_pages_ppps xdp_umem_ppps
+
+PPPS_TESTS_arm64 := \
+	brk_aslr_ppps brk_aslr_ppps_sample elf_brk_gap_ppps exec_aslr_ppps \
+	exec_aslr_ppps_helper exec_aslr_ppps_interp exec_stack_ppps \
+	exec_stack_random_ppps mmap_aslr_ppps mte_anon_ppps \
+	shmem_thp_mmap_ppps stack_aslr_ppps uprobe_ppps
 
 TEST_GEN_FILES = cow
 TEST_GEN_FILES += kcov_ppps
@@ -99,6 +115,7 @@ TEST_GEN_FILES += io_uring_mmap_ppps
 TEST_GEN_FILES += io_uring_fixed_buffer_ppps
 TEST_GEN_FILES += mglru_ppps
 TEST_GEN_FILES += mmu_notifier_ppps
+TEST_GEN_FILES += fault_in_ppps
 TEST_GEN_FILES += anon_pageout_ppps
 TEST_GEN_FILES += swapoff_ppps
 TEST_GEN_FILES += swap_vma_readahead_ppps
@@ -272,6 +289,8 @@ TEST_FILES += test_v9fs_mmap_close_ppps.sh
 TEST_FILES += test_pagewalk_ppps.sh
 TEST_FILES += $(PAGEWALK_PPPS_MODULE)
 TEST_FILES += test_mmu_notifier_ppps.sh
+TEST_FILES += test_fault_in_ppps.sh
+TEST_FILES += $(FAULT_IN_PPPS_MODULE)
 TEST_FILES += test_folio_within_range_ppps.sh
 TEST_FILES += $(FOLIO_WITHIN_RANGE_PPPS_MODULE)
 TEST_FILES += test_vm_map_pages_ppps.sh
@@ -317,6 +336,20 @@ clean_iov_iter_ppps_module:
 	+$(MAKE) -C iov_iter_ppps_module KDIR=$(KDIR) clean
 
 clean: clean_iov_iter_ppps_module
+endif
+
+ifneq ($(FAULT_IN_PPPS_MODULE),)
+all: $(FAULT_IN_PPPS_MODULE)
+
+$(FAULT_IN_PPPS_MODULE): fault_in_ppps_module/fault_in_ppps_module.c \
+			 fault_in_ppps_module/Makefile fault_in_ppps.h
+	+$(MAKE) -C fault_in_ppps_module KDIR=$(KDIR)
+
+.PHONY: clean_fault_in_ppps_module
+clean_fault_in_ppps_module:
+	+$(MAKE) -C fault_in_ppps_module KDIR=$(KDIR) clean
+
+clean: clean_fault_in_ppps_module
 endif
 
 ifneq ($(MREMAP_PGOFF_PPPS_MODULE),)

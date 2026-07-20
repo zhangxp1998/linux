@@ -353,8 +353,9 @@ fi
 # Dump pages 0, 19, and 4096, using pin_user_pages:
 CATEGORY="gup_test" run_test ./gup_test -ct -F 0x1 0 19 0x1000
 CATEGORY="gup_test" run_test ./gup_longterm
-CATEGORY="gup_test" run_test ./test_gup_retry_ppps.sh
-CATEGORY="gup_test" run_test ./test_iov_iter_ppps.sh
+CATEGORY="gup_test" run_ppps_module_test gup_retry ./gup_retry_ppps
+CATEGORY="gup_test" run_ppps_module_test iov_iter ./iov_iter_ppps
+CATEGORY="gup_test" run_ppps_module_test fault_in ./fault_in_ppps
 CATEGORY="mmap" run_test ./futex_shared_ppps
 
 CATEGORY="userfaultfd" run_test ./uffd-unit-tests
