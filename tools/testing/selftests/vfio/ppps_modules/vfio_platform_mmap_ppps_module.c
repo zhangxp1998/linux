@@ -2,12 +2,14 @@
 #include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/sizes.h>
 
 #include "vfio_platform_private.h"
 
 #include "../../ppps/ppps_misc_module.h"
 
 #define DEVICE_NAME "vfio_platform_mmap_ppps"
+#define TEST_REGION_SIZE SZ_16K
 
 struct vfio_platform_mmap_fixture {
 	struct vfio_platform_device vdev;
@@ -33,10 +35,11 @@ static int fixture_setup(void)
 							GFP_KERNEL | __GFP_ZERO);
 	if (!fixture.backing)
 		return -ENOMEM;
-	memcpy((void *)fixture.backing, "VFIO-PPPS", 9);
+	*(unsigned char *)fixture.backing = 0x11;
+	*(unsigned char *)(fixture.backing + SZ_4K) = 0x22;
 
 	fixture.region.addr = virt_to_phys((void *)fixture.backing);
-	fixture.region.size = PAGE_SIZE;
+	fixture.region.size = TEST_REGION_SIZE;
 	fixture.region.flags = VFIO_REGION_INFO_FLAG_READ |
 		VFIO_REGION_INFO_FLAG_WRITE | VFIO_REGION_INFO_FLAG_MMAP;
 	fixture.regions[0].type = VFIO_PLATFORM_REGION_TYPE_MMIO;
