@@ -190,10 +190,15 @@ static bool should_dump_unreclaim_slab(void)
 	return (global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B) > nr_lru);
 }
 
-static unsigned long mm_pages_to_kb(struct mm_struct *mm,
-				    unsigned long pages)
+static unsigned long mm_process_pages_to_kb(struct mm_struct *mm,
+					    unsigned long pages)
 {
 	return pages << (MM_PAGE_SHIFT(mm) - 10);
+}
+
+static unsigned long get_mm_counter_sum(struct mm_struct *mm, int member)
+{
+	return percpu_counter_sum_positive(&mm->rss_stat[member]);
 }
 
 /**
@@ -207,8 +212,10 @@ static unsigned long mm_pages_to_kb(struct mm_struct *mm,
  */
 long oom_badness(struct task_struct *p, unsigned long totalpages)
 {
+	unsigned long anon;
+	unsigned long file;
 	unsigned long page_ratio;
-	unsigned long rss;
+	unsigned long shmem;
 	unsigned long swapents;
 	long points;
 	long adj;
@@ -237,10 +244,18 @@ long oom_badness(struct task_struct *p, unsigned long totalpages)
 	 * The baseline for the badness score is the proportion of RAM that each
 	 * task's rss, pagetable and swap space use.
 	 */
-	rss = get_mm_rss(p->mm);
-	swapents = get_mm_counter(p->mm, MM_SWAPENTS);
+	anon = get_mm_counter_sum(p->mm, MM_ANONPAGES);
+	file = get_mm_counter_sum(p->mm, MM_FILEPAGES);
+	shmem = get_mm_counter_sum(p->mm, MM_SHMEMPAGES);
+	swapents = get_mm_counter_sum(p->mm, MM_SWAPENTS);
 	page_ratio = PAGE_SIZE / MM_PAGE_SIZE(p->mm);
-	points = DIV_ROUND_UP(rss + swapents, page_ratio);
+	/*
+	 * A PPPS anonymous PTE owns a native folio, and an anonymous swap PTE
+	 * owns a native-sized swap slot.  File and shmem counters, in contrast,
+	 * count the process-page slices that can share a native folio.
+	 */
+	points = anon + swapents;
+	points += DIV_ROUND_UP(file + shmem, page_ratio);
 	points += mm_pgtables_bytes(p->mm) / PAGE_SIZE;
 	task_unlock(p);
 
@@ -613,9 +628,9 @@ static bool oom_reap_task_mm(struct task_struct *tsk, struct mm_struct *mm)
 
 	pr_info("oom_reaper: reaped process %d (%s), now anon-rss:%lukB, file-rss:%lukB, shmem-rss:%lukB\n",
 			task_pid_nr(tsk), tsk->comm,
-			mm_pages_to_kb(mm, get_mm_counter(mm, MM_ANONPAGES)),
-			mm_pages_to_kb(mm, get_mm_counter(mm, MM_FILEPAGES)),
-			mm_pages_to_kb(mm, get_mm_counter(mm, MM_SHMEMPAGES)));
+			K(get_mm_counter_sum(mm, MM_ANONPAGES)),
+			mm_process_pages_to_kb(mm, get_mm_counter_sum(mm, MM_FILEPAGES)),
+			mm_process_pages_to_kb(mm, get_mm_counter_sum(mm, MM_SHMEMPAGES)));
 out_finish:
 	trace_finish_task_reaping(tsk->pid);
 out_unlock:
@@ -969,10 +984,10 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 	mark_oom_victim(victim);
 	pr_err("%s: Killed process %d (%s) total-vm:%lukB, anon-rss:%lukB, file-rss:%lukB, shmem-rss:%lukB, UID:%u pgtables:%lukB oom_score_adj:%hd\n",
 		message, task_pid_nr(victim), victim->comm,
-		mm_pages_to_kb(mm, mm->total_vm),
-		mm_pages_to_kb(mm, get_mm_counter(mm, MM_ANONPAGES)),
-		mm_pages_to_kb(mm, get_mm_counter(mm, MM_FILEPAGES)),
-		mm_pages_to_kb(mm, get_mm_counter(mm, MM_SHMEMPAGES)),
+		mm_process_pages_to_kb(mm, mm->total_vm),
+		K(get_mm_counter_sum(mm, MM_ANONPAGES)),
+		mm_process_pages_to_kb(mm, get_mm_counter_sum(mm, MM_FILEPAGES)),
+		mm_process_pages_to_kb(mm, get_mm_counter_sum(mm, MM_SHMEMPAGES)),
 		from_kuid(&init_user_ns, task_uid(victim)),
 		mm_pgtables_bytes(mm) >> 10, victim->signal->oom_score_adj);
 	task_unlock(victim);
