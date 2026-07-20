@@ -193,7 +193,8 @@ SYSCALL_DEFINE4(request_key, const char __user *, _type,
 	callout_info = NULL;
 	callout_len = 0;
 	if (_callout_info) {
-		callout_info = strndup_user(_callout_info, PAGE_SIZE);
+		callout_info = strndup_user(_callout_info,
+					    MM_PAGE_SIZE(current->mm));
 		if (IS_ERR(callout_info)) {
 			ret = PTR_ERR(callout_info);
 			goto error2;
