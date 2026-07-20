@@ -3720,7 +3720,7 @@ static inline unsigned long stack_guard_start_gap(const struct vm_area_struct *v
 
 	/* See reasoning around the VM_SHADOW_STACK definition */
 	if (vma->vm_flags & VM_SHADOW_STACK)
-		return PAGE_SIZE;
+		return MM_PAGE_SIZE(vma->vm_mm);
 
 	return 0;
 }
