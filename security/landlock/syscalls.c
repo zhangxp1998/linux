@@ -16,6 +16,7 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/limits.h>
+#include <linux/mm.h>
 #include <linux/mount.h>
 #include <linux/path.h>
 #include <linux/sched.h>
@@ -71,7 +72,7 @@ copy_min_struct_from_user(void *const dst, const size_t ksize,
 	BUILD_BUG_ON(ksize < ksize_min);
 	if (usize < ksize_min)
 		return -EINVAL;
-	if (usize > PAGE_SIZE)
+	if (usize > MM_PAGE_SIZE(current->mm))
 		return -E2BIG;
 
 	/* Copies user buffer and fills with zeros. */
