@@ -609,7 +609,8 @@ static int vfio_platform_mmap_mmio(struct vfio_platform_region region,
 	req_len = vma->vm_end - vma->vm_start;
 	req_start = vma_file_offset(vma) & VFIO_PLATFORM_OFFSET_MASK;
 
-	if (region.size < PAGE_SIZE || req_start + req_len > region.size)
+	if (region.size < MM_PAGE_SIZE(vma->vm_mm) ||
+	    req_start + req_len > region.size)
 		return -EINVAL;
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
