@@ -1749,7 +1749,8 @@ long keyctl_restrict_keyring(key_serial_t id, const char __user *_type,
 		if (ret < 0)
 			goto error;
 
-		restriction = strndup_user(_restriction, PAGE_SIZE);
+		restriction = strndup_user(_restriction,
+					   MM_PAGE_SIZE(current->mm));
 		if (IS_ERR(restriction)) {
 			ret = PTR_ERR(restriction);
 			goto error;
