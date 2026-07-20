@@ -1332,8 +1332,14 @@ out_free_interp:
 		 * If we didn't move the brk to ELF_ET_DYN_BASE (above),
 		 * leave a gap between .bss and brk.
 		 */
-		if (!brk_moved)
-			mm->brk = mm->start_brk = mm->brk + PAGE_SIZE;
+		if (!brk_moved) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			mm->brk = mm->start_brk =
+				mm->brk + MM_PAGE_SIZE(mm);
+#else
+			mm->brk = mm->start_brk = mm->brk + __PAGE_SIZE;
+#endif
+		}
 
 		mm->brk = mm->start_brk = arch_randomize_brk(mm);
 		brk_moved = true;
