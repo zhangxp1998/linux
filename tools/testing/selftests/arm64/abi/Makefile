@@ -2,8 +2,8 @@
 # Copyright (C) 2021 ARM Limited
 
 TEST_GEN_PROGS := hwcap ptrace syscall-abi tpidr2
-AARCH32_TESTS := aarch32-mmap2-ppps aarch32-task-size-ppps \
-		 aarch32-vdso-pages-ppps
+AARCH32_TESTS := aarch32_mmap2_ppps aarch32_task_size_ppps \
+		 aarch32_shm_rnd_ppps aarch32_vdso_pages_ppps
 
 ifneq ($(LLVM),)
 TEST_GEN_PROGS += $(AARCH32_TESTS)
