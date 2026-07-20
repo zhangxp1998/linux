@@ -1974,7 +1974,7 @@ static inline unsigned int folio_unmap_pte_batch(struct folio *folio,
 
 	/* We may only batch within a single VMA and a single page table. */
 	end_addr = pmd_addr_end(addr, vma->vm_end);
-	max_nr = (end_addr - addr) >> PAGE_SHIFT;
+	max_nr = (end_addr - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
 
 	/* We only support lazyfree or file folios batching for now ... */
 	if (folio_test_anon(folio) && folio_test_swapbacked(folio))
