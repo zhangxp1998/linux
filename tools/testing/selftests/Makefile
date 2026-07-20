@@ -34,6 +34,7 @@ TARGETS += filesystems
 TARGETS += filesystems/binderfs
 TARGETS += filesystems/epoll
 TARGETS += filesystems/fat
+TARGETS += filesystems/exfat
 TARGETS += filesystems/overlayfs
 TARGETS += filesystems/statmount
 TARGETS += firmware
