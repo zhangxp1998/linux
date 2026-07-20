@@ -17,6 +17,7 @@
 #endif
 
 #define USER_PAGE_SIZE 4096UL
+#define SMALL_REGION_OFFSET 0x10000000000ULL
 
 static int verify_mapping(const unsigned char *mapping)
 {
@@ -34,13 +35,14 @@ static int verify_mapping(const unsigned char *mapping)
 static int run_test(void)
 {
 	unsigned char *second_mapping;
+	unsigned char *small_mapping;
 	unsigned char *mapping;
 	int status;
 	int fd;
 	pid_t pid;
 
 	ksft_print_header();
-	ksft_set_plan(5);
+	ksft_set_plan(6);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -71,6 +73,13 @@ static int run_test(void)
 			 "map the requested process-page MMIO offset\n");
 	if (second_mapping != MAP_FAILED)
 		munmap(second_mapping, USER_PAGE_SIZE);
+	small_mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			     MAP_SHARED, fd, SMALL_REGION_OFFSET);
+	ksft_test_result(small_mapping != MAP_FAILED &&
+			 small_mapping[0] == 0x11,
+			 "map a single-process-page MMIO region\n");
+	if (small_mapping != MAP_FAILED)
+		munmap(small_mapping, USER_PAGE_SIZE);
 
 	munmap(mapping, USER_PAGE_SIZE);
 	close(fd);
