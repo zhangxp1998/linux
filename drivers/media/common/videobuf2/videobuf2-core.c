@@ -2525,6 +2525,11 @@ int vb2_mmap(struct vb2_queue *q, struct vm_area_struct *vma)
 	ret = __find_plane_by_offset(q, offset, &vb, &plane);
 	if (ret)
 		goto unlock;
+	if (offset != vb->planes[plane].m.offset) {
+		dprintk(q, 1, "invalid offset cookie\n");
+		ret = -EINVAL;
+		goto unlock;
+	}
 
 	/*
 	 * MMAP requires process-page-aligned buffers. The backing allocation is

@@ -83,9 +83,7 @@ static int run_test(void)
 	ppps_require_compat();
 	ksft_print_header();
 	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE,
-			 "process uses 4K pages\n");
-	fd = open("/dev/vb2_mmap_ppps", O_RDWR | O_CLOEXEC);
+	fd = ppps_open_fixture_or_skip("/dev/vb2_mmap_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the videobuf2 mmap test device\n");
 
 	mapping = mmap(NULL, VALID_MAP_SIZE, PROT_READ, MAP_SHARED, fd, 0);
@@ -93,6 +91,16 @@ static int run_test(void)
 			 "map the 6K plane rounded to two process pages\n");
 	if (mapping != MAP_FAILED)
 		munmap(mapping, VALID_MAP_SIZE);
+
+	errno = 0;
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
+		       PROCESS_PAGE_SIZE);
+	saved_errno = errno;
+	ksft_test_result(mapping == MAP_FAILED && saved_errno == EINVAL,
+			 "reject a cookie selecting a nonexistent plane (errno=%d)\n",
+			 saved_errno);
+	if (mapping != MAP_FAILED)
+		munmap(mapping, PROCESS_PAGE_SIZE);
 
 	errno = 0;
 	mapping = mmap(NULL, OVERSIZED_MAP_SIZE, PROT_READ, MAP_SHARED, fd, 0);
