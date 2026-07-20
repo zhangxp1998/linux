@@ -311,6 +311,7 @@ CATEGORY="mmap" run_test ./test_vb2_mmap_ppps.sh
 CATEGORY="mmap" run_test ./test_vb2_userptr_ppps.sh
 CATEGORY="mmap" run_test ./mmap_hint_ppps
 CATEGORY="mmap" run_test ./brk_aslr_ppps
+CATEGORY="mmap" run_test ./mmap_aslr_ppps
 CATEGORY="mmap" run_test ./smaps_page_size_ppps
 CATEGORY="mmap" run_test ./exec_stack_random_ppps
 CATEGORY="mmap" run_test ./stack_aslr_ppps
