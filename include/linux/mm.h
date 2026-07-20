@@ -1998,11 +1998,20 @@ static inline bool folio_has_pincount(const struct folio *folio)
 	return folio_order(folio) > 1;
 }
 
-/* Byte offset within the native page for the process page at @addr. */
+/*
+ * vma_page_slice_offset - byte offset, within the native @page that GUP
+ * returned for @addr, of the process page that maps @addr.
+ *
+ * A packed anonymous folio backs four consecutive process pages, so its slice
+ * follows the virtual address.  Every other mapping (file slices, singleton
+ * anonymous folios) follows the VMA slice, which is 0 for anonymous VMAs.
+ */
 static inline unsigned long vma_page_slice_offset(struct vm_area_struct *vma,
 						  struct page *page,
 						  unsigned long addr)
 {
+	if (folio_test_ppps_packed_anon(page_folio(page)))
+		return addr & ((PAGE_SIZE - 1) & PAGE_MASK_COMPAT);
 	return (unsigned long)vma_address_to_slice(vma, addr) <<
 		PAGE_SHIFT_COMPAT;
 }
@@ -2796,6 +2805,11 @@ extern int mprotect_fixup(struct vma_iterator *vmi, struct mmu_gather *tlb,
  */
 int get_user_pages_fast_only(unsigned long start, int nr_pages,
 			     unsigned int gup_flags, struct page **pages);
+
+bool get_user_page_fast_only_with_offset(unsigned long addr,
+					 unsigned int gup_flags,
+					 struct page **pagep,
+					 unsigned long *page_offset);
 
 static inline bool get_user_page_fast_only(unsigned long addr,
 			unsigned int gup_flags, struct page **pagep)
