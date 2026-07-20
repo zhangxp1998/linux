@@ -599,20 +599,33 @@ EXPORT_SYMBOL_GPL(vfio_platform_write);
 static int vfio_platform_mmap_mmio(struct vfio_platform_region region,
 				   struct vm_area_struct *vma)
 {
-	u64 req_len, pgoff, req_start;
+	phys_addr_t phys_addr;
+	u64 req_len, req_start;
+	unsigned long pfn;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	unsigned int slice;
+#endif
 
 	req_len = vma->vm_end - vma->vm_start;
-	pgoff = vma->vm_pgoff &
-		((1U << (VFIO_PLATFORM_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
-	req_start = pgoff << PAGE_SHIFT;
+	req_start = vma_file_offset(vma) & VFIO_PLATFORM_OFFSET_MASK;
 
 	if (region.size < PAGE_SIZE || req_start + req_len > region.size)
 		return -EINVAL;
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	vma->vm_pgoff = (region.addr >> PAGE_SHIFT) + pgoff;
+	phys_addr = region.addr + req_start;
+	pfn = PFN_DOWN(phys_addr);
+	vma->vm_pgoff = pfn;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm)) {
+		slice = (phys_addr & ~PAGE_MASK) >> MM_PAGE_SHIFT(vma->vm_mm);
+		vma_set_slice_off(vma, slice);
+		return remap_pfn_range_slice(vma, vma->vm_start, pfn, slice,
+					     req_len, vma->vm_page_prot);
+	}
+#endif
 
-	return remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
+	return remap_pfn_range(vma, vma->vm_start, pfn,
 			       req_len, vma->vm_page_prot);
 }
 
@@ -620,9 +633,10 @@ int vfio_platform_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 {
 	struct vfio_platform_device *vdev =
 		container_of(core_vdev, struct vfio_platform_device, vdev);
+	u64 offset = vma_file_offset(vma);
 	unsigned int index;
 
-	index = vma->vm_pgoff >> (VFIO_PLATFORM_OFFSET_SHIFT - PAGE_SHIFT);
+	index = VFIO_PLATFORM_OFFSET_TO_INDEX(offset);
 
 	if (vma->vm_end < vma->vm_start)
 		return -EINVAL;
