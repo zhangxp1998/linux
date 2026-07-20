@@ -30,12 +30,12 @@ static unsigned long alloc_gcs(unsigned long addr, unsigned long size)
 static unsigned long gcs_size(unsigned long size)
 {
 	if (size)
-		return PAGE_ALIGN(size);
+		return MM_PAGE_ALIGN(size);
 
-	/* Allocate RLIMIT_STACK/2 with limits of PAGE_SIZE..2G */
-	size = PAGE_ALIGN(min_t(unsigned long long,
-				rlimit(RLIMIT_STACK) / 2, SZ_2G));
-	return max(PAGE_SIZE, size);
+	/* Allocate RLIMIT_STACK/2 with limits of one process page..2G */
+	size = min_t(unsigned long long, rlimit(RLIMIT_STACK) / 2, SZ_2G);
+	size = MM_PAGE_ALIGN(size);
+	return max(MM_PAGE_SIZE(), size);
 }
 
 unsigned long gcs_alloc_thread_stack(struct task_struct *tsk,
@@ -82,7 +82,7 @@ SYSCALL_DEFINE3(map_shadow_stack, unsigned long, addr, unsigned long, size, unsi
 	if (flags & ~(SHADOW_STACK_SET_TOKEN | SHADOW_STACK_SET_MARKER))
 		return -EINVAL;
 
-	if (!PAGE_ALIGNED(addr))
+	if (!MM_PAGE_ALIGNED(addr))
 		return -EINVAL;
 
 	if (size == 8 || !IS_ALIGNED(size, 8))
@@ -93,7 +93,7 @@ SYSCALL_DEFINE3(map_shadow_stack, unsigned long, addr, unsigned long, size, unsi
 	 * to the wrong location. Not catastrophic, but just return the right
 	 * error code and block it.
 	 */
-	alloc_size = PAGE_ALIGN(size);
+	alloc_size = MM_PAGE_ALIGN(size);
 	if (alloc_size < size)
 		return -EOVERFLOW;
 
