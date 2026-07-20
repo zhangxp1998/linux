@@ -7,10 +7,6 @@
 #define _GNU_SOURCE
 
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 
@@ -25,6 +21,10 @@ struct victim_stats {
 	long anon_rss;
 	long file_rss;
 	long shmem_rss;
+};
+
+struct victim_ready {
+	uintptr_t mapping;
 };
 
 static int write_text(const char *path, const char *text)
@@ -49,27 +49,6 @@ static int clear_trace(void)
 		return -1;
 	close(fd);
 	return 0;
-}
-
-static long read_status_kb(pid_t pid, const char *name)
-{
-	char path[64];
-	char line[256];
-	FILE *file;
-	long value = -1;
-
-	snprintf(path, sizeof(path), "/proc/%d/status", pid);
-	file = fopen(path, "re");
-	if (!file)
-		return -1;
-	while (fgets(line, sizeof(line), file)) {
-		if (!strncmp(line, name, strlen(name)) &&
-		    sscanf(line, "%*[^:]: %ld kB", &value) == 1)
-			break;
-		value = -1;
-	}
-	fclose(file);
-	return value;
 }
 
 static char *read_trace(void)
@@ -142,6 +121,7 @@ static bool find_victim_stats(const char *trace, pid_t target,
 
 static void run_victim(int ready_fd)
 {
+	struct victim_ready ready;
 	unsigned char *mapping;
 	size_t offset;
 
@@ -153,7 +133,8 @@ static void run_victim(int ready_fd)
 		_exit(3);
 	for (offset = 0; offset < CHILD_MAP_SIZE; offset += PROCESS_PAGE_SIZE)
 		mapping[offset] = (unsigned char)offset;
-	if (write(ready_fd, "R", 1) != 1)
+	ready.mapping = (uintptr_t)mapping;
+	if (write(ready_fd, &ready, sizeof(ready)) != sizeof(ready))
 		_exit(4);
 	close(ready_fd);
 	for (;;)
@@ -171,14 +152,17 @@ static bool within_tolerance(long actual, long expected)
 
 static int run_test(void)
 {
+	struct victim_ready ready = { 0 };
 	struct victim_stats trace_stats = { 0 };
+	long expected_anon_physical;
 	long expected_anon, expected_file, expected_shmem, expected_total;
-	long expected_rss, traced_rss;
+	unsigned long kernel_page_size;
 	char *trace = NULL;
-	char ready = 0;
+	bool anon_matches;
 	bool child_ready;
 	bool trace_ready;
 	bool found = false;
+	bool shared_matches;
 	int pipefd[2];
 	int status = 0;
 	pid_t child;
@@ -202,14 +186,18 @@ static int run_test(void)
 		run_victim(pipefd[1]);
 	}
 	close(pipefd[1]);
-	child_ready = read(pipefd[0], &ready, 1) == 1 && ready == 'R';
+	child_ready = read(pipefd[0], &ready, sizeof(ready)) == sizeof(ready);
 	close(pipefd[0]);
-	expected_total = read_status_kb(child, "VmSize");
-	expected_anon = read_status_kb(child, "RssAnon");
-	expected_file = read_status_kb(child, "RssFile");
-	expected_shmem = read_status_kb(child, "RssShmem");
-	child_ready = child_ready && expected_total > 0 && expected_anon > 0 &&
-		expected_file >= 0 && expected_shmem >= 0;
+	if (!ppps_smaps_sum(child, ready.mapping, 1, "KernelPageSize",
+			    &kernel_page_size))
+		kernel_page_size = 0;
+	expected_total = ppps_status_kb(child, "VmSize");
+	expected_anon = ppps_status_kb(child, "RssAnon");
+	expected_file = ppps_status_kb(child, "RssFile");
+	expected_shmem = ppps_status_kb(child, "RssShmem");
+	child_ready = child_ready && kernel_page_size >= PROCESS_PAGE_SIZE &&
+		!(kernel_page_size % PROCESS_PAGE_SIZE) && expected_total > 0 &&
+		expected_anon > 0 && expected_file >= 0 && expected_shmem >= 0;
 	ksft_test_result(child_ready, "prepare a stable OOM victim\n");
 
 	errno = 0;
@@ -223,20 +211,24 @@ static int run_test(void)
 	if (trace)
 		found = find_victim_stats(trace, child, &trace_stats);
 	ksft_test_result(found, "capture the OOM mark_victim record\n");
-	ksft_print_msg("status total=%ld anon=%ld file=%ld shmem=%ld kB; "
+	expected_anon_physical = expected_anon * kernel_page_size /
+		PROCESS_PAGE_SIZE;
+	ksft_print_msg("native_page=%lu; status total=%ld anon=%ld file=%ld shmem=%ld kB; "
 		       "trace total=%ld anon=%ld file=%ld shmem=%ld kB\n",
-		       expected_total, expected_anon, expected_file, expected_shmem,
+		       kernel_page_size, expected_total, expected_anon,
+		       expected_file, expected_shmem,
 		       trace_stats.total_vm, trace_stats.anon_rss,
 		       trace_stats.file_rss, trace_stats.shmem_rss);
 	ksft_test_result(found && trace_stats.total_vm == expected_total,
 			 "report OOM victim virtual memory in process-page bytes\n");
-	expected_rss = expected_anon + expected_file + expected_shmem;
-	traced_rss = trace_stats.anon_rss + trace_stats.file_rss +
-		trace_stats.shmem_rss;
-	ksft_test_result(found && within_tolerance(traced_rss, expected_rss),
-			 "report OOM victim RSS in process-page bytes\n");
-	ksft_test_result(trace_stats.anon_rss >= (long)(CHILD_MAP_SIZE / 1024),
-			 "trace the victim's resident anonymous allocation\n");
+	shared_matches = within_tolerance(trace_stats.file_rss, expected_file) &&
+		within_tolerance(trace_stats.shmem_rss, expected_shmem);
+	ksft_test_result(found && shared_matches,
+			 "report file and shmem RSS in process-page bytes\n");
+	anon_matches = within_tolerance(trace_stats.anon_rss,
+					expected_anon_physical);
+	ksft_test_result(found && anon_matches,
+			 "report anonymous RSS in native physical bytes\n");
 
 	free(trace);
 	write_text(TRACE_ENABLE, "0");
