@@ -9,7 +9,9 @@
 #include <linux/err.h>
 #include <linux/key.h>
 #include <linux/keyctl.h>
+#include <linux/mm.h>
 #include <linux/parser.h>
+#include <linux/sched.h>
 #include <linux/uaccess.h>
 #include <keys/user-type.h>
 #include "internal.h"
@@ -86,7 +88,7 @@ static int keyctl_pkey_params_get(key_serial_t id,
 	memset(params, 0, sizeof(*params));
 	params->encoding = "raw";
 
-	p = strndup_user(_info, PAGE_SIZE);
+	p = strndup_user(_info, MM_PAGE_SIZE(current->mm));
 	if (IS_ERR(p))
 		return PTR_ERR(p);
 	params->info = p;
