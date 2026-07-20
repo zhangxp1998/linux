@@ -8,12 +8,17 @@
 
 #define TEST_BYTES SZ_16K
 #define TEST_SLICE_BYTES SZ_4K
+#define NO_PHYSICAL_ADDRESS (~0UL)
 
 static struct device *test_parent;
 static void *test_buffer;
 static void *test_map1;
 static void *test_map2;
+static unsigned long physical_addr = NO_PHYSICAL_ADDRESS;
 static struct uio_info test_info;
+
+module_param(physical_addr, ulong, 0444);
+MODULE_PARM_DESC(physical_addr, "optional physical address for access testing");
 
 static int __init test_init(void)
 {
@@ -34,7 +39,6 @@ static int __init test_init(void)
 		ret = -ENOMEM;
 		goto free_map1;
 	}
-
 	for (i = 0; i < ARRAY_SIZE(values); i++)
 		*((u8 *)test_buffer + i * TEST_SLICE_BYTES) = values[i];
 	*((u8 *)test_map1) = 0x5a;
@@ -61,6 +65,13 @@ static int __init test_init(void)
 	test_info.mem[2].addr = (uintptr_t)test_map2;
 	test_info.mem[2].size = PAGE_SIZE;
 	test_info.mem[2].memtype = UIO_MEM_VIRTUAL;
+
+	if (physical_addr != NO_PHYSICAL_ADDRESS) {
+		test_info.mem[3].name = "physical";
+		test_info.mem[3].addr = physical_addr;
+		test_info.mem[3].size = TEST_BYTES;
+		test_info.mem[3].memtype = UIO_MEM_PHYS;
+	}
 
 	ret = uio_register_device(test_parent, &test_info);
 	if (ret)
