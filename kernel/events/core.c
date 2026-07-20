@@ -12513,7 +12513,7 @@ static int perf_copy_attr(struct perf_event_attr __user *uattr,
 	/* ABI compatibility quirk: */
 	if (!size)
 		size = PERF_ATTR_SIZE_VER0;
-	if (size < PERF_ATTR_SIZE_VER0 || size > PAGE_SIZE)
+	if (size < PERF_ATTR_SIZE_VER0 || size > MM_PAGE_SIZE(current->mm))
 		goto err_size;
 
 	ret = copy_struct_from_user(attr, sizeof(*attr), uattr, size);
