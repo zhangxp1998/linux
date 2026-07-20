@@ -86,6 +86,30 @@ out:
 	return success;
 }
 
+static bool rounded_attach_roundtrip(void)
+{
+	struct target_area area = { .base = MAP_FAILED };
+	unsigned int *mapping = (void *)-1;
+	bool success = false;
+	int shmid;
+
+	shmid = create_segment();
+	if (shmid < 0 || !reserve_subpage_target(&area))
+		goto out;
+	mapping = shmat(shmid, area.target, SHM_RND | SHM_REMAP);
+	if (mapping == (void *)-1)
+		goto out;
+	*mapping = TEST_VALUE;
+	success = mapping == area.target && *mapping == TEST_VALUE;
+out:
+	if (mapping != (void *)-1 && shmdt(mapping))
+		success = false;
+	if (shmid >= 0)
+		shmctl(shmid, IPC_RMID, NULL);
+	release_target(&area);
+	return success;
+}
+
 static bool moved_attach_roundtrip(bool *detach_ok)
 {
 	struct target_area area = { .base = MAP_FAILED };
@@ -127,6 +151,7 @@ static int run_test(void)
 	bool moved_detach;
 	bool fixed;
 	bool moved;
+	bool rounded;
 	int probe;
 
 	ksft_print_header();
@@ -137,7 +162,7 @@ static int run_test(void)
 		ksft_exit_fail_msg("SysV shm probe failed: %s\n",
 				   strerror(errno));
 	shmctl(probe, IPC_RMID, NULL);
-	ksft_set_plan(5);
+	ksft_set_plan(6);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	fixed = fixed_attach_roundtrip(&fixed_detach);
@@ -145,6 +170,9 @@ static int run_test(void)
 			 "attach SysV shm at a 4K-aligned subpage address\n");
 	ksft_test_result(fixed && fixed_detach,
 			 "detach the fixed subpage SysV shm mapping\n");
+	rounded = rounded_attach_roundtrip();
+	ksft_test_result(rounded,
+			 "round SysV shm addresses at process-page granularity\n");
 	moved = moved_attach_roundtrip(&moved_detach);
 	ksft_test_result(moved,
 			 "mremap SysV shm to a 4K-aligned subpage address\n");
