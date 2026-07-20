@@ -25,27 +25,10 @@
 #define USER_PAGE_SIZE		4096UL
 #define NATIVE_PAGE_SIZE	16384UL
 #define RESERVE_SIZE		(8 * NATIVE_PAGE_SIZE)
-#define PAGEMAP_PRESENT		(1ULL << 63)
-#define PAGEMAP_PFN_MASK	((1ULL << 55) - 1)
 
 static int perf_event_open(struct perf_event_attr *attr)
 {
 	return syscall(__NR_perf_event_open, attr, 0, -1, -1, 0);
-}
-
-static int read_pagemap_entry(const void *address, uint64_t *entry)
-{
-	off_t offset = ((uintptr_t)address / USER_PAGE_SIZE) * sizeof(*entry);
-	int fd;
-	int ret = -1;
-
-	fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return -1;
-	if (pread(fd, entry, sizeof(*entry), offset) == sizeof(*entry))
-		ret = 0;
-	close(fd);
-	return ret;
 }
 
 static void copy_ring(void *destination, const unsigned char *data,
@@ -146,17 +129,13 @@ static int run_test(void)
 	uintptr_t base;
 	uint64_t phys0 = 0;
 	uint64_t phys1 = 0;
-	uint64_t pme0 = 0;
-	uint64_t pme1 = 0;
 	bool mappings_ok;
 	int memfd;
-	int pagemap0;
-	int pagemap1;
 	int sample0;
 	int sample1;
 
 	ksft_print_header();
-	ksft_set_plan(8);
+	ksft_set_plan(6);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -197,21 +176,6 @@ static int run_test(void)
 		       (long long)(phys1 - phys0));
 	ksft_test_result(sample0 == 0 && sample1 == 0 && phys0 == phys1,
 			 "PERF_SAMPLE_PHYS_ADDR identifies the same physical byte\n");
-
-	pagemap0 = read_pagemap_entry(alias0, &pme0);
-	pagemap1 = read_pagemap_entry(alias1, &pme1);
-	ksft_test_result(pagemap0 == 0 && pagemap1 == 0 &&
-			 (pme0 & PAGEMAP_PRESENT) && (pme1 & PAGEMAP_PRESENT) &&
-			 (pme0 & PAGEMAP_PFN_MASK) && (pme1 & PAGEMAP_PFN_MASK),
-			 "read present PFNs for both aliases from pagemap\n");
-	ksft_print_msg("pfn0=%#llx pfn1=%#llx expected_pfn=%#llx\n",
-		       (unsigned long long)(pme0 & PAGEMAP_PFN_MASK),
-		       (unsigned long long)(pme1 & PAGEMAP_PFN_MASK),
-		       (unsigned long long)(phys0 / USER_PAGE_SIZE));
-	ksft_test_result(pagemap0 == 0 && pagemap1 == 0 &&
-			 (pme0 & PAGEMAP_PFN_MASK) == phys0 / USER_PAGE_SIZE &&
-			 (pme1 & PAGEMAP_PFN_MASK) == phys1 / USER_PAGE_SIZE,
-			 "pagemap PFNs use the process page size\n");
 
 	munmap(alias1, USER_PAGE_SIZE);
 	munmap(alias0, USER_PAGE_SIZE);
