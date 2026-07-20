@@ -494,7 +494,7 @@ static unsigned long mmap_base(struct mm_struct *mm, unsigned long rnd,
 	return (mmap_upper_limit(rlim_stack) - rnd) & MM_PAGE_MASK(mm);
 #else
 	unsigned long gap = rlim_stack->rlim_cur;
-	unsigned long pad = stack_guard_gap;
+	unsigned long pad = mm_stack_guard_gap(mm);
 
 	/* Account for stack randomization if necessary */
 	if (current->flags & PF_RANDOMIZE)
