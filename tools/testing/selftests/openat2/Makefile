@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 CFLAGS += -Wall -O2 -g -fsanitize=address -fsanitize=undefined
-TEST_GEN_PROGS := openat2_test resolve_test rename_attack_test
+TEST_GEN_PROGS := openat2_test resolve_test rename_attack_test \
+	openat2_size_ppps
 
 # gcc requires -static-libasan in order to ensure that Address Sanitizer's
 # library is the first one loaded. However, clang already statically links the
