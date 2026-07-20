@@ -21,14 +21,17 @@
 
 #define USER_PAGE_SIZE	4096UL
 #define NATIVE_PAGE_SIZE	16384UL
+#define XOL_RESERVE_SIZE	(2 * NATIVE_PAGE_SIZE)
 #define TARGET_OFFSET	(2 * USER_PAGE_SIZE)
 #define REF_CTR_OFFSET	(3 * USER_PAGE_SIZE)
 #define TARGET_MAP_ADDR	((void *)0x20001000UL)
 #define REF_MAP_ADDR	((void *)0x30001000UL)
+#define XOL_HINT_39	((void *)((1UL << 39) - XOL_RESERVE_SIZE))
+#define XOL_HINT_47	((void *)((1UL << 47) - XOL_RESERVE_SIZE))
 #define TARGET_PATH	"/tmp/uprobe-ppps-target"
 #define TRACE_ROOT	"/sys/kernel/tracing"
 
-typedef void (*target_fn_t)(void);
+typedef unsigned long (*target_fn_t)(unsigned long);
 
 static bool write_text(const char *path, const char *text, int flags)
 {
@@ -48,7 +51,7 @@ static void *map_target(void **ref_mapping)
 {
 #ifdef __aarch64__
 	const uint32_t instructions[] = {
-		0xd503201f, /* nop */
+		0x91000400, /* add x0, x0, #1 */
 		0xd65f03c0, /* ret */
 	};
 	void *mapping = MAP_FAILED;
@@ -108,13 +111,16 @@ static int run_test(void)
 	target_fn_t target;
 	void *ref_mapping;
 	void *mapping;
+	void *xol_hint_39;
+	void *xol_hint_47;
+	bool hint_blocked;
 	bool registered;
 	bool unregistered;
 	bool observed;
 	unsigned int i;
 
 	ksft_print_header();
-	ksft_set_plan(9);
+	ksft_set_plan(10);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 
@@ -131,8 +137,22 @@ static int run_test(void)
 		       target, TARGET_OFFSET / USER_PAGE_SIZE);
 
 	for (i = 0; i < 1024; i++)
-		target();
+		target(i);
 	ksft_test_result(true, "warm the target instruction and translation\n");
+
+	xol_hint_39 = mmap(XOL_HINT_39, XOL_RESERVE_SIZE, PROT_NONE,
+			   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+			   -1, 0);
+	xol_hint_47 = mmap(XOL_HINT_47, XOL_RESERVE_SIZE, PROT_NONE,
+			   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+			   -1, 0);
+	hint_blocked = xol_hint_39 == XOL_HINT_39 ||
+		xol_hint_47 == XOL_HINT_47;
+	ksft_test_result(hint_blocked,
+			 "occupy the architecture's preferred XOL address\n");
+	if (!hint_blocked)
+		ksft_exit_fail_msg("failed to occupy either XOL hint: %s\n",
+				   strerror(errno));
 
 	write_text(TRACE_ROOT "/uprobe_events", delete_command, O_APPEND);
 	write_text(TRACE_ROOT "/trace", "", O_TRUNC);
@@ -147,8 +167,8 @@ static int run_test(void)
 	ksft_test_result(*ref_ctr == 1,
 			 "increment the sliced userspace reference counter\n");
 
-	target();
-	ksft_test_result(true, "execute and return from the probed function\n");
+	ksft_test_result(target(41) == 42,
+			 "execute the probed instruction from the fallback XOL area\n");
 	write_text(TRACE_ROOT "/events/ppps/uprobe_ppps/enable", "0", 0);
 	observed = trace_has_event();
 	ksft_test_result(observed, "record an event from the sliced uprobe\n");
@@ -160,6 +180,10 @@ static int run_test(void)
 
 	munmap(mapping, NATIVE_PAGE_SIZE);
 	munmap(ref_mapping, NATIVE_PAGE_SIZE);
+	if (xol_hint_39 != MAP_FAILED)
+		munmap(xol_hint_39, XOL_RESERVE_SIZE);
+	if (xol_hint_47 != MAP_FAILED)
+		munmap(xol_hint_47, XOL_RESERVE_SIZE);
 	unlink(TARGET_PATH);
 	ksft_finished();
 #else
