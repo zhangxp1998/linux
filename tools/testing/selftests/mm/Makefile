@@ -173,6 +173,7 @@ TEST_GEN_FILES += mlock2-tests
 TEST_GEN_FILES += mrelease_test
 TEST_GEN_FILES += mremap_dontunmap
 TEST_GEN_FILES += mremap_test
+TEST_GEN_FILES += mremap_hint_ppps
 TEST_GEN_FILES += mremap_pgoff_ppps
 TEST_GEN_FILES += mremap_rlimit_ppps
 TEST_GEN_FILES += mremap_commit_ppps
