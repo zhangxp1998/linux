@@ -128,6 +128,7 @@ TEST_PROGS_EXTENDED := \
 
 TEST_GEN_FILES := \
 	bind_bhash \
+	bpf_sockopt_size_ppps \
 	cmsg_sender \
 	fin_ack_lat \
 	gro \
