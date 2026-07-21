@@ -428,7 +428,7 @@ static int ioctl_file_dedupe_range(struct file *file,
 	}
 
 	size = offsetof(struct file_dedupe_range, info[count]);
-	if (size > PAGE_SIZE) {
+	if (size > MM_PAGE_SIZE(current->mm)) {
 		ret = -ENOMEM;
 		goto out;
 	}
