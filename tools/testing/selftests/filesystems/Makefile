@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 
 CFLAGS += $(KHDR_INCLUDES)
-TEST_GEN_PROGS := devpts_pts fsopen_name_size_ppps
+TEST_GEN_PROGS := devpts_pts fsopen_name_size_ppps kernfs_write_size_ppps
 TEST_GEN_PROGS_EXTENDED := dnotify_test
 
 include ../lib.mk
