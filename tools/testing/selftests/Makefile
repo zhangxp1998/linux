@@ -93,6 +93,7 @@ TARGETS += rseq
 TARGETS += rtc
 TARGETS += rust
 TARGETS += sched_ext
+TARGETS += scsi
 TARGETS += seccomp
 TARGETS += sgx
 TARGETS += sigaltstack

@@ -490,7 +490,7 @@ out_put_request:
  *      performing SCSI commands on a device.
  *   -  The SCSI command length is determined by examining the 1st byte
  *      of the given command. There is no way to override this.
- *   -  Data transfers are limited to PAGE_SIZE
+ *   -  Data transfers are limited to the process page size
  *   -  The length (x + y) must be at least OMAX_SB_LEN bytes long to
  *      accommodate the sense buffer when an error occurs.
  *      The sense buffer is truncated to OMAX_SB_LEN (16) bytes so that
@@ -520,7 +520,8 @@ static int sg_scsi_ioctl(struct request_queue *q, bool open_for_write,
 		return -EFAULT;
 	if (get_user(out_len, &sic->outlen))
 		return -EFAULT;
-	if (in_len > PAGE_SIZE || out_len > PAGE_SIZE)
+	if (in_len > MM_PAGE_SIZE(current->mm) ||
+	    out_len > MM_PAGE_SIZE(current->mm))
 		return -EINVAL;
 	if (get_user(opcode, &sic->data[0]))
 		return -EFAULT;
