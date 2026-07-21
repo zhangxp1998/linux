@@ -2241,7 +2241,7 @@ event_filter_write(struct file *filp, const char __user *ubuf, size_t cnt,
 	char *buf;
 	int err = -ENODEV;
 
-	if (cnt >= PAGE_SIZE)
+	if (cnt >= MM_PAGE_SIZE(current->mm))
 		return -EINVAL;
 
 	buf = memdup_user_nul(ubuf, cnt);
@@ -2390,7 +2390,7 @@ subsystem_filter_write(struct file *filp, const char __user *ubuf, size_t cnt,
 	char *buf;
 	int err;
 
-	if (cnt >= PAGE_SIZE)
+	if (cnt >= MM_PAGE_SIZE(current->mm))
 		return -EINVAL;
 
 	buf = memdup_user_nul(ubuf, cnt);
