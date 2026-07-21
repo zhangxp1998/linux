@@ -9,6 +9,7 @@ CFLAGS += -O2 -Wall -g -I./ $(KHDR_INCLUDES) -Wl,-rpath=./ \
 LDLIBS += -lpthread
 
 TEST_GEN_FILES := cs_prctl_test
+TEST_GEN_PROGS := sched_attr_size_ppps
 TEST_PROGS := cs_prctl_test
 
 include ../lib.mk
