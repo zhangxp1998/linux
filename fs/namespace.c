@@ -5109,7 +5109,7 @@ static int wants_mount_setattr(struct mount_attr __user *uattr, size_t usize,
 
 	BUILD_BUG_ON(sizeof(struct mount_attr) != MOUNT_ATTR_SIZE_VER0);
 
-	if (unlikely(usize > PAGE_SIZE))
+	if (unlikely(usize > MM_PAGE_SIZE(current->mm)))
 		return -E2BIG;
 	if (unlikely(usize < MOUNT_ATTR_SIZE_VER0))
 		return -EINVAL;
