@@ -142,7 +142,7 @@ static ssize_t sel_write_enforce(struct file *file, const char __user *buf,
 	int scan_value;
 	bool old_value, new_value;
 
-	if (count >= PAGE_SIZE)
+	if (count >= MM_PAGE_SIZE(current->mm))
 		return -ENOMEM;
 
 	/* No partial writes. */
@@ -727,7 +727,7 @@ static ssize_t sel_write_validatetrans(struct file *file,
 		goto out;
 
 	rc = -ENOMEM;
-	if (count >= PAGE_SIZE)
+	if (count >= MM_PAGE_SIZE(current->mm))
 		goto out;
 
 	/* No partial writes. */
@@ -1231,7 +1231,7 @@ static ssize_t sel_write_bool(struct file *filep, const char __user *buf,
 	unsigned index = file_inode(filep)->i_ino & SEL_INO_MASK;
 	const char *name = filep->f_path.dentry->d_name.name;
 
-	if (count >= PAGE_SIZE)
+	if (count >= MM_PAGE_SIZE(current->mm))
 		return -ENOMEM;
 
 	/* No partial writes. */
@@ -1286,7 +1286,7 @@ static ssize_t sel_commit_bools_write(struct file *filep,
 	ssize_t length;
 	int new_value;
 
-	if (count >= PAGE_SIZE)
+	if (count >= MM_PAGE_SIZE(current->mm))
 		return -ENOMEM;
 
 	/* No partial writes. */
@@ -1418,7 +1418,7 @@ static ssize_t sel_write_avc_cache_threshold(struct file *file,
 	if (ret)
 		return ret;
 
-	if (count >= PAGE_SIZE)
+	if (count >= MM_PAGE_SIZE(current->mm))
 		return -ENOMEM;
 
 	/* No partial writes. */
