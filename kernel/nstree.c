@@ -432,7 +432,7 @@ static int copy_ns_id_req(const struct ns_id_req __user *req,
 	ret = get_user(usize, &req->size);
 	if (ret)
 		return -EFAULT;
-	if (unlikely(usize > PAGE_SIZE))
+	if (unlikely(usize > MM_PAGE_SIZE(current->mm)))
 		return -E2BIG;
 	if (unlikely(usize < NS_ID_REQ_SIZE_VER0))
 		return -EINVAL;
