@@ -669,7 +669,7 @@ static int do_procmap_query(struct mm_struct *mm, void __user *uarg)
 	if (copy_from_user(&usize, (void __user *)uarg, sizeof(usize)))
 		return -EFAULT;
 	/* argument struct can never be that large, reject abuse */
-	if (usize > PAGE_SIZE)
+	if (usize > MM_PAGE_SIZE(current->mm))
 		return -E2BIG;
 	/* argument struct should have at least query_flags and query_addr fields */
 	if (usize < offsetofend(struct procmap_query, query_addr))
