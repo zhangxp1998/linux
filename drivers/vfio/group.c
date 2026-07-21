@@ -12,6 +12,7 @@
 
 #include <linux/vfio.h>
 #include <linux/iommufd.h>
+#include <linux/mm.h>
 #include <linux/anon_inodes.h>
 #include "vfio.h"
 
@@ -318,7 +319,7 @@ static int vfio_group_ioctl_get_device_fd(struct vfio_group *group,
 	int fdno;
 	int ret;
 
-	buf = strndup_user(arg, PAGE_SIZE);
+	buf = strndup_user(arg, MM_PAGE_SIZE(current->mm));
 	if (IS_ERR(buf))
 		return PTR_ERR(buf);
 
