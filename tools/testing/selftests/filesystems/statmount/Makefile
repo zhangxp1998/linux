@@ -3,7 +3,8 @@
 CFLAGS += -Wall -O2 -g $(KHDR_INCLUDES) $(TOOLS_INCLUDES)
 LDLIBS += -lcap
 
-TEST_GEN_PROGS := statmount_test statmount_test_ns listmount_test
+TEST_GEN_PROGS := statmount_test statmount_test_ns listmount_test \
+	mnt_id_req_size_ppps
 
 include ../../lib.mk
 
