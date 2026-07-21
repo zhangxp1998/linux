@@ -390,7 +390,7 @@ SYSCALL_DEFINE5(file_getattr, int, dfd, const char __user *, filename,
 	if (!(at_flags & AT_SYMLINK_NOFOLLOW))
 		lookup_flags |= LOOKUP_FOLLOW;
 
-	if (usize > PAGE_SIZE)
+	if (usize > MM_PAGE_SIZE(current->mm))
 		return -E2BIG;
 
 	if (usize < FILE_ATTR_SIZE_VER0)
@@ -443,7 +443,7 @@ SYSCALL_DEFINE5(file_setattr, int, dfd, const char __user *, filename,
 	if (!(at_flags & AT_SYMLINK_NOFOLLOW))
 		lookup_flags |= LOOKUP_FOLLOW;
 
-	if (usize > PAGE_SIZE)
+	if (usize > MM_PAGE_SIZE(current->mm))
 		return -E2BIG;
 
 	if (usize < FILE_ATTR_SIZE_VER0)
