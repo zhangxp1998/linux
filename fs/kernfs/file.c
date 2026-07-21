@@ -298,10 +298,14 @@ static ssize_t kernfs_fop_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 	char *buf;
 
 	if (of->atomic_write_len) {
-		if (len > of->atomic_write_len)
+		size_t max_write_len = of->atomic_write_len;
+
+		if (max_write_len == PAGE_SIZE)
+			max_write_len = MM_PAGE_SIZE(current->mm);
+		if (len > max_write_len)
 			return -E2BIG;
 	} else {
-		len = min_t(size_t, len, PAGE_SIZE);
+		len = min_t(size_t, len, MM_PAGE_SIZE(current->mm));
 	}
 
 	buf = of->prealloc_buf;
