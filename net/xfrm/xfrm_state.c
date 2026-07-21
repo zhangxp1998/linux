@@ -27,6 +27,7 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
+#include <linux/mm.h>
 
 #include <crypto/aead.h>
 
@@ -2666,6 +2667,8 @@ EXPORT_SYMBOL_GPL(xfrm_unregister_translator);
 
 int xfrm_user_policy(struct sock *sk, int optname, sockptr_t optval, int optlen)
 {
+	size_t max_size = sockptr_is_kernel(optval) ? PAGE_SIZE :
+			  MM_PAGE_SIZE(current->mm);
 	int err;
 	u8 *data;
 	struct xfrm_mgr *km;
@@ -2678,7 +2681,7 @@ int xfrm_user_policy(struct sock *sk, int optname, sockptr_t optval, int optlen)
 		return 0;
 	}
 
-	if (optlen <= 0 || optlen > PAGE_SIZE)
+	if (optlen <= 0 || optlen > max_size)
 		return -EMSGSIZE;
 
 	data = memdup_sockptr(optval, optlen);
