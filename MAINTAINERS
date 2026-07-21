@@ -20727,6 +20727,7 @@ F:	drivers/scsi/
 F:	drivers/ufs/
 F:	include/scsi/
 F:	include/uapi/scsi/
+F:	tools/testing/selftests/scsi/
 
 SCSI TAPE DRIVER
 M:	Kai Mäkisara <Kai.Makisara@kolumbus.fi>
