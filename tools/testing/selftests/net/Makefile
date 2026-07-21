@@ -195,6 +195,7 @@ TEST_GEN_PROGS := \
 	tcp_port_share \
 	tcp_zerocopy_ppps \
 	tls \
+	xfrm_policy_size_ppps \
 	xsk_vmalloc_mmap_ppps \
 # end of TEST_GEN_PROGS
 
