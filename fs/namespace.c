@@ -21,6 +21,7 @@
 #include <linux/fs_struct.h>	/* get_fs_root et.al. */
 #include <linux/fsnotify.h>	/* fsnotify_vfsmount_delete */
 #include <linux/file.h>
+#include <linux/mm.h>
 #include <linux/uaccess.h>
 #include <linux/proc_ns.h>
 #include <linux/magic.h>
@@ -3704,22 +3705,23 @@ static void shrink_submounts(struct mount *mnt)
 static void *copy_mount_options(const void __user * data)
 {
 	char *copy;
+	size_t size = MM_PAGE_SIZE(current->mm);
 	unsigned left, offset;
 
 	if (!data)
 		return NULL;
 
-	copy = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	copy = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!copy)
 		return ERR_PTR(-ENOMEM);
 
-	left = copy_from_user(copy, data, PAGE_SIZE);
+	left = copy_from_user(copy, data, size);
 
 	/*
 	 * Not all architectures have an exact copy_from_user(). Resort to
 	 * byte at a time.
 	 */
-	offset = PAGE_SIZE - left;
+	offset = size - left;
 	while (left) {
 		char c;
 		if (get_user(c, (const char __user *)data + offset))
@@ -3729,10 +3731,11 @@ static void *copy_mount_options(const void __user * data)
 		offset++;
 	}
 
-	if (left == PAGE_SIZE) {
+	if (left == size) {
 		kfree(copy);
 		return ERR_PTR(-EFAULT);
 	}
+	copy[size - 1] = '\0';
 
 	return copy;
 }
