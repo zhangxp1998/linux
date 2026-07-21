@@ -283,7 +283,7 @@ static ssize_t event_trigger_regex_write(struct file *file,
 	if (!cnt)
 		return 0;
 
-	if (cnt >= PAGE_SIZE)
+	if (cnt >= MM_PAGE_SIZE(current->mm))
 		return -EINVAL;
 
 	buf = memdup_user_nul(ubuf, cnt);
