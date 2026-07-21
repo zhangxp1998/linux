@@ -3,7 +3,8 @@
 KDIR ?= $(if $(O),$(O),$(realpath ../../../..))
 
 CFLAGS += $(KHDR_INCLUDES)
-TEST_GEN_PROGS := devpts_pts fsopen_name_size_ppps kernfs_write_size_ppps
+TEST_GEN_PROGS := devpts_pts fsopen_name_size_ppps \
+	file_dedupe_range_size_ppps kernfs_write_size_ppps
 TEST_GEN_FILES := debugfs_str_size_ppps
 TEST_GEN_PROGS_EXTENDED := dnotify_test
 TEST_PROGS := test-debugfs-str-size-ppps.sh
