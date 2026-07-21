@@ -4824,7 +4824,7 @@ SYSCALL_DEFINE5(mount_setattr, int, dfd, const char __user *, path,
 		      AT_NO_AUTOMOUNT))
 		return -EINVAL;
 
-	if (unlikely(usize > PAGE_SIZE))
+	if (unlikely(usize > MM_PAGE_SIZE(current->mm)))
 		return -E2BIG;
 	if (unlikely(usize < MOUNT_ATTR_SIZE_VER0))
 		return -EINVAL;
