@@ -2951,7 +2951,7 @@ noinline static int copy_clone_args_from_user(struct kernel_clone_args *kargs,
 		     CLONE_ARGS_SIZE_VER2);
 	BUILD_BUG_ON(sizeof(struct clone_args) != CLONE_ARGS_SIZE_VER2);
 
-	if (unlikely(usize > PAGE_SIZE))
+	if (unlikely(usize > MM_PAGE_SIZE(current->mm)))
 		return -E2BIG;
 	if (unlikely(usize < CLONE_ARGS_SIZE_VER0))
 		return -EINVAL;
