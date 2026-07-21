@@ -2,7 +2,7 @@
 
 CFLAGS += $(KHDR_INCLUDES)
 TEST_GEN_PROGS := devpts_pts file_stressor anon_inode_test kernfs_test fclog \
-	fsopen_name_size_ppps file_attr_size_ppps
+	fsopen_name_size_ppps file_attr_size_ppps kernfs_write_size_ppps
 TEST_GEN_PROGS_EXTENDED := dnotify_test
 
 include ../lib.mk
