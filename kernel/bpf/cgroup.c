@@ -1719,7 +1719,7 @@ int __cgroup_bpf_run_filter_sysctl(struct ctl_table_header *head,
 		.write = write,
 		.ppos = ppos,
 		.cur_val = NULL,
-		.cur_len = PAGE_SIZE,
+		.cur_len = MM_PAGE_SIZE(current->mm),
 		.new_val = NULL,
 		.new_len = 0,
 		.new_updated = 0,
@@ -1739,8 +1739,10 @@ int __cgroup_bpf_run_filter_sysctl(struct ctl_table_header *head,
 		/* BPF program should be able to override new value with a
 		 * buffer bigger than provided by user.
 		 */
-		ctx.new_val = kmalloc_track_caller(PAGE_SIZE, GFP_KERNEL);
-		ctx.new_len = min_t(size_t, PAGE_SIZE, *pcount);
+		ctx.new_val = kmalloc_track_caller(MM_PAGE_SIZE(current->mm),
+						   GFP_KERNEL);
+		ctx.new_len = min_t(size_t, MM_PAGE_SIZE(current->mm),
+				    *pcount);
 		if (ctx.new_val) {
 			memcpy(ctx.new_val, *buf, ctx.new_len);
 		} else {
@@ -2160,7 +2162,7 @@ BPF_CALL_3(bpf_sysctl_set_new_value, struct bpf_sysctl_kern *, ctx,
 	if (!ctx->write || !ctx->new_val || !ctx->new_len || !buf || !buf_len)
 		return -EINVAL;
 
-	if (buf_len > PAGE_SIZE - 1)
+	if (buf_len > MM_PAGE_SIZE(current->mm) - 1)
 		return -E2BIG;
 
 	memcpy(ctx->new_val, buf, buf_len);
