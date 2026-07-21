@@ -2823,8 +2823,8 @@ static ssize_t proc_pid_attr_write(struct file * file, const char __user * buf,
 	}
 	rcu_read_unlock();
 
-	if (count > PAGE_SIZE)
-		count = PAGE_SIZE;
+	if (count > MM_PAGE_SIZE(current->mm))
+		count = MM_PAGE_SIZE(current->mm);
 
 	/* No partial writes. */
 	if (*ppos != 0)
