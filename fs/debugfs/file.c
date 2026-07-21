@@ -1013,7 +1013,7 @@ static ssize_t debugfs_write_file_str(struct file *file, const char __user *user
 		goto error;
 
 	r = -E2BIG;
-	if (pos + count + 1 > PAGE_SIZE)
+	if (pos + count + 1 > MM_PAGE_SIZE(current->mm))
 		goto error;
 
 	r = -ENOMEM;
