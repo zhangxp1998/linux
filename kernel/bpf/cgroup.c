@@ -9,6 +9,7 @@
 #include <linux/atomic.h>
 #include <linux/cgroup.h>
 #include <linux/filter.h>
+#include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/sysctl.h>
 #include <linux/string.h>
@@ -1774,11 +1775,11 @@ static int sockopt_alloc_buf(struct bpf_sockopt_kern *ctx, int max_optlen,
 	if (unlikely(max_optlen < 0))
 		return -EINVAL;
 
-	if (unlikely(max_optlen > PAGE_SIZE)) {
-		/* We don't expose optvals that are greater than PAGE_SIZE
+	if (unlikely(max_optlen > MM_PAGE_SIZE(current->mm))) {
+		/* We don't expose optvals that are greater than the process page
 		 * to the BPF program.
 		 */
-		max_optlen = PAGE_SIZE;
+		max_optlen = MM_PAGE_SIZE(current->mm);
 	}
 
 	if (max_optlen <= sizeof(buf->data)) {
@@ -1856,7 +1857,7 @@ int __cgroup_bpf_run_filter_setsockopt(struct sock *sk, int *level,
 		ret = 1;
 	} else if (ctx.optlen > max_optlen || ctx.optlen < -1) {
 		/* optlen is out of bounds */
-		if (*optlen > PAGE_SIZE && ctx.optlen >= 0) {
+		if (*optlen > MM_PAGE_SIZE(current->mm) && ctx.optlen >= 0) {
 			pr_info_once("bpf setsockopt: ignoring program buffer with optlen=%d (max_optlen=%d)\n",
 				     ctx.optlen, max_optlen);
 			ret = 0;
@@ -1962,7 +1963,7 @@ int __cgroup_bpf_run_filter_getsockopt(struct sock *sk, int level,
 
 	if (!sockptr_is_null(optval) &&
 	    (ctx.optlen > max_optlen || ctx.optlen < 0)) {
-		if (orig_optlen > PAGE_SIZE && ctx.optlen >= 0) {
+		if (orig_optlen > MM_PAGE_SIZE(current->mm) && ctx.optlen >= 0) {
 			pr_info_once("bpf getsockopt: ignoring program buffer with optlen=%d (max_optlen=%d)\n",
 				     ctx.optlen, max_optlen);
 			ret = retval;
