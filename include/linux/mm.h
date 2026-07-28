@@ -27,6 +27,7 @@
 #include <linux/overflow.h>
 #include <linux/sizes.h>
 #include <linux/sched.h>
+#include <linux/page_size_compat_defs.h>
 #include <linux/pgtable.h>
 #include <linux/pgsize_migration_inline.h>
 #include <linux/ppps.h>
