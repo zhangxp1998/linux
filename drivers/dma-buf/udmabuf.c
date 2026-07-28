@@ -9,6 +9,7 @@
 #include <linux/memfd.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
+#include <linux/page_size_compat.h>
 #include <linux/shmem_fs.h>
 #include <linux/hugetlb.h>
 #include <linux/slab.h>
@@ -633,7 +634,7 @@ static int __init udmabuf_dev_init(void)
 	}
 
 	ret = dma_coerce_mask_and_coherent(udmabuf_misc.this_device,
-					   DMA_BIT_MASK(64));
+					   ~0ULL);
 	if (ret < 0) {
 		pr_err("Could not setup DMA mask for udmabuf device\n");
 		misc_deregister(&udmabuf_misc);
