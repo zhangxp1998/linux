@@ -2327,9 +2327,10 @@ static int __vm_map_pages(struct vm_area_struct *vma, struct page **pages,
 {
 	unsigned long count = vma_native_pages(vma);
 	unsigned long uaddr = vma->vm_start;
+	bool map_slices = ppps_mm_is_compat(vma->vm_mm) && vma->vm_file;
 	int ret, i;
 
-	if (ppps_mm_is_compat(vma->vm_mm) && vma->vm_file)
+	if (map_slices)
 		count = DIV_ROUND_UP(vma_slice_off(vma) + vma_pages(vma),
 				     PPPS_SLICES_PER_PAGE);
 
@@ -2340,6 +2341,9 @@ static int __vm_map_pages(struct vm_area_struct *vma, struct page **pages,
 	/* Fail if the user requested size exceeds available object size */
 	if (count > num - offset)
 		return -ENXIO;
+
+	if (map_slices)
+		return vm_insert_pages(vma, uaddr, pages + offset, &count);
 
 	for (i = 0; i < count; i++) {
 		ret = vm_insert_page(vma, uaddr, pages[offset + i]);
