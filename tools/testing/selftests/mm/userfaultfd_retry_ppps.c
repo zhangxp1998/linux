@@ -91,6 +91,72 @@ static bool resolve_source_fault(int uffd, void *source, void *data)
 	return !ioctl(uffd, UFFDIO_COPY, &copy);
 }
 
+static void test_shmem_self_copy_retry(void)
+{
+	struct copy_thread_args thread_args = {};
+	struct timespec deadline;
+	unsigned char *source_data;
+	void *mapping;
+	pthread_t thread;
+	bool registered;
+	bool resolved;
+	bool joined = false;
+	bool started;
+	int uffd;
+	int memfd;
+
+	uffd = open_userfaultfd();
+	memfd = memfd_create("userfaultfd-self-copy-ppps", MFD_CLOEXEC);
+	if (memfd >= 0 && ftruncate(memfd, PROCESS_PAGE_SIZE)) {
+		close(memfd);
+		memfd = -1;
+	}
+	mapping = memfd < 0 ? MAP_FAILED :
+		mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		     MAP_SHARED, memfd, 0);
+	source_data = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	ksft_test_result(uffd >= 0 && memfd >= 0 &&
+			 mapping != MAP_FAILED && source_data != MAP_FAILED,
+			 "set up shared self-copy mapping\n");
+	if (uffd < 0 || memfd < 0 || mapping == MAP_FAILED ||
+	    source_data == MAP_FAILED)
+		ksft_exit_fail_msg("self-copy setup failed: %s\n", strerror(errno));
+	memset(source_data, 0x6b, PROCESS_PAGE_SIZE);
+
+	registered = register_missing(uffd, mapping);
+	ksft_test_result(registered, "register self-copy mapping\n");
+	if (!registered)
+		ksft_exit_fail_msg("self-copy register failed: %s\n",
+				   strerror(errno));
+	thread_args.uffd = uffd;
+	thread_args.copy.src = (unsigned long)mapping;
+	thread_args.copy.dst = (unsigned long)mapping;
+	thread_args.copy.len = PROCESS_PAGE_SIZE;
+	started = !pthread_create(&thread, NULL, copy_thread, &thread_args);
+	ksft_test_result(started, "start faulting shmem self-copy\n");
+	if (!started)
+		ksft_exit_fail_msg("self-copy pthread_create failed\n");
+	ksft_test_result(wait_for_source_fault(uffd, mapping),
+			 "observe self-copy source fault\n");
+
+	resolved = resolve_source_fault(uffd, mapping, source_data);
+	clock_gettime(CLOCK_REALTIME, &deadline);
+	deadline.tv_sec += 5;
+	if (resolved)
+		joined = !pthread_timedjoin_np(thread, NULL, &deadline);
+	ksft_test_result(resolved && joined && thread_args.result == -1 &&
+			 thread_args.error == EEXIST &&
+			 thread_args.copy.copy == -EEXIST &&
+			 !memcmp(mapping, source_data, PROCESS_PAGE_SIZE),
+			 "self-copy retry returns EEXIST without a kernel BUG\n");
+
+	munmap(source_data, PROCESS_PAGE_SIZE);
+	munmap(mapping, PROCESS_PAGE_SIZE);
+	close(memfd);
+	close(uffd);
+}
+
 static int run_test(void)
 {
 	struct copy_thread_args thread_args = {};
@@ -112,9 +178,7 @@ static int run_test(void)
 	int memfd;
 
 	ksft_print_header();
-	ksft_set_plan(9);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(13);
 
 	destination_uffd = open_userfaultfd();
 	source_uffd = open_userfaultfd();
@@ -195,6 +259,7 @@ static int run_test(void)
 	close(memfd);
 	close(source_uffd);
 	close(destination_uffd);
+	test_shmem_self_copy_retry();
 	ksft_finished();
 }
 
