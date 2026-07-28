@@ -36,6 +36,13 @@ struct shmem_inode_info {
 	pgoff_t			fallocend;	/* highest fallocate endindex */
 	unsigned int		fsflags;	/* for FS_IOC_[SG]ETFLAGS */
 	atomic_t		stop_eviction;	/* hold when working on inode */
+#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
+	/*
+	 * Per-native-page masks of slices instantiated by UFFDIO_COPY or
+	 * UFFDIO_ZEROPAGE.  PageUptodate cannot distinguish PPPS slices.
+	 */
+	struct xarray		ppps_uffd_slices;
+#endif
 #ifdef CONFIG_TMPFS_QUOTA
 	struct dquot __rcu	*i_dquot[MAXQUOTAS];
 #endif
