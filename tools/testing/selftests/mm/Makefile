@@ -115,6 +115,7 @@ TEST_GEN_FILES += shmem_mmap_offset_ppps
 TEST_GEN_FILES += secretmem_eof_ppps
 TEST_GEN_FILES += shmem_eof_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
+TEST_GEN_FILES += bpf_ringbuf_mmap_ppps
 TEST_GEN_FILES += bpf_attr_size_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
 TEST_GEN_FILES += key_update_size_ppps
