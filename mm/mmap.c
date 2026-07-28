@@ -692,7 +692,7 @@ retry:
 		}
 	}
 
-	return __PAGE_ALIGN(gap);
+	return MM_UAPI_PAGE_ALIGN(current->mm, gap);
 }
 
 /**
@@ -744,7 +744,7 @@ retry:
 		}
 	}
 
-	return __PAGE_ALIGN(gap);
+	return MM_UAPI_PAGE_ALIGN(current->mm, gap);
 }
 
 /*
