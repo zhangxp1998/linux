@@ -638,6 +638,20 @@ static inline bool accountable_mapping(struct file *file, vm_flags_t vm_flags)
 	return (vm_flags & (VM_NORESERVE | VM_SHARED | VM_WRITE)) == VM_WRITE;
 }
 
+static inline unsigned long mmap_align_gap(unsigned long addr)
+{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	/*
+	 * Android's __PAGE_ALIGN() follows the native/emulated page size.
+	 * A PPPS process needs its selected page size here or top-down
+	 * allocation can round the result into the adjacent VMA.
+	 */
+	return MM_PAGE_ALIGN(current->mm, addr);
+#else
+	return __PAGE_ALIGN(addr);
+#endif
+}
+
 /**
  * unmapped_area() - Find an area between the low_limit and the high_limit with
  * the correct alignment and offset, all from @info. Note: current->mm is used
@@ -692,7 +706,7 @@ retry:
 		}
 	}
 
-	return __PAGE_ALIGN(gap);
+	return mmap_align_gap(gap);
 }
 
 /**
@@ -744,7 +758,7 @@ retry:
 		}
 	}
 
-	return __PAGE_ALIGN(gap);
+	return mmap_align_gap(gap);
 }
 
 /*

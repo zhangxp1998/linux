@@ -404,6 +404,7 @@ CATEGORY="mremap" run_test ./mremap_hint_ppps
 CATEGORY="mremap" run_test ./test_mremap_pgoff_ppps.sh
 CATEGORY="mmap" run_test ./msync_offset_ppps
 CATEGORY="mmap" run_test ./bpf_array_mmap_ppps
+CATEGORY="mmap" run_test ./bpf_ringbuf_mmap_ppps
 CATEGORY="mmap" run_test ./bpf_stack_build_id_ppps
 
 CATEGORY="hugetlb" run_test ./thuge-gen
