@@ -447,16 +447,16 @@ static int dmabuf_content_mmap(struct wrap_content *content,
 			       struct vm_area_struct *vma)
 {
 	struct wrap_content_dmabuf *dmabuf_content;
-	int ret;
+	loff_t offset;
 
 	dmabuf_content = container_of(content, struct wrap_content_dmabuf,
 				      content);
 
-	ret = dma_buf_mmap(dmabuf_content->dmabuf, vma, vma->vm_pgoff);
-	if (ret)
-		return ret;
+	offset = vma_file_offset(vma);
+	if (offset < 0)
+		return -EINVAL;
 
-	return 0;
+	return dma_buf_mmap_offset(dmabuf_content->dmabuf, vma, offset);
 }
 
 static void dmabuf_content_free(struct wrap_content *content)

@@ -817,18 +817,6 @@ err_retries:
 	return -ENOMEM;
 }
 
-static int dma_buf_mmap_size(struct dma_buf *dmabuf,
-			     struct vm_area_struct *vma, u64 *mmap_size)
-{
-	u64 page_size = ppps_mm_is_compat(vma->vm_mm) ?
-			MM_PAGE_SIZE(vma->vm_mm) : __PAGE_SIZE;
-
-	if (check_add_overflow((u64)dmabuf->size, page_size - 1, mmap_size))
-		return -EOVERFLOW;
-	*mmap_size &= ~(page_size - 1);
-	return 0;
-}
-
 static int dma_buf_mmap_internal(struct file *file, struct vm_area_struct *vma)
 {
 	struct dma_buf *dmabuf;
@@ -2232,40 +2220,43 @@ int dma_buf_end_cpu_access_partial(struct dma_buf *dmabuf,
 EXPORT_SYMBOL_GPL(dma_buf_end_cpu_access_partial);
 
 /**
- * dma_buf_mmap - Setup up a userspace mmap with the given vma
+ * dma_buf_mmap_offset - Set up a userspace mmap at an exact byte offset
  * @dmabuf:	[in]	buffer that should back the vma
  * @vma:	[in]	vma for the mmap
- * @pgoff:	[in]	offset in pages where this mmap should start within the
- *			dma-buf buffer.
+ * @offset:	[in]	byte offset where this mmap should start within the
+ *			dma-buf buffer
  *
- * This function adjusts the passed in vma so that it points at the file of the
- * dma_buf operation. It also adjusts the starting pgoff and does bounds
- * checking on the size of the vma. Then it calls the exporters mmap function to
- * set up the mapping.
+ * This function preserves process-page offsets that are smaller than the
+ * native kernel page. Callers that only have a native page offset should use
+ * dma_buf_mmap().
  *
  * Can return negative error values, returns 0 on success.
  */
-int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
-		 unsigned long pgoff)
+int dma_buf_mmap_offset(struct dma_buf *dmabuf, struct vm_area_struct *vma,
+			u64 offset)
 {
 	u64 mmap_size;
-	u64 offset;
+	unsigned int slice;
+	unsigned long pgoff;
 	int ret;
 
 	if (WARN_ON(!dmabuf || !vma))
 		return -EINVAL;
 
+	if (!IS_ALIGNED(offset, MM_PAGE_SIZE(vma->vm_mm)))
+		return -EINVAL;
+	if (offset >> PAGE_SHIFT > ULONG_MAX)
+		return -EOVERFLOW;
+
 	/* check if buffer supports mmap */
 	if (!dmabuf->ops->mmap)
 		return -EINVAL;
-	ret = dma_buf_mmap_size(dmabuf, vma, &mmap_size);
-	if (ret)
-		return ret;
-
-	/* @pgoff is expressed in native pages, not process pages. */
-	if (pgoff > U64_MAX >> PAGE_SHIFT)
+	/* As in dma_buf_mmap_internal(), the final partial page is mappable. */
+	if (check_add_overflow((u64)dmabuf->size,
+			       (u64)MM_UAPI_PAGE_SIZE(vma->vm_mm) - 1,
+			       &mmap_size))
 		return -EOVERFLOW;
-	offset = (u64)pgoff << PAGE_SHIFT;
+	mmap_size &= ~((u64)MM_UAPI_PAGE_SIZE(vma->vm_mm) - 1);
 
 	/* check for overflowing the buffer's size */
 	if (offset > mmap_size ||
@@ -2273,9 +2264,11 @@ int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 		return -EINVAL;
 
 	/* readjust the vma */
+	pgoff = offset >> PAGE_SHIFT;
+	slice = vma_offset_to_slice(vma, offset);
 	vma_set_file(vma, dmabuf->file);
 	vma->vm_pgoff = pgoff;
-	vma_set_slice_off(vma, 0);
+	vma_set_slice_off(vma, slice);
 
 	ret = dmabuf->ops->mmap(dmabuf, vma);
 	if (!ret && vma->vm_file == dmabuf->file) {
@@ -2294,7 +2287,31 @@ int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 
 	return ret;
 }
+
+/**
+ * dma_buf_mmap - Setup up a userspace mmap with the given vma
+ * @dmabuf:	[in]	buffer that should back the vma
+ * @vma:	[in]	vma for the mmap
+ * @pgoff:	[in]	offset in native pages where this mmap should start
+ *			within the dma-buf buffer
+ *
+ * This function adjusts the passed in vma so that it points at the file of the
+ * dma_buf operation. It also adjusts the starting pgoff and does bounds
+ * checking on the size of the vma. Then it calls the exporters mmap function to
+ * set up the mapping.
+ *
+ * Can return negative error values, returns 0 on success.
+ */
+int dma_buf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma,
+		 unsigned long pgoff)
+{
+	if (pgoff > U64_MAX >> PAGE_SHIFT)
+		return -EOVERFLOW;
+
+	return dma_buf_mmap_offset(dmabuf, vma, (u64)pgoff << PAGE_SHIFT);
+}
 EXPORT_SYMBOL_NS_GPL(dma_buf_mmap, DMA_BUF);
+EXPORT_SYMBOL_NS_GPL(dma_buf_mmap_offset, DMA_BUF);
 
 /**
  * dma_buf_vmap - Create virtual mapping for the buffer object into kernel
