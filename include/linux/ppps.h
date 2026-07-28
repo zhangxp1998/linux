@@ -7,6 +7,8 @@
 #ifndef __ASSEMBLY__
 #include <asm/current.h>
 
+struct linux_binprm;
+
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 #define PAGE_SHIFT_COMPAT	12
 #define VA_BITS_COMPAT		39
@@ -24,7 +26,6 @@ unsigned long mm_task_size64(void);
 unsigned long mm_task_size64_of(struct mm_struct *mm);
 unsigned long mm_default_map_window64(void);
 
-struct linux_binprm;
 void mm_init_pagesize(struct mm_struct *mm, struct linux_binprm *bprm);
 
 #define mm_set_pgtable_mm(mm)		(current->pgtable_mm = (mm))
