@@ -1089,54 +1089,54 @@ static struct folio *shmem_get_partial_folio(struct inode *inode, pgoff_t index)
 }
 
 #if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
+static void shmem_ppps_uffd_init(struct shmem_inode_info *info);
+static void shmem_ppps_uffd_destroy(struct shmem_inode_info *info);
+static void shmem_ppps_uffd_lock(struct shmem_inode_info *info);
+static void shmem_ppps_uffd_unlock(struct shmem_inode_info *info);
 static unsigned long shmem_ppps_uffd_slices(struct shmem_inode_info *info,
-					    pgoff_t index)
-{
-	void *entry = xa_load(&info->ppps_uffd_slices, index);
-
-	/* No tracking entry means an ordinary, fully populated cache page. */
-	return xa_is_value(entry) ? xa_to_value(entry) :
-		GENMASK(PPPS_SLICES_PER_PAGE - 1, 0);
-}
-
+					    pgoff_t index);
 static int shmem_ppps_uffd_set_slices(struct shmem_inode_info *info,
 				      pgoff_t index, unsigned long mask,
-				      gfp_t gfp)
-{
-	return xa_err(xa_store(&info->ppps_uffd_slices, index,
-			       xa_mk_value(mask), gfp & GFP_RECLAIM_MASK));
-}
-
+				      gfp_t gfp);
+static void shmem_ppps_uffd_clear_slices(struct shmem_inode_info *info,
+					 pgoff_t index);
 static void shmem_ppps_uffd_clear_range(struct shmem_inode_info *info,
-					loff_t lstart, loff_t lend)
-{
-	pgoff_t first = lstart >> PAGE_SHIFT;
-	pgoff_t last = lend == -1 ? ULONG_MAX : lend >> PAGE_SHIFT;
-	XA_STATE(xas, &info->ppps_uffd_slices, first);
-	void *entry;
-
-	xas_lock(&xas);
-	xas_for_each(&xas, entry, last) {
-		u64 folio_start = (u64)xas.xa_index << PAGE_SHIFT;
-		u64 range_start = max_t(u64, lstart, folio_start);
-		u64 range_end = lend == -1 ? folio_start + PAGE_SIZE - 1 :
-					    min_t(u64, lend,
-						  folio_start + PAGE_SIZE - 1);
-		unsigned int first_slice =
-			(range_start - folio_start) >> PAGE_SHIFT_COMPAT;
-		unsigned int last_slice =
-			(range_end - folio_start) >> PAGE_SHIFT_COMPAT;
-		unsigned long mask = xa_to_value(entry);
-
-		mask &= ~GENMASK(last_slice, first_slice);
-		/* A zero mask is a tracked, completely missing native page. */
-		xas_store(&xas, range_start == folio_start &&
-			  range_end == folio_start + PAGE_SIZE - 1 ?
-			  NULL : xa_mk_value(mask));
-	}
-	xas_unlock(&xas);
-}
+					loff_t lstart, loff_t lend);
 #else
+static inline void shmem_ppps_uffd_init(struct shmem_inode_info *info)
+{
+}
+
+static inline void shmem_ppps_uffd_destroy(struct shmem_inode_info *info)
+{
+}
+
+static inline void shmem_ppps_uffd_lock(struct shmem_inode_info *info)
+{
+}
+
+static inline void shmem_ppps_uffd_unlock(struct shmem_inode_info *info)
+{
+}
+
+static inline unsigned long shmem_ppps_uffd_slices(struct shmem_inode_info *info,
+						   pgoff_t index)
+{
+	return 0;
+}
+
+static inline int shmem_ppps_uffd_set_slices(struct shmem_inode_info *info,
+					     pgoff_t index, unsigned long mask,
+					     gfp_t gfp)
+{
+	return 0;
+}
+
+static inline void shmem_ppps_uffd_clear_slices(struct shmem_inode_info *info,
+						pgoff_t index)
+{
+}
+
 static inline void shmem_ppps_uffd_clear_range(struct shmem_inode_info *info,
 					       loff_t lstart, loff_t lend)
 {
@@ -1152,9 +1152,6 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 {
 	struct address_space *mapping = inode->i_mapping;
 	struct shmem_inode_info *info = SHMEM_I(inode);
-#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
-	unsigned int nofs_flags = 0;
-#endif
 	pgoff_t start = (lstart + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	pgoff_t end = (lend + 1) >> PAGE_SHIFT;
 	struct folio_batch fbatch;
@@ -1164,18 +1161,17 @@ static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
 	long nr_swaps_freed = 0;
 	pgoff_t index;
 	int i;
+	unsigned int nofs_flags = 0;
 
 	if (lend == -1)
 		end = -1;	/* unsigned, so actually very big */
 
-#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
 	if (!unfalloc) {
-		nofs_flags = memalloc_nofs_save();
-		mutex_lock(&info->ppps_uffd_lock);
-	}
-#endif
-	if (!unfalloc)
+		if (IS_ENABLED(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE))
+			nofs_flags = memalloc_nofs_save();
+		shmem_ppps_uffd_lock(info);
 		shmem_ppps_uffd_clear_range(info, lstart, lend);
+	}
 
 	if (info->fallocend > start && info->fallocend <= end && !unfalloc)
 		info->fallocend = start;
@@ -1325,12 +1321,11 @@ whole_folios:
 
 	shmem_recalc_inode(inode, 0, -nr_swaps_freed);
 	trace_android_vh_shmem_mod_swapped(mapping, -nr_swaps_freed);
-#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
 	if (!unfalloc) {
-		mutex_unlock(&info->ppps_uffd_lock);
-		memalloc_nofs_restore(nofs_flags);
+		shmem_ppps_uffd_unlock(info);
+		if (IS_ENABLED(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE))
+			memalloc_nofs_restore(nofs_flags);
 	}
-#endif
 }
 
 void shmem_truncate_range(struct inode *inode, loff_t lstart, loff_t lend)
@@ -1485,9 +1480,7 @@ static void shmem_evict_inode(struct inode *inode)
 	}
 
 	simple_xattrs_free(&info->xattrs, sbinfo->max_inodes ? &freed : NULL);
-#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
-	xa_destroy(&info->ppps_uffd_slices);
-#endif
+	shmem_ppps_uffd_destroy(info);
 	shmem_free_inode(inode->i_sb, freed);
 	WARN_ON(inode->i_blocks);
 	clear_inode(inode);
@@ -2505,7 +2498,6 @@ repeat:
 		return 0;
 	}
 
-
 	if (xa_is_value(folio)) {
 		error = shmem_swapin_folio(inode, index, &folio,
 					   sgp, gfp, vma, fault_type);
@@ -2649,7 +2641,6 @@ clear:
 		goto unlock;
 	}
 out:
-#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
 	/* Check under the folio lock, including after swap-in and fill retries. */
 	if (vma && ppps_mm_is_compat(vma->vm_mm) &&
 	    userfaultfd_missing(vma) &&
@@ -2660,7 +2651,6 @@ out:
 		*fault_type = handle_userfault(vmf, VM_UFFD_MISSING);
 		return 0;
 	}
-#endif
 	*foliop = folio;
 	return 0;
 
@@ -3097,10 +3087,7 @@ static struct inode *__shmem_get_inode(struct mnt_idmap *idmap,
 	INIT_LIST_HEAD(&info->shrinklist);
 	INIT_LIST_HEAD(&info->swaplist);
 	simple_xattrs_init(&info->xattrs);
-#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
-	mutex_init(&info->ppps_uffd_lock);
-	xa_init(&info->ppps_uffd_slices);
-#endif
+	shmem_ppps_uffd_init(info);
 	cache_no_acl(inode);
 	if (sbinfo->noswap)
 		mapping_set_unevictable(inode->i_mapping);
@@ -3177,6 +3164,7 @@ static inline struct inode *shmem_get_inode(struct mnt_idmap *idmap,
 #endif /* CONFIG_TMPFS_QUOTA */
 
 #ifdef CONFIG_USERFAULTFD
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 #if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
 static int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t pgoff,
 					   pmd_t *dst_pmd,
@@ -3185,82 +3173,22 @@ static int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t pgoff,
 					   unsigned long src_addr,
 					   uffd_flags_t flags, gfp_t gfp,
 					   struct folio **foliop,
+					   struct folio **existing);
+#else
+static inline int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t pgoff,
+					   pmd_t *dst_pmd,
+					   struct vm_area_struct *dst_vma,
+					   unsigned long dst_addr,
+					   unsigned long src_addr,
+					   uffd_flags_t flags, gfp_t gfp,
+					   struct folio **foliop,
 					   struct folio **existing)
 {
-	struct shmem_inode_info *info = SHMEM_I(inode);
-	unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
-	unsigned int slice_idx = vma_address_to_slice(dst_vma, dst_addr);
-	unsigned long offset = slice_idx * pgsize;
-	struct folio *folio = NULL, *staging = NULL;
-	struct page *page;
-	void *kaddr;
-	unsigned long mask;
-	int ret;
-
 	*existing = NULL;
-	ret = shmem_get_folio(inode, pgoff, 0, &folio, SGP_NOALLOC);
-	if (ret || !folio)
-		return ret == -ENOENT ? 0 : ret;
-	*existing = folio;
-	page = folio_file_page(folio, pgoff);
-	staging = *foliop;
-	*foliop = NULL;
-
-	ret = -EIO;
-	if (PageHWPoison(page))
-		goto out;
-	mask = shmem_ppps_uffd_slices(info, pgoff);
-	ret = -EEXIST;
-	if (mask & BIT(slice_idx))
-		goto out;
-
-	if (!staging) {
-		ret = -ENOMEM;
-		staging = shmem_alloc_folio(gfp, 0, info, pgoff);
-		if (!staging)
-			goto out;
-		kaddr = kmap_local_folio(staging, 0);
-		if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
-			pagefault_disable();
-			ret = copy_from_user(kaddr + offset,
-					     (const void __user *)src_addr, pgsize);
-			pagefault_enable();
-		} else {
-			memset(kaddr + offset, 0, pgsize);
-			ret = 0;
-		}
-		kunmap_local(kaddr);
-		if (ret) {
-			/* The generic retry faults/copies outside the mmap lock. */
-			*foliop = staging;
-			staging = NULL;
-			ret = -ENOENT;
-			goto out;
-		}
-	}
-
-	/* Fault-side readers hold this folio lock before consulting the mask. */
-	ret = shmem_ppps_uffd_set_slices(info, pgoff, mask | BIT(slice_idx), gfp);
-	if (ret)
-		goto out;
-	ret = mfill_atomic_install_pte_from(dst_pmd, dst_vma, dst_addr,
-			page, slice_idx, flags, &staging->page);
-	if (ret) {
-		/* Replacing an existing xarray value cannot require allocation. */
-		shmem_ppps_uffd_set_slices(info, pgoff, mask, gfp);
-		goto out;
-	}
-	folio_put(staging);
-	/* The cache lookup reference is now owned by the installed PTE. */
-	folio_unlock(folio);
 	return 0;
-out:
-	if (staging)
-		folio_put(staging);
-	folio_unlock(folio);
-	folio_put(folio);
-	return ret;
 }
+#endif
+
 #endif
 
 int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
@@ -3440,7 +3368,7 @@ repeat:
 	if (ret) {
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		if (ppps_compat)
-			xa_erase(&info->ppps_uffd_slices, pgoff);
+			shmem_ppps_uffd_clear_slices(info, pgoff);
 #endif
 		goto out_delete_from_cache;
 	}
@@ -5614,6 +5542,179 @@ static ssize_t thpsize_shmem_enabled_store(struct kobject *kobj,
 struct kobj_attribute thpsize_shmem_enabled_attr =
 	__ATTR(shmem_enabled, 0644, thpsize_shmem_enabled_show, thpsize_shmem_enabled_store);
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE && CONFIG_SYSFS */
+
+#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
+/*
+ * Per-slice UFFDIO_COPY/ZEROPAGE bookkeeping of a compat process: which
+ * slices of the page-cache folio at an index have been filled.  Serialised
+ * by info->ppps_uffd_lock.
+ */
+static void shmem_ppps_uffd_init(struct shmem_inode_info *info)
+{
+	mutex_init(&info->ppps_uffd_lock);
+	xa_init(&info->ppps_uffd_slices);
+}
+
+static void shmem_ppps_uffd_destroy(struct shmem_inode_info *info)
+{
+	xa_destroy(&info->ppps_uffd_slices);
+}
+
+static void shmem_ppps_uffd_lock(struct shmem_inode_info *info)
+{
+	mutex_lock(&info->ppps_uffd_lock);
+}
+
+static void shmem_ppps_uffd_unlock(struct shmem_inode_info *info)
+{
+	mutex_unlock(&info->ppps_uffd_lock);
+}
+
+static unsigned long shmem_ppps_uffd_slices(struct shmem_inode_info *info,
+					    pgoff_t index)
+{
+	void *entry = xa_load(&info->ppps_uffd_slices, index);
+
+	return xa_is_value(entry) ? xa_to_value(entry) :
+		GENMASK(PPPS_SLICES_PER_PAGE - 1, 0);
+}
+
+static int shmem_ppps_uffd_set_slices(struct shmem_inode_info *info,
+				      pgoff_t index, unsigned long mask,
+				      gfp_t gfp)
+{
+	return xa_err(xa_store(&info->ppps_uffd_slices, index,
+			       xa_mk_value(mask), gfp & GFP_RECLAIM_MASK));
+}
+
+static void shmem_ppps_uffd_clear_slices(struct shmem_inode_info *info,
+					 pgoff_t index)
+{
+	xa_erase(&info->ppps_uffd_slices, index);
+}
+
+static void shmem_ppps_uffd_clear_range(struct shmem_inode_info *info,
+					loff_t lstart, loff_t lend)
+{
+	pgoff_t first = lstart >> PAGE_SHIFT;
+	pgoff_t last = lend == -1 ? ULONG_MAX : lend >> PAGE_SHIFT;
+	XA_STATE(xas, &info->ppps_uffd_slices, first);
+	void *entry;
+
+	xas_lock(&xas);
+	xas_for_each(&xas, entry, last) {
+		u64 folio_start = (u64)xas.xa_index << PAGE_SHIFT;
+		u64 range_start = max_t(u64, lstart, folio_start);
+		u64 range_end = lend == -1 ? folio_start + PAGE_SIZE - 1 :
+					    min_t(u64, lend,
+						  folio_start + PAGE_SIZE - 1);
+		unsigned int first_slice =
+			(range_start - folio_start) >> PAGE_SHIFT_COMPAT;
+		unsigned int last_slice =
+			(range_end - folio_start) >> PAGE_SHIFT_COMPAT;
+		unsigned long mask = xa_to_value(entry);
+
+		mask &= ~GENMASK(last_slice, first_slice);
+		/* A zero mask is a tracked, completely missing native page. */
+		xas_store(&xas, range_start == folio_start &&
+			  range_end == folio_start + PAGE_SIZE - 1 ?
+			  NULL : xa_mk_value(mask));
+	}
+	xas_unlock(&xas);
+}
+
+/*
+ * PPPS UFFDIO_COPY/ZEROPAGE into one slice of a folio that is already in the
+ * page cache: fill just that slice and install its PTE.  *existing is the
+ * folio found, or NULL when the caller has to allocate one (the return value
+ * is then 0).  Called with ppps_uffd_lock held.
+ */
+static int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t pgoff,
+					   pmd_t *dst_pmd,
+					   struct vm_area_struct *dst_vma,
+					   unsigned long dst_addr,
+					   unsigned long src_addr,
+					   uffd_flags_t flags, gfp_t gfp,
+					   struct folio **foliop,
+					   struct folio **existing)
+{
+	struct shmem_inode_info *info = SHMEM_I(inode);
+	unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
+	unsigned long offset = vma_page_slice_offset(dst_vma, NULL, dst_addr);
+	unsigned int slice_idx = vma_address_to_slice(dst_vma, dst_addr);
+	struct folio *folio = NULL;
+	struct page *page;
+	void *page_kaddr;
+	unsigned long mask;
+	int ret;
+
+	ret = shmem_get_folio(inode, pgoff, 0, &folio, SGP_NOALLOC);
+	if (ret || !folio) {
+		*existing = NULL;
+		return 0;
+	}
+	*existing = folio;
+	page = folio_file_page(folio, pgoff);
+
+	/*
+	 * A copy retry can fault in the destination through its source.
+	 * Drop the uncommitted folio from the first attempt before using
+	 * the page-cache folio populated by that fault.
+	 */
+	if (unlikely(*foliop)) {
+		folio_put(*foliop);
+		*foliop = NULL;
+	}
+
+	ret = -EIO;
+	if (PageHWPoison(page))
+		goto out;
+
+	mask = shmem_ppps_uffd_slices(info, pgoff);
+	ret = -EEXIST;
+	if (mask & BIT(slice_idx))
+		goto out;
+	ret = shmem_ppps_uffd_set_slices(info, pgoff, mask | BIT(slice_idx), gfp);
+	if (ret)
+		goto out;
+
+	if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
+		page_kaddr = kmap_local_folio(folio, 0);
+		pagefault_disable();
+		ret = copy_from_user(page_kaddr + offset,
+				     (const void __user *)src_addr, pgsize);
+		pagefault_enable();
+		kunmap_local(page_kaddr);
+		if (unlikely(ret)) {
+			ret = -EFAULT;
+			goto out_restore;
+		}
+		flush_dcache_folio(folio);
+	} else {
+		page_kaddr = kmap_local_folio(folio, 0);
+		memset(page_kaddr + offset, 0, pgsize);
+		kunmap_local(page_kaddr);
+	}
+	__folio_mark_uptodate(folio);
+	ret = mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr, page, false,
+				       slice_idx, flags);
+	if (ret)
+		goto out_restore;
+	/*
+	 * The reference returned by shmem_get_folio() becomes the PTE
+	 * reference, just as the allocation reference does for a newly
+	 * allocated folio.
+	 */
+	folio_unlock(folio);
+	return 0;
+out_restore:
+	shmem_ppps_uffd_set_slices(info, pgoff, mask, gfp);
+out:
+	folio_unlock(folio);
+	folio_put(folio);
+	return ret;
+}
+#endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE && CONFIG_USERFAULTFD */
 
 #else /* !CONFIG_SHMEM */
 
