@@ -578,6 +578,7 @@ $(OUTPUT)/taskstats_ppps: CFLAGS += -Wunreachable-code -U_FORTIFY_SOURCE
 $(OUTPUT)/taskstats_ppps: CFLAGS += -I$(selfdir)
 
 $(OUTPUT)/vb2_mmap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+$(OUTPUT)/process_madvise_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 
 $(OUTPUT)/gup_longterm: LDLIBS += $(IOURING_EXTRA_LIBS)
 
