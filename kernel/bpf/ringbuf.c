@@ -339,7 +339,9 @@ static int ringbuf_map_mmap_ppps(struct bpf_ringbuf *rb,
 static int ringbuf_map_mmap_kern(struct bpf_map *map, struct vm_area_struct *vma)
 {
 	struct bpf_ringbuf_map *rb_map;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	unsigned long mmap_offset = ringbuf_map_mmap_offset(vma);
+#endif
 
 	rb_map = container_of(map, struct bpf_ringbuf_map, map);
 
