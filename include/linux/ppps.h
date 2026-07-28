@@ -26,10 +26,9 @@ unsigned long mm_default_map_window64(void);
 unsigned long mm_default_map_window64_of(struct mm_struct *mm);
 
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
-/* Preserve the geometry of the page tables copied by fork. */
+/* fork() must preserve the geometry of the page tables it copies. */
 #define mm_inherit_pagesize(mm) \
 	((mm)->page_shift = current->mm ? current->mm->page_shift : PAGE_SHIFT)
-
 #define vma_set_slice_off(vma, val)	((vma)->vm_slice_off = (val))
 #define vma_slice_off(vma)		((vma)->vm_slice_off)
 #define vma_page_shift(vma) \
@@ -50,11 +49,18 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 	__pte(pte_val(pte) & ~((PAGE_SIZE - 1) & ~(PAGE_SIZE_COMPAT - 1)))
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
+#ifdef VA_BITS
 #define VA_BITS_COMPAT		VA_BITS
-#define PGTABLE_MM()		(NULL)
+#else
+#define VA_BITS_COMPAT		0
+#endif
 #define _MM_PAGE_SHIFT_HELPER(mm) \
 	((void)(mm), PAGE_SHIFT)
+#ifdef VA_BITS
 #define _MM_VA_BITS_HELPER(mm)		((void)(mm), VA_BITS)
+#else
+#define _MM_VA_BITS_HELPER(mm)		((void)(mm), 0)
+#endif
 #define ppps_mm_is_compat(mm)		((void)(mm), false)
 
 #define mm_task_size64()		(1UL << vabits_actual)
@@ -63,7 +69,7 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 #define mm_default_map_window64_of(mm)	((void)(mm), (1UL << VA_BITS_MIN))
 
 static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm) {}
-#define mm_inherit_pagesize(mm) ((void)(mm))
+#define mm_inherit_pagesize(mm)		((void)(mm))
 #define vma_set_slice_off(vma, val)	((void)(vma), (void)(val))
 #define vma_slice_off(vma)		((void)(vma), 0)
 #define vma_page_shift(vma)		((void)(vma), PAGE_SHIFT)
@@ -125,7 +131,7 @@ static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_bin
 #define mm_offset_in_page(mm, p)	((unsigned long)(p) & ~MM_PAGE_MASK(mm))
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-#define MM_PMD_SHIFT(...)	(MM_PAGE_SHIFT(__VA_ARGS__) + MM_LEVEL_SHIFT(__VA_ARGS__))
+#define MM_PMD_SHIFT(mm)	(MM_PAGE_SHIFT(mm) + MM_LEVEL_SHIFT(mm))
 
 #if CONFIG_PGTABLE_LEVELS > 2
 #define MM_PUD_SHIFT(mm)	(MM_PMD_SHIFT(mm) + MM_LEVEL_SHIFT(mm))
@@ -169,16 +175,16 @@ static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_bin
 #else
 #define MM_PTRS_PER_P4D(mm)	((void)(mm), 1UL)
 #endif
-#define MM_PTRS_PER_PGD(...)	(1UL << (MM_VA_BITS(__VA_ARGS__) - MM_PGD_SHIFT(__VA_ARGS__)))
+#define MM_PTRS_PER_PGD(mm)	(1UL << (MM_VA_BITS(mm) - MM_PGD_SHIFT(mm)))
 
-#define MM_PMD_SIZE(...)	(1UL << MM_PMD_SHIFT(__VA_ARGS__))
-#define MM_PMD_MASK(...)	(~(MM_PMD_SIZE(__VA_ARGS__) - 1))
-#define MM_PUD_SIZE(...)	(1UL << MM_PUD_SHIFT(__VA_ARGS__))
-#define MM_PUD_MASK(...)	(~(MM_PUD_SIZE(__VA_ARGS__) - 1))
-#define MM_PGDIR_SIZE(...)	(1UL << MM_PGD_SHIFT(__VA_ARGS__))
-#define MM_PGDIR_MASK(...)	(~(MM_PGDIR_SIZE(__VA_ARGS__) - 1))
-#define MM_P4D_SIZE(...)	(1UL << MM_P4D_SHIFT(__VA_ARGS__))
-#define MM_P4D_MASK(...)	(~(MM_P4D_SIZE(__VA_ARGS__) - 1))
+#define MM_PMD_SIZE(mm)	(1UL << MM_PMD_SHIFT(mm))
+#define MM_PMD_MASK(mm)	(~(MM_PMD_SIZE(mm) - 1))
+#define MM_PUD_SIZE(mm)	(1UL << MM_PUD_SHIFT(mm))
+#define MM_PUD_MASK(mm)	(~(MM_PUD_SIZE(mm) - 1))
+#define MM_PGDIR_SIZE(mm)	(1UL << MM_PGD_SHIFT(mm))
+#define MM_PGDIR_MASK(mm)	(~(MM_PGDIR_SIZE(mm) - 1))
+#define MM_P4D_SIZE(mm)	(1UL << MM_P4D_SHIFT(mm))
+#define MM_P4D_MASK(mm)	(~(MM_P4D_SIZE(mm) - 1))
 #else
 #define MM_PMD_SHIFT(mm)	((void)(mm), PMD_SHIFT)
 #define MM_PUD_SHIFT(mm)	((void)(mm), PUD_SHIFT)

@@ -542,12 +542,7 @@ static int apply_vma_lock_flags(unsigned long start, size_t len,
 	struct vm_area_struct *vma, *prev;
 	VMA_ITERATOR(vmi, current->mm, start);
 
-	unsigned long page_shift = MM_PAGE_SHIFT(current->mm);
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	unsigned long align_shift = page_shift;
-#else
-	unsigned long align_shift = __PAGE_SHIFT;
-#endif
+	unsigned long align_shift = MM_UAPI_PAGE_SHIFT(current->mm);
 	unsigned long page_size = 1UL << align_shift;
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
@@ -651,11 +646,7 @@ static __must_check int do_mlock(unsigned long start, size_t len, vm_flags_t fla
 	unsigned long lock_limit;
 	int error = -ENOMEM;
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	unsigned long page_shift = MM_PAGE_SHIFT(current->mm);
-#else
-	unsigned long page_shift = __PAGE_SHIFT;
-#endif
+	unsigned long page_shift = MM_UAPI_PAGE_SHIFT(current->mm);
 	unsigned long page_size = 1UL << page_shift;
 	unsigned long page_mask = ~(page_size - 1);
 
@@ -722,11 +713,7 @@ SYSCALL_DEFINE2(munlock, unsigned long, start, size_t, len)
 {
 	int ret;
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	unsigned long page_shift = MM_PAGE_SHIFT(current->mm);
-#else
-	unsigned long page_shift = __PAGE_SHIFT;
-#endif
+	unsigned long page_shift = MM_UAPI_PAGE_SHIFT(current->mm);
 	unsigned long page_size = 1UL << page_shift;
 	unsigned long page_mask = ~(page_size - 1);
 
