@@ -9,6 +9,7 @@
 #include <linux/memfd.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
+#include <linux/page_size_compat.h>
 #include <linux/shmem_fs.h>
 #include <linux/hugetlb.h>
 #include <linux/slab.h>
@@ -44,30 +45,8 @@ struct udmabuf {
 	struct sg_table *sg;
 	struct miscdevice *device;
 	pgoff_t *offsets;
-	pgoff_t vmap_pagecount;
 	unsigned long vmap_offset;
 };
-
-static unsigned int udmabuf_process_page_shift(struct mm_struct *mm)
-{
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	return MM_PAGE_SHIFT(mm);
-#else
-	(void)mm;
-	return __PAGE_SHIFT;
-#endif
-}
-
-static bool udmabuf_process_page_aligned(struct mm_struct *mm,
-					 unsigned long value)
-{
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	return MM_PAGE_ALIGNED(mm, value);
-#else
-	(void)mm;
-	return __PAGE_ALIGNED(value);
-#endif
-}
 
 static vm_fault_t udmabuf_insert_pfn(struct vm_area_struct *vma,
 				     struct udmabuf *ubuf,
@@ -138,7 +117,7 @@ static int mmap_udmabuf(struct dma_buf *buf, struct vm_area_struct *vma)
 
 	if ((vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) == 0)
 		return -EINVAL;
-	if (udmabuf_process_page_shift(vma->vm_mm) > ubuf->page_shift)
+	if (MM_PAGE_SHIFT(vma->vm_mm) > ubuf->page_shift)
 		return -EINVAL;
 
 	vma->vm_ops = &udmabuf_vm_ops;
@@ -193,7 +172,6 @@ static int vmap_udmabuf(struct dma_buf *buf, struct iosys_map *map)
 	if (!vaddr)
 		return -EINVAL;
 
-	ubuf->vmap_pagecount = pagecount;
 	ubuf->vmap_offset = first_offset;
 	iosys_map_set_vaddr(map, vaddr + first_offset);
 	return 0;
@@ -461,14 +439,14 @@ static long udmabuf_create(struct miscdevice *device,
 	if (!ubuf)
 		return -ENOMEM;
 
-	ubuf->page_shift = udmabuf_process_page_shift(current->mm);
+	ubuf->page_shift = MM_PAGE_SHIFT(current->mm);
 	pglimit = ((u64)size_limit_mb * 1024 * 1024) >> ubuf->page_shift;
 	for (i = 0; i < head->count; i++) {
 		pgoff_t subpgcnt;
 
-		if (!udmabuf_process_page_aligned(current->mm, list[i].offset))
+		if (!MM_PAGE_ALIGNED(current->mm, list[i].offset))
 			goto err_noinit;
-		if (!udmabuf_process_page_aligned(current->mm, list[i].size))
+		if (!MM_PAGE_ALIGNED(current->mm, list[i].size))
 			goto err_noinit;
 
 		subpgcnt = list[i].size >> ubuf->page_shift;

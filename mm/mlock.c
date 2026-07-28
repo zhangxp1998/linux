@@ -528,19 +528,8 @@ static int apply_vma_lock_flags(unsigned long start, size_t len,
 	struct vm_area_struct *vma, *prev;
 	VMA_ITERATOR(vmi, current->mm, start);
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	unsigned long align_shift = MM_PAGE_SHIFT(current->mm);
-#else
-	unsigned long align_shift = __PAGE_SHIFT;
-#endif
-	unsigned long page_size = 1UL << align_shift;
-
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	VM_BUG_ON(start & (page_size - 1));
-#else
-	VM_BUG_ON(__offset_in_page_log(start));
-#endif
-	VM_BUG_ON(len != ALIGN(len, page_size));
+	VM_BUG_ON(mm_uapi_offset_in_page_log(current->mm, start));
+	VM_BUG_ON(len != MM_UAPI_PAGE_ALIGN(current->mm, len));
 	end = start + len;
 	if (end < start)
 		return -EINVAL;
@@ -636,7 +625,6 @@ static __must_check int do_mlock(unsigned long start, size_t len, vm_flags_t fla
 	unsigned long lock_limit;
 	int error = -ENOMEM;
 
-
 	start = untagged_addr(start);
 
 	if (!can_do_mlock())
@@ -699,7 +687,6 @@ SYSCALL_DEFINE3(mlock2, unsigned long, start, size_t, len, int, flags)
 SYSCALL_DEFINE2(munlock, unsigned long, start, size_t, len)
 {
 	int ret;
-
 
 	start = untagged_addr(start);
 
