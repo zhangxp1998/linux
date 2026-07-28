@@ -49,27 +49,6 @@ struct udmabuf {
 	unsigned long vmap_offset;
 };
 
-static unsigned int udmabuf_process_page_shift(struct mm_struct *mm)
-{
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	return MM_PAGE_SHIFT(mm);
-#else
-	(void)mm;
-	return __PAGE_SHIFT;
-#endif
-}
-
-static bool udmabuf_process_page_aligned(struct mm_struct *mm,
-					 unsigned long value)
-{
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	return MM_PAGE_ALIGNED(mm, value);
-#else
-	(void)mm;
-	return __PAGE_ALIGNED(value);
-#endif
-}
-
 static vm_fault_t udmabuf_insert_pfn(struct vm_area_struct *vma,
 				     struct udmabuf *ubuf,
 				     unsigned long address)
@@ -139,7 +118,7 @@ static int mmap_udmabuf(struct dma_buf *buf, struct vm_area_struct *vma)
 
 	if ((vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) == 0)
 		return -EINVAL;
-	if (udmabuf_process_page_shift(vma->vm_mm) > ubuf->page_shift)
+	if (MM_PAGE_SHIFT(vma->vm_mm) > ubuf->page_shift)
 		return -EINVAL;
 
 	vma->vm_ops = &udmabuf_vm_ops;
@@ -452,14 +431,14 @@ static long udmabuf_create(struct miscdevice *device,
 	if (!ubuf)
 		return -ENOMEM;
 
-	ubuf->page_shift = udmabuf_process_page_shift(current->mm);
+	ubuf->page_shift = MM_PAGE_SHIFT(current->mm);
 	pglimit = ((u64)size_limit_mb * 1024 * 1024) >> ubuf->page_shift;
 	for (i = 0; i < head->count; i++) {
 		pgoff_t subpgcnt;
 
-		if (!udmabuf_process_page_aligned(current->mm, list[i].offset))
+		if (!MM_PAGE_ALIGNED(current->mm, list[i].offset))
 			goto err_noinit;
-		if (!udmabuf_process_page_aligned(current->mm, list[i].size))
+		if (!MM_PAGE_ALIGNED(current->mm, list[i].size))
 			goto err_noinit;
 
 		subpgcnt = list[i].size >> ubuf->page_shift;
@@ -623,7 +602,7 @@ static int __init udmabuf_dev_init(void)
 	}
 
 	ret = dma_coerce_mask_and_coherent(udmabuf_misc.this_device,
-					   DMA_BIT_MASK(64));
+					   ~0ULL);
 	if (ret < 0) {
 		pr_err("Could not setup DMA mask for udmabuf device\n");
 		misc_deregister(&udmabuf_misc);
