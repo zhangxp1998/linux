@@ -84,4 +84,4 @@ module_exit(test_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Test dma_buf_mmap() with per-process page sizes");
-MODULE_IMPORT_NS("DMA_BUF");
+MODULE_IMPORT_NS(DMA_BUF);
