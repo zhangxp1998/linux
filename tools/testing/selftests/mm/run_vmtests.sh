@@ -346,6 +346,7 @@ CATEGORY="mmap" run_test ./mmap_hint_ppps
 CATEGORY="mmap" run_test ./brk_aslr_ppps
 CATEGORY="mmap" run_test ./elf_brk_gap_ppps
 CATEGORY="mmap" run_test ./mmap_aslr_ppps
+CATEGORY="mmap" run_test ./exec_aslr_ppps
 CATEGORY="mmap" run_test ./shmem_thp_mmap_ppps
 CATEGORY="mmap" run_test ./smaps_page_size_ppps
 CATEGORY="mmap" run_test ./fork_page_size_ppps
@@ -460,6 +461,8 @@ CATEGORY="mremap" run_test ./test_mremap_pgoff_ppps.sh
 CATEGORY="mmap" run_test ./msync_offset_ppps
 CATEGORY="mmap" run_test ./bpf_array_mmap_ppps
 CATEGORY="mmap" run_test ./bpf_ringbuf_mmap_ppps
+CATEGORY="mmap" run_test ./fork_filemap_ppps
+CATEGORY="mmap" run_test ./munmap_ppps
 CATEGORY="mmap" run_test ./bpf_stack_build_id_ppps
 
 CATEGORY="hugetlb" run_test ./thuge-gen

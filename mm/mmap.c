@@ -396,7 +396,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		addr = round_hint_to_min(addr);
 
 	/* Careful about overflows.. */
-	len = MM_UAPI_PAGE_ALIGN(mm, len);
+	len = MM_PAGE_ALIGN(mm, len);
 	if (!len)
 		return -ENOMEM;
 
@@ -1116,12 +1116,21 @@ EXPORT_SYMBOL(vm_munmap);
 
 SYSCALL_DEFINE2(munmap, unsigned long, addr, size_t, len)
 {
+	struct mm_struct *mm = current->mm;
+
 	addr = untagged_addr(addr);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (mm_offset_in_page(mm, addr))
+		return -EINVAL;
+
+	len = MM_PAGE_ALIGN(mm, len);
+#else
 	if (!__PAGE_ALIGNED(addr))
 		return -EINVAL;
 
 	len = __PAGE_ALIGN(len);
+#endif
 
 	profile_munmap(addr);
 	return __vm_munmap(addr, len, true);
