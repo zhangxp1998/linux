@@ -3221,11 +3221,11 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 #endif
 EXPORT_SYMBOL(remap_pfn_range);
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
 			  unsigned long pfn, unsigned int slice,
 			  unsigned long size, pgprot_t prot)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	unsigned long slice_bytes;
 	unsigned long track_size;
 #ifdef __HAVE_PFNMAP_TRACKING
@@ -3264,9 +3264,14 @@ int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
 	}
 #endif
 	return err;
+#else
+	if (slice)
+		return -EINVAL;
+
+	return remap_pfn_range(vma, addr, pfn, size, prot);
+#endif
 }
 EXPORT_SYMBOL(remap_pfn_range_slice);
-#endif
 
 /**
  * vm_iomap_memory - remap memory to userspace

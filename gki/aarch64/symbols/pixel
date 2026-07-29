@@ -1356,6 +1356,8 @@
   __mmap_lock_do_trace_released
   __mmap_lock_do_trace_start_locking
   __mmdrop
+  mm_task_size64
+  mm_task_size64_of
   mmput
   mod_delayed_work_on
   mod_node_page_state
@@ -1824,6 +1826,7 @@
   release_firmware
   __release_region
   remap_pfn_range
+  remap_pfn_range_slice
   remap_vmalloc_range
   remove_cpu
   remove_proc_entry
@@ -2532,6 +2535,7 @@
   vmap
   __vma_start_write
   vmf_insert_pfn_prot
+  vm_insert_pages
   vm_node_stat
   vm_unmapped_area
   vm_zone_stat
