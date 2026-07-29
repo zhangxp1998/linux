@@ -303,6 +303,15 @@ static int erofs_read_superblock(struct super_block *sb)
 		erofs_err(sb, "dirblkbits %u isn't supported", dsb->dirblkbits);
 		goto out;
 	}
+	/*
+	 * Metadata reads start at fsoff within the folio; a misaligned offset
+	 * would make the checksum below read past it.
+	 */
+	if (sbi->dif0.fsoff & ((1ULL << sbi->blkszbits) - 1)) {
+		erofs_err(sb, "fsoffset %llu is not aligned to block size %u",
+			  sbi->dif0.fsoff, 1U << sbi->blkszbits);
+		goto out;
+	}
 
 	sbi->feature_compat = le32_to_cpu(dsb->feature_compat);
 	if (erofs_sb_has_sb_chksum(sbi)) {
