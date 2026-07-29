@@ -303,7 +303,7 @@ impl ShrinkablePageRange {
     /// Register a vma with this page range. Returns the size of the region.
     pub(crate) fn register_with_vma(&self, vma: &virt::VmaNew) -> Result<usize> {
         let num_bytes = usize::min(vma.end() - vma.start(), bindings::SZ_4M as usize);
-        let num_pages = num_bytes >> PAGE_SHIFT;
+        let num_pages = (num_bytes + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
         if !ptr::eq::<Mm>(&*self.mm, &**vma.mm()) {
             pr_debug!("Failed to register with vma: invalid vma->vm_mm");
@@ -790,8 +790,9 @@ unsafe extern "C" fn rust_shrink_free_page(
 
     if let Some(vma) = check_vma(&vma_read, range_ptr) {
         let user_page_addr = vma_addr + (page_index << PAGE_SHIFT);
+        let user_page_size = usize::min(PAGE_SIZE, vma.end() - user_page_addr);
         crate::trace::trace_unmap_user_start(pid, page_index);
-        vma.zap_page_range_single(user_page_addr, PAGE_SIZE);
+        vma.zap_page_range_single(user_page_addr, user_page_size);
         crate::trace::trace_unmap_user_end(pid, page_index);
     }
 
