@@ -57,9 +57,6 @@ struct linux_binprm;
 #define ppps_mm_is_compat(mm)						\
 	(((struct mm_struct *)(mm)) && ((struct mm_struct *)(mm))->page_shift == PAGE_SHIFT_COMPAT)
 
-unsigned long mm_default_map_window64(void);
-unsigned long mm_default_map_window64_of(struct mm_struct *mm);
-
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 /* fork() must preserve the geometry of the page tables it copies. */
 #define mm_inherit_pagesize(mm, oldmm) \
@@ -82,18 +79,17 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 #endif
 #define ppps_mm_is_compat(mm)		((void)(mm), false)
 
-#define mm_default_map_window64()	(1UL << VA_BITS_MIN)
-#define mm_default_map_window64_of(mm)	((void)(mm), (1UL << VA_BITS_MIN))
-
 static inline void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm) {}
 #define mm_inherit_pagesize(mm, oldmm)	((void)(mm), (void)(oldmm))
 #define vma_set_slice_off(vma, val)	((void)(vma), (void)(val))
 #define vma_slice_off(vma)		((void)(vma), 0)
 #endif
 
-/* Out of line in both configurations: both are on the GKI symbol list. */
+/* Out of line on arm64, with or without PPPS: these are GKI symbols. */
 unsigned long mm_task_size64(void);
 unsigned long mm_task_size64_of(struct mm_struct *mm);
+unsigned long mm_default_map_window64(void);
+unsigned long mm_default_map_window64_of(struct mm_struct *mm);
 
 #define PPPS_SLICE_SHIFT	(PAGE_SHIFT - PAGE_SHIFT_COMPAT)
 #define PPPS_SLICES_PER_PAGE	(1UL << PPPS_SLICE_SHIFT)

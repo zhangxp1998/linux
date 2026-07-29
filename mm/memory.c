@@ -2969,7 +2969,11 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 }
 EXPORT_SYMBOL(remap_pfn_range);
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * remap_pfn_range() starting at process-page slice @slice of @pfn: a compat
+ * VMA can map I/O memory at sub-native-page granularity.  @slice must be 0
+ * outside a compat mm.
+ */
 int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
 			  unsigned long pfn, unsigned int slice,
 			  unsigned long size, pgprot_t prot)
@@ -2997,7 +3001,6 @@ int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
 	return err;
 }
 EXPORT_SYMBOL(remap_pfn_range_slice);
-#endif
 
 /**
  * vm_iomap_memory - remap memory to userspace
@@ -5077,7 +5080,7 @@ static void map_anon_folio_pte_nopf(struct folio *folio, pte_t *pte,
 	const unsigned int nr_pages = folio_nr_pages(folio);
 	pte_t entry = mk_pte(&folio->page, vma->vm_page_prot);
 
-	entry = ppps_folio_mk_pte_slice(vma, folio, entry, addr);
+	entry = vma_pte_mkslice(vma, entry, addr);
 	entry = pte_sw_mkyoung(entry);
 
 	if (vma->vm_flags & VM_WRITE)
