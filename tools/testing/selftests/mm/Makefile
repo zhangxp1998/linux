@@ -115,6 +115,8 @@ TEST_GEN_FILES += secretmem_eof_ppps
 TEST_GEN_FILES += shmem_eof_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += bpf_ringbuf_mmap_ppps
+TEST_GEN_FILES += fork_filemap_ppps
+TEST_GEN_FILES += munmap_ppps
 TEST_GEN_FILES += bpf_attr_size_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
 TEST_GEN_FILES += key_update_size_ppps
@@ -162,6 +164,9 @@ ifeq ($(ARCH),arm64)
 TEST_GEN_FILES += brk_aslr_ppps
 TEST_GEN_FILES += brk_aslr_ppps_sample
 TEST_GEN_FILES += elf_brk_gap_ppps
+TEST_GEN_FILES += exec_aslr_ppps
+TEST_GEN_FILES += exec_aslr_ppps_helper
+TEST_GEN_FILES += exec_aslr_ppps_interp
 TEST_GEN_FILES += exec_stack_ppps
 TEST_GEN_FILES += exec_stack_random_ppps
 TEST_GEN_FILES += mmap_aslr_ppps
@@ -318,6 +323,15 @@ include ../lib.mk
 
 $(OUTPUT)/brk_aslr_ppps_sample: brk_aslr_ppps_sample.S
 	$(CC) -nostdlib -static -no-pie $< -o $@
+
+$(OUTPUT)/exec_aslr_ppps_helper: exec_aslr_ppps_helper.S
+	$(CC) -nostdlib -pie -Wl,-e,_start \
+		-Wl,--dynamic-linker=/proc/self/fd/3 -Wl,--build-id=none \
+		-Wl,-z,max-page-size=16384 $< -o $@
+
+$(OUTPUT)/exec_aslr_ppps_interp: exec_aslr_ppps_interp.S
+	$(CC) -nostdlib -static-pie -Wl,-e,_start -Wl,--build-id=none \
+		-Wl,-z,max-page-size=16384 $< -o $@
 
 ifneq ($(GUP_RETRY_PPPS_MODULE),)
 all: $(GUP_RETRY_PPPS_MODULE)
@@ -589,6 +603,9 @@ $(OUTPUT)/taskstats_ppps: CFLAGS += -I$(selfdir)
 
 $(OUTPUT)/vb2_mmap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 $(OUTPUT)/process_madvise_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+$(OUTPUT)/exec_aslr_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+$(OUTPUT)/fork_filemap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+$(OUTPUT)/munmap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 
 $(OUTPUT)/gup_longterm: LDLIBS += $(IOURING_EXTRA_LIBS)
 
