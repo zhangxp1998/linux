@@ -2961,7 +2961,11 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 }
 EXPORT_SYMBOL(remap_pfn_range);
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * remap_pfn_range() starting at process-page slice @slice of @pfn: a compat
+ * VMA can map I/O memory at sub-native-page granularity.  @slice must be 0
+ * outside a compat mm.
+ */
 int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
 			  unsigned long pfn, unsigned int slice,
 			  unsigned long size, pgprot_t prot)
@@ -2989,7 +2993,6 @@ int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
 	return err;
 }
 EXPORT_SYMBOL(remap_pfn_range_slice);
-#endif
 
 /**
  * vm_iomap_memory - remap memory to userspace
