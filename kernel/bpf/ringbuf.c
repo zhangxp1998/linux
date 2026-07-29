@@ -92,7 +92,7 @@ static struct bpf_ringbuf *bpf_ringbuf_area_alloc(size_t data_sz, int numa_node)
 	const gfp_t flags = GFP_KERNEL_ACCOUNT | __GFP_RETRY_MAYFAIL |
 			    __GFP_NOWARN | __GFP_ZERO;
 	int nr_meta_pages = RINGBUF_NR_META_PAGES;
-	int nr_data_pages = data_sz >> PAGE_SHIFT;
+	int nr_data_pages = DIV_ROUND_UP(data_sz, PAGE_SIZE);
 	int nr_pages = nr_meta_pages + nr_data_pages;
 	struct page **pages, *page;
 	struct bpf_ringbuf *rb;
@@ -190,13 +190,15 @@ static struct bpf_ringbuf *bpf_ringbuf_alloc(size_t data_sz, int numa_node)
 static struct bpf_map *ringbuf_map_alloc(union bpf_attr *attr)
 {
 	struct bpf_ringbuf_map *rb_map;
+	unsigned long user_page_size = current->mm ?
+				       MM_PAGE_SIZE(current->mm) : PAGE_SIZE;
 
 	if (attr->map_flags & ~RINGBUF_CREATE_FLAG_MASK)
 		return ERR_PTR(-EINVAL);
 
 	if (attr->key_size || attr->value_size ||
 	    !is_power_of_2(attr->max_entries) ||
-	    !PAGE_ALIGNED(attr->max_entries))
+	    !IS_ALIGNED(attr->max_entries, user_page_size))
 		return ERR_PTR(-EINVAL);
 
 	rb_map = bpf_map_area_alloc(sizeof(*rb_map), NUMA_NO_NODE);
@@ -432,7 +434,7 @@ static u64 ringbuf_map_mem_usage(const struct bpf_map *map)
 	rb = container_of(map, struct bpf_ringbuf_map, map)->rb;
 	usage += (u64)rb->nr_pages << PAGE_SHIFT;
 	nr_meta_pages = RINGBUF_NR_META_PAGES;
-	nr_data_pages = map->max_entries >> PAGE_SHIFT;
+	nr_data_pages = DIV_ROUND_UP(map->max_entries, PAGE_SIZE);
 	usage += (nr_meta_pages + 2 * nr_data_pages) * sizeof(struct page *);
 	return usage;
 }
