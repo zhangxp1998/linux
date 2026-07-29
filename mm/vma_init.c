@@ -47,6 +47,9 @@ static void vm_area_init_from(const struct vm_area_struct *src,
 	dest->vm_end = src->vm_end;
 	dest->anon_vma = src->anon_vma;
 	dest->vm_pgoff = src->vm_pgoff;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	dest->vm_slice_off = src->vm_slice_off;
+#endif
 	dest->vm_file = src->vm_file;
 	dest->vm_private_data = src->vm_private_data;
 	vm_flags_init(dest, src->vm_flags);
