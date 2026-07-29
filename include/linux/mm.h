@@ -3743,6 +3743,8 @@ int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
 		pgprot_t prot);
 #endif
 int vm_insert_page(struct vm_area_struct *, unsigned long addr, struct page *);
+int vm_insert_page_native(struct vm_area_struct *vma, unsigned long addr,
+			  struct page *page);
 int vm_insert_page_slice(struct vm_area_struct *vma, unsigned long addr,
 			 struct page *page, unsigned int slice_idx);
 int vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
