@@ -449,13 +449,20 @@ unsigned long __weak arch_randomize_brk(struct mm_struct *mm)
 unsigned long arch_mmap_rnd(void)
 {
 	unsigned long rnd;
+	unsigned int rnd_bits;
 
 #ifdef CONFIG_HAVE_ARCH_MMAP_RND_COMPAT_BITS
 	if (is_compat_task())
-		rnd = get_random_long() & ((1UL << mmap_rnd_compat_bits) - 1);
+		rnd_bits = mmap_rnd_compat_bits;
 	else
 #endif /* CONFIG_HAVE_ARCH_MMAP_RND_COMPAT_BITS */
-		rnd = get_random_long() & ((1UL << mmap_rnd_bits) - 1);
+		rnd_bits = mmap_rnd_bits;
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	rnd_bits = min_t(unsigned int, rnd_bits,
+			 MM_VA_BITS(current->mm) - MM_PAGE_SHIFT(current->mm) - 3);
+#endif
+	rnd = get_random_long() & ((1UL << rnd_bits) - 1);
 
 	return rnd << MM_PAGE_SHIFT(current->mm);
 }
