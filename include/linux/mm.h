@@ -1999,6 +1999,24 @@ static inline bool folio_has_pincount(const struct folio *folio)
 	return folio_order(folio) > 1;
 }
 
+/*
+ * vma_page_slice_offset - byte offset, within the native @page that GUP
+ * returned for @addr, of the process page that maps @addr.
+ *
+ * A packed anonymous folio backs four consecutive process pages, so its slice
+ * follows the virtual address.  Every other mapping (file slices, singleton
+ * anonymous folios) follows the VMA slice, which is 0 for anonymous VMAs.
+ */
+static inline unsigned long vma_page_slice_offset(struct vm_area_struct *vma,
+						  struct page *page,
+						  unsigned long addr)
+{
+	if (folio_test_ppps_packed_anon(page_folio(page)))
+		return addr & ((PAGE_SIZE - 1) & PAGE_MASK_COMPAT);
+	return (unsigned long)vma_address_to_slice(vma, addr) <<
+		PAGE_SHIFT_COMPAT;
+}
+
 /**
  * folio_maybe_dma_pinned - Report if a folio may be pinned for DMA.
  * @folio: The folio.
@@ -2587,9 +2605,7 @@ struct follow_pfnmap_args {
 	 */
 	unsigned long pfn;
 	unsigned long addr_mask;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	phys_addr_t phys_addr;
-#endif
 	pgprot_t pgprot;
 	bool writable;
 	bool special;
@@ -2850,10 +2866,23 @@ static inline int mm_counter(struct folio *folio)
 	return mm_counter_file(folio);
 }
 
+/*
+ * MM_FILEPAGES, MM_SHMEMPAGES and MM_SWAPENTS count process pages
+ * (one per PTE), while MM_ANONPAGES counts native pages.  Report a
+ * uniform process-page total so hiwater/rusage/proc consumers can scale it
+ * with the process page size.
+ */
+static inline unsigned long mm_native_to_process_pages(struct mm_struct *mm,
+						       unsigned long pages)
+{
+	return pages << (PAGE_SHIFT - MM_PAGE_SHIFT(mm));
+}
+
 static inline unsigned long get_mm_rss(struct mm_struct *mm)
 {
 	return get_mm_counter(mm, MM_FILEPAGES) +
-		get_mm_counter(mm, MM_ANONPAGES) +
+		mm_native_to_process_pages(mm,
+					   get_mm_counter(mm, MM_ANONPAGES)) +
 		get_mm_counter(mm, MM_SHMEMPAGES);
 }
 
@@ -3826,11 +3855,6 @@ static inline void vma_set_page_prot(struct vm_area_struct *vma)
 }
 #endif
 
-static inline pgprot_t vma_get_page_prot(vma_flags_t vma_flags)
-{
-	return vm_get_page_prot(vma_flags);
-}
-
 void vma_set_file(struct vm_area_struct *vma, struct file *file);
 
 #ifdef CONFIG_NUMA_BALANCING
@@ -3844,18 +3868,9 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 		    unsigned long pfn, unsigned long size, pgprot_t pgprot);
 int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
 		unsigned long pfn, unsigned long size, pgprot_t prot);
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
 			  unsigned long pfn, unsigned int slice,
 			  unsigned long size, pgprot_t pgprot);
-#else
-static inline int remap_pfn_range_slice(struct vm_area_struct *vma,
-		unsigned long addr, unsigned long pfn, unsigned int slice,
-		unsigned long size, pgprot_t pgprot)
-{
-	return remap_pfn_range(vma, addr, pfn, size, pgprot);
-}
-#endif
 int vm_insert_page(struct vm_area_struct *, unsigned long addr, struct page *);
 int vm_insert_page_slice(struct vm_area_struct *vma, unsigned long addr,
 			 struct page *page, unsigned int slice_idx);
