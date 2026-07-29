@@ -169,15 +169,6 @@ static int zram_ioctl_process_scan(struct zram *zram, unsigned int cmd,
 		.cmd = cmd,
 	};
 
-	if (cmd == ZRAM_ANDROID_IOC_PROCESS_RANGE_WRITEBACK) {
-		start_addr = (unsigned long)prwb->start_addr;
-		nr_remaining_pages = DIV_ROUND_UP_POW2(prwb->size, PAGE_SIZE);
-	}
-
-	if (!nr_remaining_pages)
-		private.nr_remaining_pages = NR_PAGES_UNLIMITED;
-	else
-		private.nr_remaining_pages = nr_remaining_pages;
 
 	task = pidfd_get_task(pidfd, &f_flags);
 	if (IS_ERR(task))
@@ -188,6 +179,16 @@ static int zram_ioctl_process_scan(struct zram *zram, unsigned int cmd,
 		ret = -ESRCH;
 		goto release_task;
 	}
+
+	if (cmd == ZRAM_ANDROID_IOC_PROCESS_RANGE_WRITEBACK) {
+		start_addr = (unsigned long)prwb->start_addr;
+		nr_remaining_pages = DIV_ROUND_UP_POW2(prwb->size, MM_PAGE_SIZE(mm));
+	}
+
+	if (!nr_remaining_pages)
+		private.nr_remaining_pages = NR_PAGES_UNLIMITED;
+	else
+		private.nr_remaining_pages = nr_remaining_pages;
 
 	if (start_addr >= mm->task_size) {
 		ret = -EINVAL;
