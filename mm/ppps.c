@@ -11,9 +11,14 @@
 #include <asm/memory.h>
 #include "internal.h"
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#undef mm_task_size64
+#undef mm_task_size64_of
+#endif
+
 unsigned long mm_task_size64(void)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	struct mm_struct *mm = current->mm;
 
 	if (!mm)
@@ -21,6 +26,7 @@ unsigned long mm_task_size64(void)
 
 	if (mm->page_shift == PAGE_SHIFT_COMPAT)
 		return 1UL << VA_BITS_COMPAT;
+#endif
 
 	return 1UL << vabits_actual;
 }
@@ -28,16 +34,21 @@ EXPORT_SYMBOL(mm_task_size64);
 
 unsigned long mm_task_size64_of(struct mm_struct *mm)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (!mm)
 		return (1UL << vabits_actual);
 
 	if (mm->page_shift == PAGE_SHIFT_COMPAT)
 		return 1UL << VA_BITS_COMPAT;
+#else
+	(void)mm;
+#endif
 
 	return 1UL << vabits_actual;
 }
 EXPORT_SYMBOL(mm_task_size64_of);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 unsigned long mm_default_map_window64(void)
 {
 	return mm_default_map_window64_of(current->mm);
