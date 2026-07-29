@@ -1620,6 +1620,10 @@
   __mmap_lock_do_trace_released
   __mmap_lock_do_trace_start_locking
   __mmdrop
+  mm_default_map_window64
+  mm_default_map_window64_of
+  mm_task_size64
+  mm_task_size64_of
   mmput
   mod_delayed_work_on
   mod_node_page_state
@@ -1929,6 +1933,7 @@
   pin_get_name
   pin_user_pages
   pin_user_pages_fast
+  pin_user_pages_range
   pin_user_pages_remote
   pktgen_xfrm_outer_mode_output
   pkvm_iommu_resume
@@ -2162,6 +2167,7 @@
   release_firmware
   __release_region
   remap_pfn_range
+  remap_pfn_range_slice
   remap_vmalloc_range
   remove_cpu
   remove_proc_entry
@@ -2819,6 +2825,7 @@
   unlock_page
   unmap_mapping_range
   unpin_user_page
+  unpin_user_pages
   unregister_blkdev
   __unregister_chrdev
   unregister_chrdev_region
@@ -2979,7 +2986,9 @@
   __vma_start_write
   vmf_insert_pfn
   vmf_insert_pfn_prot
+  vmf_insert_pfn_prot_slice
   vm_get_page_prot
+  vm_insert_pages
   vm_iomap_memory
   vm_map_ram
   vm_node_stat

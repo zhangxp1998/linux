@@ -11,9 +11,21 @@
 #include <asm/memory.h>
 #include "internal.h"
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/* Keep exported native fallbacks visible when public helpers are macros. */
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#undef mm_task_size64
+#undef mm_task_size64_of
+#undef mm_default_map_window64
+#undef mm_default_map_window64_of
+unsigned long mm_task_size64(void);
+unsigned long mm_task_size64_of(struct mm_struct *mm);
+unsigned long mm_default_map_window64(void);
+unsigned long mm_default_map_window64_of(struct mm_struct *mm);
+#endif
+
 unsigned long mm_task_size64(void)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	struct mm_struct *mm = current->mm;
 
 	if (!mm)
@@ -21,6 +33,7 @@ unsigned long mm_task_size64(void)
 
 	if (mm->page_shift == PAGE_SHIFT_COMPAT)
 		return 1UL << VA_BITS_COMPAT;
+#endif
 
 	return 1UL << vabits_actual;
 }
@@ -28,11 +41,15 @@ EXPORT_SYMBOL(mm_task_size64);
 
 unsigned long mm_task_size64_of(struct mm_struct *mm)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (!mm)
 		return (1UL << vabits_actual);
 
 	if (mm->page_shift == PAGE_SHIFT_COMPAT)
 		return 1UL << VA_BITS_COMPAT;
+#else
+	(void)mm;
+#endif
 
 	return 1UL << vabits_actual;
 }
@@ -42,6 +59,7 @@ unsigned long mm_default_map_window64(void)
 {
 	return mm_default_map_window64_of(current->mm);
 }
+EXPORT_SYMBOL(mm_default_map_window64);
 
 unsigned long mm_default_map_window64_of(struct mm_struct *mm)
 {
@@ -50,6 +68,8 @@ unsigned long mm_default_map_window64_of(struct mm_struct *mm)
 
 	return 1UL << VA_BITS_MIN;
 }
+EXPORT_SYMBOL(mm_default_map_window64_of);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm)
 {
 	/* fork() must preserve the geometry of the page tables it copies. */
