@@ -764,8 +764,8 @@ static int __bpf_user_ringbuf_peek(struct bpf_ringbuf *rb, void **sample, u32 *s
 	if (flags & BPF_RINGBUF_BUSY_BIT)
 		return -ENODATA;
 
-	*sample = (void *)((uintptr_t)rb->data +
-			   (uintptr_t)((cons_pos + BPF_RINGBUF_HDR_SZ) & rb->mask));
+	/* The producer writes past the header into the mirrored window. */
+	*sample = (void *)hdr + BPF_RINGBUF_HDR_SZ;
 	*size = sample_len;
 	return 0;
 }
