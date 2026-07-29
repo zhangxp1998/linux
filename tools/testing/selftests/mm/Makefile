@@ -129,6 +129,8 @@ TEST_GEN_FILES += secretmem_eof_ppps
 TEST_GEN_FILES += shmem_eof_ppps
 TEST_GEN_FILES += bpf_array_mmap_ppps
 TEST_GEN_FILES += bpf_ringbuf_mmap_ppps
+TEST_GEN_FILES += fork_filemap_ppps
+TEST_GEN_FILES += munmap_ppps
 TEST_GEN_FILES += bpf_stack_build_id_ppps
 TEST_GEN_FILES += vhost_dirty_log_ppps
 TEST_GEN_FILES += iov_iter_ppps
@@ -158,6 +160,9 @@ ifeq ($(ARCH),arm64)
 TEST_GEN_FILES += brk_aslr_ppps
 TEST_GEN_FILES += brk_aslr_ppps_sample
 TEST_GEN_FILES += elf_brk_gap_ppps
+TEST_GEN_FILES += exec_aslr_ppps
+TEST_GEN_FILES += exec_aslr_ppps_helper
+TEST_GEN_FILES += exec_aslr_ppps_interp
 TEST_GEN_FILES += exec_stack_ppps
 TEST_GEN_FILES += exec_stack_random_ppps
 TEST_GEN_FILES += mmap_aslr_ppps
@@ -296,210 +301,14 @@ include ../lib.mk
 $(OUTPUT)/brk_aslr_ppps_sample: brk_aslr_ppps_sample.S
 	$(CC) -nostdlib -static -no-pie $< -o $@
 
-ifneq ($(GUP_RETRY_PPPS_MODULE),)
-all: $(GUP_RETRY_PPPS_MODULE)
+$(OUTPUT)/exec_aslr_ppps_helper: exec_aslr_ppps_helper.S
+	$(CC) -nostdlib -pie -Wl,-e,_start \
+		-Wl,--dynamic-linker=/proc/self/fd/3 -Wl,--build-id=none \
+		-Wl,-z,max-page-size=16384 $< -o $@
 
-$(GUP_RETRY_PPPS_MODULE): gup_retry_ppps_module/gup_retry_ppps_module.c \
-			  gup_retry_ppps_module/Makefile gup_retry_ppps.h
-	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_gup_retry_ppps_module
-clean_gup_retry_ppps_module:
-	+$(MAKE) -C gup_retry_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_gup_retry_ppps_module
-endif
-
-ifneq ($(IOV_ITER_PPPS_MODULE),)
-all: $(IOV_ITER_PPPS_MODULE)
-
-$(IOV_ITER_PPPS_MODULE): iov_iter_ppps_module/iov_iter_ppps_module.c \
-			 iov_iter_ppps_module/Makefile iov_iter_ppps.h
-	+$(MAKE) -C iov_iter_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_iov_iter_ppps_module
-clean_iov_iter_ppps_module:
-	+$(MAKE) -C iov_iter_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_iov_iter_ppps_module
-endif
-
-ifneq ($(FAULT_IN_PPPS_MODULE),)
-all: $(FAULT_IN_PPPS_MODULE)
-
-$(FAULT_IN_PPPS_MODULE): fault_in_ppps_module/fault_in_ppps_module.c \
-			 fault_in_ppps_module/Makefile fault_in_ppps.h
-	+$(MAKE) -C fault_in_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_fault_in_ppps_module
-clean_fault_in_ppps_module:
-	+$(MAKE) -C fault_in_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_fault_in_ppps_module
-endif
-
-ifneq ($(MREMAP_PGOFF_PPPS_MODULE),)
-all: $(MREMAP_PGOFF_PPPS_MODULE)
-
-$(MREMAP_PGOFF_PPPS_MODULE): mremap_pgoff_ppps_module/mremap_pgoff_ppps_module.c \
-				       mremap_pgoff_ppps_module/Makefile
-	+$(MAKE) -C mremap_pgoff_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_mremap_pgoff_ppps_module
-clean_mremap_pgoff_ppps_module:
-	+$(MAKE) -C mremap_pgoff_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_mremap_pgoff_ppps_module
-endif
-
-ifneq ($(VM_IOMAP_MEMORY_PPPS_MODULE),)
-all: $(VM_IOMAP_MEMORY_PPPS_MODULE)
-
-$(VM_IOMAP_MEMORY_PPPS_MODULE): vm_iomap_memory_ppps_module/vm_iomap_memory_ppps_module.c \
-				       vm_iomap_memory_ppps_module/Makefile \
-				       vm_iomap_memory_ppps.h
-	+$(MAKE) -C vm_iomap_memory_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_vm_iomap_memory_ppps_module
-clean_vm_iomap_memory_ppps_module:
-	+$(MAKE) -C vm_iomap_memory_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_vm_iomap_memory_ppps_module
-endif
-
-ifneq ($(DMA_MMAP_ATTRS_PPPS_MODULE),)
-all: $(DMA_MMAP_ATTRS_PPPS_MODULE)
-
-$(DMA_MMAP_ATTRS_PPPS_MODULE): dma_mmap_attrs_ppps_module/dma_mmap_attrs_ppps_module.c \
-				     dma_mmap_attrs_ppps_module/Makefile \
-				     dma_mmap_attrs_ppps.h
-	+$(MAKE) -C dma_mmap_attrs_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_dma_mmap_attrs_ppps_module
-clean_dma_mmap_attrs_ppps_module:
-	+$(MAKE) -C dma_mmap_attrs_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_dma_mmap_attrs_ppps_module
-endif
-
-ifneq ($(DMA_MMAP_PAGES_PPPS_MODULE),)
-all: $(DMA_MMAP_PAGES_PPPS_MODULE)
-
-$(DMA_MMAP_PAGES_PPPS_MODULE): dma_mmap_pages_ppps_module/dma_mmap_pages_ppps_module.c \
-				     dma_mmap_pages_ppps_module/Makefile \
-				     dma_mmap_pages_ppps.h
-	+$(MAKE) -C dma_mmap_pages_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_dma_mmap_pages_ppps_module
-clean_dma_mmap_pages_ppps_module:
-	+$(MAKE) -C dma_mmap_pages_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_dma_mmap_pages_ppps_module
-endif
-
-ifneq ($(VM_MAP_PAGES_PPPS_MODULE),)
-all: $(VM_MAP_PAGES_PPPS_MODULE)
-
-$(VM_MAP_PAGES_PPPS_MODULE): vm_map_pages_ppps_module/vm_map_pages_ppps_module.c \
-				    vm_map_pages_ppps_module/Makefile \
-				    vm_map_pages_ppps.h
-	+$(MAKE) -C vm_map_pages_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_vm_map_pages_ppps_module
-clean_vm_map_pages_ppps_module:
-	+$(MAKE) -C vm_map_pages_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_vm_map_pages_ppps_module
-endif
-
-ifneq ($(IOMMU_DMA_MMAP_PPPS_MODULE),)
-all: $(IOMMU_DMA_MMAP_PPPS_MODULE)
-
-$(IOMMU_DMA_MMAP_PPPS_MODULE): iommu_dma_mmap_ppps_module/iommu_dma_mmap_ppps_module.c \
-				      iommu_dma_mmap_ppps_module/Makefile
-	+$(MAKE) -C iommu_dma_mmap_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_iommu_dma_mmap_ppps_module
-clean_iommu_dma_mmap_ppps_module:
-	+$(MAKE) -C iommu_dma_mmap_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_iommu_dma_mmap_ppps_module
-endif
-
-ifneq ($(PAGEWALK_PPPS_MODULE),)
-all: $(PAGEWALK_PPPS_MODULE)
-
-$(PAGEWALK_PPPS_MODULE): pagewalk_ppps_module/pagewalk_ppps_module.c \
-				 pagewalk_ppps_module/Makefile pagewalk_ppps.h
-	+$(MAKE) -C pagewalk_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_pagewalk_ppps_module
-clean_pagewalk_ppps_module:
-	+$(MAKE) -C pagewalk_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_pagewalk_ppps_module
-endif
-
-ifneq ($(MMU_NOTIFIER_PPPS_MODULE),)
-all: $(MMU_NOTIFIER_PPPS_MODULE)
-
-$(MMU_NOTIFIER_PPPS_MODULE): \
-	mmu_notifier_ppps_module/mmu_notifier_ppps_module.c \
-	mmu_notifier_ppps_module/mmu_notifier_ppps.h \
-	mmu_notifier_ppps_module/Makefile
-	+$(MAKE) -C mmu_notifier_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_mmu_notifier_ppps_module
-clean_mmu_notifier_ppps_module:
-	+$(MAKE) -C mmu_notifier_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_mmu_notifier_ppps_module
-endif
-
-ifneq ($(FOLIO_WITHIN_RANGE_PPPS_MODULE),)
-all: $(FOLIO_WITHIN_RANGE_PPPS_MODULE)
-
-$(FOLIO_WITHIN_RANGE_PPPS_MODULE): \
-	folio_within_range_ppps_module/folio_within_range_ppps_test.c \
-	folio_within_range_ppps_module/Makefile folio_within_range_ppps.h
-	+$(MAKE) -C folio_within_range_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_folio_within_range_ppps_module
-clean_folio_within_range_ppps_module:
-	+$(MAKE) -C folio_within_range_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_folio_within_range_ppps_module
-endif
-
-ifneq ($(VB2_MMAP_PPPS_MODULE),)
-all: $(VB2_MMAP_PPPS_MODULE)
-
-$(VB2_MMAP_PPPS_MODULE): \
-	vb2_mmap_ppps_module/vb2_mmap_ppps_test.c \
-	vb2_mmap_ppps_module/Makefile
-	+$(MAKE) -C vb2_mmap_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_vb2_mmap_ppps_module
-clean_vb2_mmap_ppps_module:
-	+$(MAKE) -C vb2_mmap_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_vb2_mmap_ppps_module
-endif
-
-ifneq ($(VB2_USERPTR_PPPS_MODULE),)
-all: $(VB2_USERPTR_PPPS_MODULE)
-
-$(VB2_USERPTR_PPPS_MODULE): \
-	vb2_userptr_ppps_module/vb2_userptr_ppps_test.c \
-	vb2_userptr_ppps_module/Makefile
-	+$(MAKE) -C vb2_userptr_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_vb2_userptr_ppps_module
-clean_vb2_userptr_ppps_module:
-	+$(MAKE) -C vb2_userptr_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_vb2_userptr_ppps_module
-endif
+$(OUTPUT)/exec_aslr_ppps_interp: exec_aslr_ppps_interp.S
+	$(CC) -nostdlib -static-pie -Wl,-e,_start -Wl,--build-id=none \
+		-Wl,-z,max-page-size=16384 $< -o $@
 
 $(TEST_GEN_PROGS): vm_util.c thp_settings.c
 $(TEST_GEN_FILES): vm_util.c thp_settings.c
@@ -580,6 +389,9 @@ $(OUTPUT)/taskstats_ppps: CFLAGS += -I$(selfdir)
 
 $(OUTPUT)/vb2_mmap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 $(OUTPUT)/process_madvise_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+$(OUTPUT)/exec_aslr_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+$(OUTPUT)/fork_filemap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+$(OUTPUT)/munmap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 
 $(OUTPUT)/gup_longterm: LDLIBS += $(IOURING_EXTRA_LIBS)
 

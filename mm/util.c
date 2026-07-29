@@ -357,38 +357,22 @@ EXPORT_SYMBOL(vma_set_file);
 
 unsigned long randomize_stack_top(unsigned long stack_top)
 {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	struct mm_struct *mm = current->mm;
-	unsigned int page_shift = MM_PAGE_SHIFT(mm);
+	unsigned int page_shift = MM_UAPI_PAGE_SHIFT(current->mm);
 	unsigned long stack_rnd_mask = STACK_RND_MASK;
-#else
-	unsigned int page_shift = __PAGE_SHIFT;
-	unsigned long stack_rnd_mask = STACK_RND_MASK;
-#endif
 	unsigned long random_variable = 0;
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (page_shift < PAGE_SHIFT)
 		stack_rnd_mask = ((stack_rnd_mask + 1) <<
 				  (PAGE_SHIFT - page_shift)) - 1;
-#endif
 	if (current->flags & PF_RANDOMIZE) {
 		random_variable = get_random_long();
 		random_variable &= stack_rnd_mask;
 		random_variable <<= page_shift;
 	}
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 #ifdef CONFIG_STACK_GROWSUP
-	return MM_PAGE_ALIGN(mm, stack_top) + random_variable;
+	return MM_UAPI_PAGE_ALIGN(current->mm, stack_top) + random_variable;
 #else
-	return MM_PAGE_ALIGN(mm, stack_top) - random_variable;
-#endif
-#else
-#ifdef CONFIG_STACK_GROWSUP
-	return __PAGE_ALIGN(stack_top) + random_variable;
-#else
-	return __PAGE_ALIGN(stack_top) - random_variable;
-#endif
+	return MM_UAPI_PAGE_ALIGN(current->mm, stack_top) - random_variable;
 #endif
 }
 
@@ -408,22 +392,12 @@ unsigned long randomize_stack_top(unsigned long stack_top)
  */
 unsigned long randomize_page(unsigned long start, unsigned long range)
 {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	struct mm_struct *mm = current->mm;
-	unsigned int page_shift = MM_PAGE_SHIFT(mm);
+	unsigned int page_shift = MM_UAPI_PAGE_SHIFT(current->mm);
 
-	if (!MM_PAGE_ALIGNED(mm, start)) {
-		range -= MM_PAGE_ALIGN(mm, start) - start;
-		start = MM_PAGE_ALIGN(mm, start);
+	if (mm_uapi_offset_in_page(current->mm, start)) {
+		range -= MM_UAPI_PAGE_ALIGN(current->mm, start) - start;
+		start = MM_UAPI_PAGE_ALIGN(current->mm, start);
 	}
-#else
-	unsigned int page_shift = __PAGE_SHIFT;
-
-	if (__offset_in_page(start)) {
-		range -= __PAGE_ALIGN(start) - start;
-		start = __PAGE_ALIGN(start);
-	}
-#endif
 
 	if (start > ULONG_MAX - range)
 		range = ULONG_MAX - start;
@@ -449,13 +423,20 @@ unsigned long __weak arch_randomize_brk(struct mm_struct *mm)
 unsigned long arch_mmap_rnd(void)
 {
 	unsigned long rnd;
+	unsigned int rnd_bits;
 
 #ifdef CONFIG_HAVE_ARCH_MMAP_RND_COMPAT_BITS
 	if (is_compat_task())
-		rnd = get_random_long() & ((1UL << mmap_rnd_compat_bits) - 1);
+		rnd_bits = mmap_rnd_compat_bits;
 	else
 #endif /* CONFIG_HAVE_ARCH_MMAP_RND_COMPAT_BITS */
-		rnd = get_random_long() & ((1UL << mmap_rnd_bits) - 1);
+		rnd_bits = mmap_rnd_bits;
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	rnd_bits = min_t(unsigned int, rnd_bits,
+			 MM_VA_BITS(current->mm) - MM_PAGE_SHIFT(current->mm) - 3);
+#endif
+	rnd = get_random_long() & ((1UL << rnd_bits) - 1);
 
 	return rnd << MM_PAGE_SHIFT(current->mm);
 }
