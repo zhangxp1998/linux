@@ -68,6 +68,11 @@ VISIBLE_IF_KUNIT size_t binder_alloc_buffer_size(struct binder_alloc *alloc,
 }
 EXPORT_SYMBOL_IF_KUNIT(binder_alloc_buffer_size);
 
+static size_t binder_alloc_nr_pages(const struct binder_alloc *alloc)
+{
+	return DIV_ROUND_UP(alloc->buffer_size, PAGE_SIZE);
+}
+
 static void binder_insert_free_buffer(struct binder_alloc *alloc,
 				      struct binder_buffer *new_buffer)
 {
@@ -928,7 +933,7 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 
 	alloc->vm_start = vma->vm_start;
 
-	alloc->pages = kvcalloc(alloc->buffer_size / PAGE_SIZE,
+	alloc->pages = kvcalloc(binder_alloc_nr_pages(alloc),
 				sizeof(alloc->pages[0]),
 				GFP_KERNEL);
 	if (!alloc->pages) {
@@ -1011,7 +1016,7 @@ void binder_alloc_deferred_release(struct binder_alloc *alloc)
 	if (alloc->pages) {
 		int i;
 
-		for (i = 0; i < alloc->buffer_size / PAGE_SIZE; i++) {
+		for (i = 0; i < binder_alloc_nr_pages(alloc); i++) {
 			struct page *page;
 			bool on_lru;
 
@@ -1088,7 +1093,7 @@ void binder_alloc_print_pages(struct seq_file *m,
 	 * read inconsistent state.
 	 */
 	if (binder_alloc_is_mapped(alloc)) {
-		for (i = 0; i < alloc->buffer_size / PAGE_SIZE; i++) {
+		for (i = 0; i < binder_alloc_nr_pages(alloc); i++) {
 			page = binder_get_installed_page(alloc, i);
 			if (!page)
 				free++;
