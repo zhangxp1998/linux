@@ -23,18 +23,20 @@ unsigned long mm_task_size64(void)
 }
 EXPORT_SYMBOL(mm_task_size64);
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 unsigned long mm_default_map_window64_of(struct mm_struct *mm)
 {
 	return ppps_mm_is_compat(mm) ? 1UL << VA_BITS_COMPAT :
 				       1UL << VA_BITS_MIN;
 }
+EXPORT_SYMBOL(mm_default_map_window64_of);
 
 unsigned long mm_default_map_window64(void)
 {
 	return mm_default_map_window64_of(current->mm);
 }
+EXPORT_SYMBOL(mm_default_map_window64);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm)
 {
 	/* fork() must preserve the geometry of the page tables it copies. */
