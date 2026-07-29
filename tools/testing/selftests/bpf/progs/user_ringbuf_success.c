@@ -17,7 +17,7 @@ struct {
 } kernel_ringbuf SEC(".maps");
 
 /* inputs */
-int pid, err, val;
+int pid, err, val, validate_samples;
 
 int read = 0;
 
@@ -57,6 +57,12 @@ record_sample(struct bpf_dynptr *dynptr, void *context)
 			return 1;
 		}
 		stack_sample = *sample;
+	}
+	if (validate_samples &&
+	    (stack_sample.pid != pid ||
+	     stack_sample.value != (long)stack_sample.seq * stack_sample.seq)) {
+		err = 6;
+		return 1;
 	}
 
 	__sync_fetch_and_add(&read, 1);

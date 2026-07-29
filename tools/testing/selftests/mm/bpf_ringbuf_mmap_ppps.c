@@ -19,6 +19,7 @@
 #endif
 
 #define USER_PAGE_SIZE	4096UL
+#define SMALL_RING_SIZE	USER_PAGE_SIZE
 #define RING_SIZE	(4 * USER_PAGE_SIZE)
 #define RING_MMAP_SIZE	(2 * USER_PAGE_SIZE + 2 * RING_SIZE)
 
@@ -27,11 +28,11 @@ static int sys_bpf(enum bpf_cmd command, union bpf_attr *attr)
 	return syscall(__NR_bpf, command, attr, sizeof(*attr));
 }
 
-static int create_ringbuf(enum bpf_map_type type)
+static int create_ringbuf(enum bpf_map_type type, size_t size)
 {
 	union bpf_attr attr = {
 		.map_type = type,
-		.max_entries = RING_SIZE,
+		.max_entries = size,
 	};
 
 	return sys_bpf(BPF_MAP_CREATE, &attr);
@@ -76,16 +77,36 @@ static int run_test(void)
 		.rlim_max = RLIM_INFINITY,
 	};
 	int ringbuf_fd;
+	int small_ringbuf_fd;
 	int user_ringbuf_fd;
 	bool mapping_ok;
 
 	ksft_print_header();
-	ksft_set_plan(12);
+	ksft_set_plan(16);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
 			 "process uses 4K pages\n");
 	setrlimit(RLIMIT_MEMLOCK, &memlock);
 
-	ringbuf_fd = create_ringbuf(BPF_MAP_TYPE_RINGBUF);
+	small_ringbuf_fd = create_ringbuf(BPF_MAP_TYPE_RINGBUF,
+					  SMALL_RING_SIZE);
+	if (small_ringbuf_fd < 0)
+		ksft_exit_fail_msg("4K BPF ringbuf creation failed: %s\n",
+				   strerror(errno));
+	ksft_test_result(true, "create a 4K kernel ring buffer\n");
+	mapping_ok = mapping_succeeds(small_ringbuf_fd, USER_PAGE_SIZE,
+				      PROT_READ | PROT_WRITE, 0);
+	ksft_test_result(mapping_ok,
+			 "map the 4K ring's consumer position\n");
+	mapping_ok = mapping_succeeds(small_ringbuf_fd, USER_PAGE_SIZE,
+				      PROT_READ, USER_PAGE_SIZE);
+	ksft_test_result(mapping_ok,
+			 "map the 4K ring's producer position\n");
+	mapping_ok = mapping_succeeds(small_ringbuf_fd, USER_PAGE_SIZE,
+				      PROT_READ, 2 * USER_PAGE_SIZE);
+	ksft_test_result(mapping_ok, "map the 4K ring's data page\n");
+	close(small_ringbuf_fd);
+
+	ringbuf_fd = create_ringbuf(BPF_MAP_TYPE_RINGBUF, RING_SIZE);
 	if (ringbuf_fd < 0) {
 		if (errno == EPERM || errno == EACCES)
 			ksft_exit_skip("BPF map creation is unavailable: %s\n",
@@ -115,7 +136,7 @@ static int run_test(void)
 			 "reject a mapping past the logical ring buffer\n");
 	close(ringbuf_fd);
 
-	user_ringbuf_fd = create_ringbuf(BPF_MAP_TYPE_USER_RINGBUF);
+	user_ringbuf_fd = create_ringbuf(BPF_MAP_TYPE_USER_RINGBUF, RING_SIZE);
 	if (user_ringbuf_fd < 0)
 		ksft_exit_fail_msg("BPF user ringbuf creation failed: %s\n",
 				   strerror(errno));

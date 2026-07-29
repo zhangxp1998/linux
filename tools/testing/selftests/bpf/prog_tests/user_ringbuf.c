@@ -291,12 +291,14 @@ static void test_user_ringbuf_basic(void)
 		return;
 
 	ASSERT_EQ(skel->bss->read, 0, "num_samples_read_before");
+	skel->bss->validate_samples = 1;
 
 	err = write_samples(ringbuf, 2);
 	if (!ASSERT_OK(err, "write_samples"))
 		goto cleanup;
 
 	ASSERT_EQ(skel->bss->read, 2, "num_samples_read_after");
+	ASSERT_EQ(skel->bss->err, 0, "sample_contents");
 
 cleanup:
 	user_ring_buffer__free(ringbuf);
@@ -361,10 +363,12 @@ static void test_user_ringbuf_overfill(void)
 	err = load_skel_create_user_ringbuf(&skel, &ringbuf);
 	if (err)
 		return;
+	skel->bss->validate_samples = 1;
 
 	err = write_samples(ringbuf, c_max_entries * 5);
 	ASSERT_ERR(err, "write_samples");
 	ASSERT_EQ(skel->bss->read, c_max_entries, "max_entries");
+	ASSERT_EQ(skel->bss->err, 0, "sample_contents");
 
 	user_ring_buffer__free(ringbuf);
 	user_ringbuf_success__destroy(skel);
@@ -380,6 +384,7 @@ static void test_user_ringbuf_discards_properly_ignored(void)
 	err = load_skel_create_user_ringbuf(&skel, &ringbuf);
 	if (err)
 		return;
+	skel->bss->validate_samples = 1;
 
 	ASSERT_EQ(skel->bss->read, 0, "num_samples_read_before");
 
@@ -447,6 +452,8 @@ static void test_user_ringbuf_loop(void)
 		remaining_samples -= curr_samples;
 		ASSERT_EQ(skel->bss->read, total_samples - remaining_samples,
 			  "current_batched_entries");
+		if (!ASSERT_EQ(skel->bss->err, 0, "sample_contents"))
+			goto cleanup;
 	} while (remaining_samples > 0);
 	ASSERT_EQ(skel->bss->read, total_samples, "total_batched_entries");
 
