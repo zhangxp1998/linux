@@ -1116,7 +1116,9 @@ EXPORT_SYMBOL(vm_munmap);
 
 SYSCALL_DEFINE2(munmap, unsigned long, addr, size_t, len)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	struct mm_struct *mm = current->mm;
+#endif
 
 	addr = untagged_addr(addr);
 
