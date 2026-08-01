@@ -471,6 +471,29 @@ static void __init p4d_basic_tests(struct pgtable_debug_args *args)
 	WARN_ON(!p4d_same(p4d, p4d));
 }
 
+static void __init pxd_index_tests(struct pgtable_debug_args *args)
+{
+	unsigned long address = args->vaddr;
+
+	pr_debug("Validating page table indices\n");
+
+#ifdef __PAGETABLE_PMD_FOLDED
+	WARN_ON(MM_PTRS_PER_PMD(args->mm) != 1);
+	WARN_ON(MM_PMD_SHIFT(args->mm) != MM_PUD_SHIFT(args->mm));
+	WARN_ON(pmd_index(address));
+#endif
+#ifdef __PAGETABLE_PUD_FOLDED
+	WARN_ON(MM_PTRS_PER_PUD(args->mm) != 1);
+	WARN_ON(MM_PUD_SHIFT(args->mm) != MM_P4D_SHIFT(args->mm));
+	WARN_ON(pud_index(address));
+#endif
+#ifdef __PAGETABLE_P4D_FOLDED
+	WARN_ON(MM_PTRS_PER_P4D(args->mm) != 1);
+	WARN_ON(MM_P4D_SHIFT(args->mm) != MM_PGD_SHIFT(args->mm));
+	WARN_ON(p4d_index(address));
+#endif
+}
+
 static void __init pgd_basic_tests(struct pgtable_debug_args *args)
 {
 	pgd_t pgd;
@@ -1285,6 +1308,7 @@ static int __init debug_vm_pgtable(void)
 	 */
 	p4d_basic_tests(&args);
 	pgd_basic_tests(&args);
+	pxd_index_tests(&args);
 
 	pmd_leaf_tests(&args);
 	pud_leaf_tests(&args);
