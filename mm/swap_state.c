@@ -760,7 +760,7 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
 		struct swap_info_struct *si = NULL;
 
 		if (!pte++) {
-			pte = pte_offset_map(vmf->pmd, addr);
+			pte = pte_offset_map_mm(vmf->vma->vm_mm, vmf->pmd, addr);
 			if (!pte)
 				break;
 		}

@@ -74,9 +74,9 @@ static int walk_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 		 * and CONFIG_EFI_PGT_DUMP efi_mm goes so far as to walk them.
 		 */
 		if (walk->mm == &init_mm || addr >= TASK_SIZE)
-			pte = pte_offset_kernel(pmd, addr);
+			pte = pte_offset_kernel_mm(walk->mm, pmd, addr);
 		else
-			pte = pte_offset_map(pmd, addr);
+			pte = pte_offset_map_mm(walk->mm, pmd, addr);
 		if (pte) {
 			err = walk_pte_range_inner(pte, addr, end, walk);
 			if (walk->mm != &init_mm && addr < TASK_SIZE)
@@ -124,10 +124,10 @@ static int walk_pmd_range(pud_t *pud, unsigned long addr, unsigned long end,
 		return 0;
 	}
 
-	pmd = pmd_offset(pud, addr);
+	pmd = pmd_offset_mm(walk->mm, pud, addr);
 	do {
 again:
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(walk->mm, addr, end);
 		if (pmd_none(*pmd)) {
 			if (has_install)
 				err = __pte_alloc(walk->mm, pmd);
@@ -194,10 +194,10 @@ static int walk_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
 	int err = 0;
 	int depth = real_depth(2);
 
-	pud = pud_offset(p4d, addr);
+	pud = pud_offset_mm(walk->mm, p4d, addr);
 	do {
  again:
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(walk->mm, addr, end);
 		if (pud_none(*pud)) {
 			if (has_install)
 				err = __pmd_alloc(walk->mm, pud, addr);
@@ -259,9 +259,9 @@ static int walk_p4d_range(pgd_t *pgd, unsigned long addr, unsigned long end,
 	int err = 0;
 	int depth = real_depth(1);
 
-	p4d = p4d_offset(pgd, addr);
+	p4d = p4d_offset_mm(walk->mm, pgd, addr);
 	do {
-		next = p4d_addr_end(addr, end);
+		next = p4d_addr_end_mm(walk->mm, addr, end);
 		if (p4d_none_or_clear_bad(p4d)) {
 			if (has_install)
 				err = __pud_alloc(walk->mm, p4d, addr);
@@ -298,11 +298,11 @@ static int walk_pgd_range(unsigned long addr, unsigned long end,
 	int err = 0;
 
 	if (walk->pgd)
-		pgd = walk->pgd + pgd_index(addr);
+		pgd = walk->pgd + pgd_index_mm(walk->mm, addr);
 	else
 		pgd = pgd_offset(walk->mm, addr);
 	do {
-		next = pgd_addr_end(addr, end);
+		next = pgd_addr_end_mm(walk->mm, addr, end);
 		if (pgd_none_or_clear_bad(pgd)) {
 			if (has_install)
 				err = __p4d_alloc(walk->mm, pgd, addr);
@@ -916,11 +916,11 @@ struct folio *folio_walk_start(struct folio_walk *fw,
 	if (pgd_none_or_clear_bad(pgdp))
 		goto not_found;
 
-	p4dp = p4d_offset(pgdp, addr);
+	p4dp = p4d_offset_mm(vma->vm_mm, pgdp, addr);
 	if (p4d_none_or_clear_bad(p4dp))
 		goto not_found;
 
-	pudp = pud_offset(p4dp, addr);
+	pudp = pud_offset_mm(vma->vm_mm, p4dp, addr);
 	pud = pudp_get(pudp);
 	if (pud_none(pud))
 		goto not_found;
@@ -955,7 +955,7 @@ struct folio *folio_walk_start(struct folio_walk *fw,
 
 pmd_table:
 	VM_WARN_ON_ONCE(!pud_present(pud) || pud_leaf(pud));
-	pmdp = pmd_offset(pudp, addr);
+	pmdp = pmd_offset_mm(vma->vm_mm, pudp, addr);
 	pmd = pmdp_get_lockless(pmdp);
 	if (pmd_none(pmd))
 		goto not_found;

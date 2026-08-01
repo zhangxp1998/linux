@@ -803,15 +803,15 @@ pmd_t *mm_find_pmd(struct mm_struct *mm, unsigned long address)
 	if (!pgd_present(*pgd))
 		goto out;
 
-	p4d = p4d_offset(pgd, address);
+	p4d = p4d_offset_mm(mm, pgd, address);
 	if (!p4d_present(*p4d))
 		goto out;
 
-	pud = pud_offset(p4d, address);
+	pud = pud_offset_mm(mm, p4d, address);
 	if (!pud_present(*pud))
 		goto out;
 
-	pmd = pmd_offset(pud, address);
+	pmd = pmd_offset_mm(mm, pud, address);
 out:
 	return pmd;
 }

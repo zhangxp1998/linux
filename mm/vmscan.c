@@ -3766,13 +3766,14 @@ static void walk_pmd_range_locked(pud_t *pud, unsigned long addr, struct vm_area
 		return;
 	}
 
-	i = addr == -1 ? 0 : pmd_index(addr) - pmd_index(*first);
+	i = addr == -1 ? 0 : pmd_index_mm(args->mm, addr) -
+				 pmd_index_mm(args->mm, *first);
 	if (i && i <= MIN_LRU_BATCH) {
 		__set_bit(i - 1, bitmap);
 		return;
 	}
 
-	pmd = pmd_offset(pud, *first);
+	pmd = pmd_offset_mm(args->mm, pud, *first);
 
 	ptl = pmd_lockptr(args->mm, pmd);
 	if (!spin_trylock(ptl))
@@ -3855,10 +3856,11 @@ static void walk_pmd_range(pud_t *pud, unsigned long start, unsigned long end,
 restart:
 	/* walk_pte_range() may call get_next_vma() */
 	vma = args->vma;
-	for (i = pmd_index(start), addr = start; addr != end; i++, addr = next) {
+	for (i = pmd_index_mm(args->mm, start), addr = start;
+	     addr != end; i++, addr = next) {
 		pmd_t val = pmdp_get_lockless(pmd + i);
 
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(args->mm, addr, end);
 
 		if (!pmd_present(val) || is_huge_zero_pmd(val)) {
 			walk->mm_stats[MM_LEAF_TOTAL]++;
@@ -3917,10 +3919,11 @@ static int walk_pud_range(p4d_t *p4d, unsigned long start, unsigned long end,
 
 	pud = pud_offset(p4d, start & P4D_MASK);
 restart:
-	for (i = pud_index(start), addr = start; addr != end; i++, addr = next) {
+	for (i = pud_index_mm(args->mm, start), addr = start;
+	     addr != end; i++, addr = next) {
 		pud_t val = pudp_get(pud + i);
 
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(args->mm, addr, end);
 
 		if (!pud_present(val) || WARN_ON_ONCE(pud_leaf(val)))
 			continue;
