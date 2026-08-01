@@ -177,6 +177,7 @@ static int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
 	pte_t *ptep = NULL;
 	spinlock_t *ptl;
 	unsigned long addr;
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
 
 	for (addr = start; addr < end; addr += PAGE_SIZE) {
 		pte_t pte;
@@ -353,6 +354,7 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 	bool abort_madvise = false;
 	int nr;
 	int ret = 0;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
 
 	trace_android_vh_madvise_cold_or_pageout_abort(vma, &abort_madvise);
 	if (fatal_signal_pending(current) || abort_madvise)
@@ -368,7 +370,7 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	if (pmd_trans_huge(*pmd)) {
 		pmd_t orig_pmd;
-		unsigned long next = pmd_addr_end(addr, end);
+		unsigned long next = pmd_addr_end_mm(mm, addr, end);
 
 		tlb_change_page_size(tlb, HPAGE_PMD_SIZE);
 		ptl = pmd_trans_huge_lock(pmd, vma);
@@ -691,8 +693,9 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 	int nr_swap = 0;
 	unsigned long next;
 	int nr, max_nr;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
 
-	next = pmd_addr_end(addr, end);
+	next = pmd_addr_end_mm(mm, addr, end);
 	if (pmd_trans_huge(*pmd))
 		if (madvise_free_huge_pmd(tlb, vma, pmd, addr, next))
 			return 0;

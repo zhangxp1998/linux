@@ -292,13 +292,13 @@ static inline bool userfaultfd_must_wait(struct userfaultfd_ctx *ctx,
 	pgd = pgd_offset(mm, address);
 	if (!pgd_present(*pgd))
 		goto out;
-	p4d = p4d_offset(pgd, address);
+	p4d = p4d_offset_mm(mm, pgd, address);
 	if (!p4d_present(*p4d))
 		goto out;
-	pud = pud_offset(p4d, address);
+	pud = pud_offset_mm(mm, p4d, address);
 	if (!pud_present(*pud))
 		goto out;
-	pmd = pmd_offset(pud, address);
+	pmd = pmd_offset_mm(mm, pud, address);
 again:
 	_pmd = pmdp_get_lockless(pmd);
 	if (pmd_none(_pmd))
@@ -314,7 +314,7 @@ again:
 		goto out;
 	}
 
-	pte = pte_offset_map(pmd, address);
+	pte = pte_offset_map_mm(mm, pmd, address);
 	if (!pte) {
 		ret = true;
 		goto again;

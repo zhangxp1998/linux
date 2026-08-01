@@ -96,6 +96,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 	bool prot_numa = cp_flags & MM_CP_PROT_NUMA;
 	bool uffd_wp = cp_flags & MM_CP_UFFD_WP;
 	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
 
 	tlb_change_page_size(tlb, PAGE_SIZE);
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
@@ -369,12 +370,12 @@ static inline long change_pmd_range(struct mmu_gather *tlb,
 	long pages = 0;
 	unsigned long nr_huge_updates = 0;
 
-	pmd = pmd_offset(pud, addr);
+	pmd = pmd_offset_mm(vma->vm_mm, pud, addr);
 	do {
 		long ret;
 		pmd_t _pmd;
 again:
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(vma->vm_mm, addr, end);
 
 		ret = change_pmd_prepare(vma, pmd, cp_flags);
 		if (ret) {
@@ -441,10 +442,10 @@ static inline long change_pud_range(struct mmu_gather *tlb,
 
 	range.start = 0;
 
-	pudp = pud_offset(p4d, addr);
+	pudp = pud_offset_mm(vma->vm_mm, p4d, addr);
 	do {
 again:
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(vma->vm_mm, addr, end);
 		ret = change_prepare(vma, pudp, pmd, addr, cp_flags);
 		if (ret) {
 			pages = ret;
@@ -497,9 +498,9 @@ static inline long change_p4d_range(struct mmu_gather *tlb,
 	unsigned long next;
 	long pages = 0, ret;
 
-	p4d = p4d_offset(pgd, addr);
+	p4d = p4d_offset_mm(vma->vm_mm, pgd, addr);
 	do {
-		next = p4d_addr_end(addr, end);
+		next = p4d_addr_end_mm(vma->vm_mm, addr, end);
 		ret = change_prepare(vma, p4d, pud, addr, cp_flags);
 		if (ret)
 			return ret;
@@ -525,7 +526,7 @@ static long change_protection_range(struct mmu_gather *tlb,
 	pgd = pgd_offset(mm, addr);
 	tlb_start_vma(tlb, vma);
 	do {
-		next = pgd_addr_end(addr, end);
+		next = pgd_addr_end_mm(mm, addr, end);
 		ret = change_prepare(vma, pgd, p4d, addr, cp_flags);
 		if (ret) {
 			pages = ret;

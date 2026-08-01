@@ -16,6 +16,7 @@
 #include <linux/errno.h>
 #include <asm-generic/pgtable_uffd.h>
 #include <linux/page_table_check.h>
+#include <linux/ppps.h>
 
 #if 5 - defined(__PAGETABLE_P4D_FOLDED) - defined(__PAGETABLE_PUD_FOLDED) - \
 	defined(__PAGETABLE_PMD_FOLDED) != CONFIG_PGTABLE_LEVELS
@@ -46,6 +47,24 @@
  * table page. Although platforms can still override this
  * via their respective <asm/pgtable.h>.
  */
+#ifndef pte_page_offset
+static inline unsigned long pte_page_offset(pte_t pte)
+{
+	(void)pte;
+	return 0;
+}
+#define pte_page_offset pte_page_offset
+#endif
+
+#ifndef pte_mkslice
+static inline pte_t pte_mkslice(pte_t pte, unsigned int slice)
+{
+	(void)slice;
+	return pte;
+}
+#define pte_mkslice pte_mkslice
+#endif
+
 #ifndef pmd_pgtable
 #define pmd_pgtable(pmd) pmd_page(pmd)
 #endif
@@ -69,25 +88,77 @@ static inline unsigned long pte_index(unsigned long address)
 	return (address >> PAGE_SHIFT) & (PTRS_PER_PTE - 1);
 }
 
+static inline unsigned long pte_index_mm(struct mm_struct *mm,
+					 unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return pte_index(address);
+#else
+	return (address >> MM_PAGE_SHIFT(pgt_mm(address, mm))) &
+		(MM_PTRS_PER_PTE(pgt_mm(address, mm)) - 1);
+#endif
+}
+
 #ifndef pmd_index
 static inline unsigned long pmd_index(unsigned long address)
 {
 	return (address >> PMD_SHIFT) & (PTRS_PER_PMD - 1);
 }
+
 #define pmd_index pmd_index
 #endif
+
+static inline unsigned long pmd_index_mm(struct mm_struct *mm,
+					 unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return pmd_index(address);
+#else
+	return (address >> MM_PMD_SHIFT(pgt_mm(address, mm))) &
+		(MM_PTRS_PER_PMD(pgt_mm(address, mm)) - 1);
+#endif
+}
 
 #ifndef pud_index
 static inline unsigned long pud_index(unsigned long address)
 {
 	return (address >> PUD_SHIFT) & (PTRS_PER_PUD - 1);
 }
+
 #define pud_index pud_index
 #endif
+
+#ifndef pud_index_mm
+static inline unsigned long pud_index_mm(struct mm_struct *mm,
+					 unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return pud_index(address);
+#else
+	return (address >> MM_PUD_SHIFT(pgt_mm(address, mm))) &
+		(MM_PTRS_PER_PUD(pgt_mm(address, mm)) - 1);
+#endif
+}
+
+#endif /* pud_index_mm */
 
 #ifndef pgd_index
 /* Must be a compile-time constant, so implement it as a macro */
 #define pgd_index(a)  (((a) >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1))
+#endif
+
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#define pgd_index_mm(mm, a) ((void)(mm), pgd_index(a))
+#else
+#define pgd_index_mm(mm, a) \
+	(((a) >> MM_PGD_SHIFT(pgt_mm(a, mm))) & \
+	 (MM_PTRS_PER_PGD(pgt_mm(a, mm)) - 1))
+#endif
+
+#ifndef p4d_index_mm
+#define p4d_index_mm(mm, a) \
+	(((a) >> MM_P4D_SHIFT(pgt_mm(a, mm))) & \
+	 (MM_PTRS_PER_P4D(pgt_mm(a, mm)) - 1))
 #endif
 
 #ifndef pte_offset_kernel
@@ -98,9 +169,22 @@ static inline pte_t *pte_offset_kernel(pmd_t *pmd, unsigned long address)
 #define pte_offset_kernel pte_offset_kernel
 #endif
 
+static inline pte_t *pte_offset_kernel_mm(struct mm_struct *mm, pmd_t *pmd,
+					  unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return pte_offset_kernel(pmd, address);
+#else
+	return (pte_t *)pmd_page_vaddr(*pmd) + pte_index_mm(mm, address);
+#endif
+}
+
 #ifdef CONFIG_HIGHPTE
 #define __pte_map(pmd, address) \
 	((pte_t *)kmap_local_page(pmd_page(*(pmd))) + pte_index((address)))
+#define __pte_map_mm(mm, pmd, address) \
+	((pte_t *)kmap_local_page(pmd_page(*(pmd))) + \
+	 pte_index_mm((mm), (address)))
 #define pte_unmap(pte)	do {	\
 	kunmap_local((pte));	\
 	rcu_read_unlock();	\
@@ -109,6 +193,11 @@ static inline pte_t *pte_offset_kernel(pmd_t *pmd, unsigned long address)
 static inline pte_t *__pte_map(pmd_t *pmd, unsigned long address)
 {
 	return pte_offset_kernel(pmd, address);
+}
+static inline pte_t *__pte_map_mm(struct mm_struct *mm, pmd_t *pmd,
+				  unsigned long address)
+{
+	return pte_offset_kernel_mm(mm, pmd, address);
 }
 static inline void pte_unmap(pte_t *pte)
 {
@@ -127,6 +216,20 @@ static inline pmd_t *pmd_offset(pud_t *pud, unsigned long address)
 #define pmd_offset pmd_offset
 #endif
 
+static inline pmd_t *pmd_offset_mm(struct mm_struct *mm, pud_t *pud,
+				   unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return pmd_offset(pud, address);
+#else
+#ifdef __PAGETABLE_PMD_FOLDED
+	return (pmd_t *)pud;
+#else
+	return pud_pgtable(*pud) + pmd_index_mm(mm, address);
+#endif
+#endif
+}
+
 #ifndef pud_offset
 static inline pud_t *pud_offset(p4d_t *p4d, unsigned long address)
 {
@@ -135,16 +238,55 @@ static inline pud_t *pud_offset(p4d_t *p4d, unsigned long address)
 #define pud_offset pud_offset
 #endif
 
+#ifndef pud_offset_mm
+static inline pud_t *pud_offset_mm(struct mm_struct *mm, p4d_t *p4d,
+				   unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return pud_offset(p4d, address);
+#else
+#ifdef __PAGETABLE_PUD_FOLDED
+	return (pud_t *)p4d;
+#else
+	return p4d_pgtable(*p4d) + pud_index_mm(mm, address);
+#endif
+#endif
+}
+#endif
+
 static inline pgd_t *pgd_offset_pgd(pgd_t *pgd, unsigned long address)
 {
 	return (pgd + pgd_index(address));
 };
 
+static inline pgd_t *pgd_offset_pgd_mm(struct mm_struct *mm, pgd_t *pgd,
+				       unsigned long address)
+{
+	return pgd + pgd_index_mm(mm, address);
+}
+
+#ifndef p4d_offset_mm
+static inline p4d_t *p4d_offset_mm(struct mm_struct *mm, pgd_t *pgd,
+				   unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return p4d_offset(pgd, address);
+#else
+#ifdef __PAGETABLE_P4D_FOLDED
+	return (p4d_t *)pgd;
+#else
+	return (p4d_t *)pgd_page_vaddr(*pgd) + p4d_index_mm(mm, address);
+#endif
+#endif
+}
+#define p4d_offset_mm p4d_offset_mm
+#endif
+
 /*
  * a shortcut to get a pgd_t in a given mm
  */
 #ifndef pgd_offset
-#define pgd_offset(mm, address)		pgd_offset_pgd((mm)->pgd, (address))
+#define pgd_offset(mm, address)		pgd_offset_pgd_mm((mm), (mm)->pgd, (address))
 #endif
 
 /*
@@ -162,7 +304,9 @@ static inline pgd_t *pgd_offset_pgd(pgd_t *pgd, unsigned long address)
  */
 static inline pmd_t *pmd_off(struct mm_struct *mm, unsigned long va)
 {
-	return pmd_offset(pud_offset(p4d_offset(pgd_offset(mm, va), va), va), va);
+	return pmd_offset_mm(mm,
+		pud_offset_mm(mm, p4d_offset_mm(mm, pgd_offset(mm, va), va), va),
+		va);
 }
 
 static inline pmd_t *pmd_off_k(unsigned long va)
@@ -517,7 +661,7 @@ static inline void clear_young_dirty_ptes(struct vm_area_struct *vma,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(vma->vm_mm);
 	}
 }
 #endif
@@ -697,7 +841,7 @@ static inline pte_t get_and_clear_full_ptes(struct mm_struct *mm,
 	pte = ptep_get_and_clear_full(mm, addr, ptep, full);
 	while (--nr) {
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 		tmp_pte = ptep_get_and_clear_full(mm, addr, ptep, full);
 		if (pte_dirty(tmp_pte))
 			pte = pte_mkdirty(pte);
@@ -735,7 +879,7 @@ static inline void clear_full_ptes(struct mm_struct *mm, unsigned long addr,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 	}
 }
 #endif
@@ -800,7 +944,7 @@ static inline void clear_not_present_full_ptes(struct mm_struct *mm,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 	}
 }
 #endif
@@ -869,7 +1013,7 @@ static inline void wrprotect_ptes(struct mm_struct *mm, unsigned long addr,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 	}
 }
 #endif
@@ -1212,12 +1356,26 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 
+#define pgd_addr_end_mm(mm, addr, end)					\
+({									\
+	unsigned long __boundary = ((addr) + MM_PGDIR_SIZE(pgt_mm(addr, mm))) &\
+				   MM_PGDIR_MASK(pgt_mm(addr, mm));	\
+	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
+})
+
 #ifndef p4d_addr_end
 #define p4d_addr_end(addr, end)						\
 ({	unsigned long __boundary = ((addr) + P4D_SIZE) & P4D_MASK;	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 #endif
+
+#define p4d_addr_end_mm(mm, addr, end)					\
+({									\
+	unsigned long __boundary = ((addr) + MM_P4D_SIZE(pgt_mm(addr, mm))) &\
+				   MM_P4D_MASK(pgt_mm(addr, mm));	\
+	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
+})
 
 #ifndef pud_addr_end
 #define pud_addr_end(addr, end)						\
@@ -1226,12 +1384,27 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 })
 #endif
 
+
+#define pud_addr_end_mm(mm, addr, end)					\
+({									\
+	unsigned long __boundary = ((addr) + MM_PUD_SIZE(pgt_mm(addr, mm))) &\
+				   MM_PUD_MASK(pgt_mm(addr, mm));	\
+	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
+})
+
 #ifndef pmd_addr_end
 #define pmd_addr_end(addr, end)						\
 ({	unsigned long __boundary = ((addr) + PMD_SIZE) & PMD_MASK;	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 #endif
+
+#define pmd_addr_end_mm(mm, addr, end)					\
+({									\
+	unsigned long __boundary = ((addr) + MM_PMD_SIZE(pgt_mm(addr, mm))) &\
+				   MM_PMD_MASK(pgt_mm(addr, mm));	\
+	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
+})
 
 /*
  * When walking page tables, we usually want to skip any p?d_none entries;
@@ -1912,6 +2085,59 @@ typedef unsigned int pgtbl_mod_mask;
 #ifndef pmd_offset_lockless
 #define pmd_offset_lockless(pudp, pud, address) pmd_offset(&(pud), address)
 #endif
+
+#if defined(CONFIG_MMU) && !defined(__ASSEMBLY__)
+#ifndef p4d_offset_lockless_mm
+static inline p4d_t *p4d_offset_lockless_mm(struct mm_struct *mm,
+		pgd_t *pgdp, pgd_t pgd, unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return p4d_offset_lockless(pgdp, pgd, address);
+#else
+#ifdef __PAGETABLE_P4D_FOLDED
+	return p4d_offset_mm(mm, pgdp, address);
+#else
+	return (p4d_t *)pgd_page_vaddr(pgd) + p4d_index_mm(mm, address);
+#endif
+#endif
+}
+#define p4d_offset_lockless_mm p4d_offset_lockless_mm
+#endif
+
+#ifndef pud_offset_lockless_mm
+static inline pud_t *pud_offset_lockless_mm(struct mm_struct *mm,
+		p4d_t *p4dp, p4d_t p4d, unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return pud_offset_lockless(p4dp, p4d, address);
+#else
+#ifdef __PAGETABLE_PUD_FOLDED
+	return pud_offset_mm(mm, p4dp, address);
+#else
+	return p4d_pgtable(p4d) + pud_index_mm(mm, address);
+#endif
+#endif
+}
+#define pud_offset_lockless_mm pud_offset_lockless_mm
+#endif
+
+#ifndef pmd_offset_lockless_mm
+static inline pmd_t *pmd_offset_lockless_mm(struct mm_struct *mm,
+		pud_t *pudp, pud_t pud, unsigned long address)
+{
+#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	return pmd_offset_lockless(pudp, pud, address);
+#else
+#ifdef __PAGETABLE_PMD_FOLDED
+	return pmd_offset_mm(mm, pudp, address);
+#else
+	return pud_pgtable(pud) + pmd_index_mm(mm, address);
+#endif
+#endif
+}
+#define pmd_offset_lockless_mm pmd_offset_lockless_mm
+#endif
+#endif /* CONFIG_MMU && !__ASSEMBLY__ */
 
 /*
  * pXd_leaf() is the API to check whether a pgtable entry is a huge page

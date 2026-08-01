@@ -7116,7 +7116,8 @@ static unsigned long page_table_shareable(struct vm_area_struct *svma,
 	 *
 	 * Also, vma_lock (vm_private_data) is required for sharing.
 	 */
-	if (pmd_index(addr) != pmd_index(saddr) ||
+	if (pmd_index_mm(vma->vm_mm, addr) !=
+	    pmd_index_mm(svma->vm_mm, saddr) ||
 	    vm_flags != svm_flags ||
 	    !range_in_vma(svma, sbase, s_end) ||
 	    !svma->vm_private_data)
@@ -7249,8 +7250,8 @@ int huge_pmd_unshare(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	unsigned long sz = huge_page_size(hstate_vma(vma));
 	struct mm_struct *mm = vma->vm_mm;
 	pgd_t *pgd = pgd_offset(mm, addr);
-	p4d_t *p4d = p4d_offset(pgd, addr);
-	pud_t *pud = pud_offset(p4d, addr);
+	p4d_t *p4d = p4d_offset_mm(mm, pgd, addr);
+	pud_t *pud = pud_offset_mm(mm, p4d, addr);
 
 	i_mmap_assert_write_locked(vma->vm_file->f_mapping);
 	hugetlb_vma_assert_locked(vma);
@@ -7374,11 +7375,11 @@ pte_t *huge_pte_offset(struct mm_struct *mm,
 	pgd = pgd_offset(mm, addr);
 	if (!pgd_present(*pgd))
 		return NULL;
-	p4d = p4d_offset(pgd, addr);
+	p4d = p4d_offset_mm(mm, pgd, addr);
 	if (!p4d_present(*p4d))
 		return NULL;
 
-	pud = pud_offset(p4d, addr);
+	pud = pud_offset_mm(mm, p4d, addr);
 	if (sz == PUD_SIZE)
 		/* must be pud huge, non-present or none */
 		return (pte_t *)pud;
@@ -7386,7 +7387,7 @@ pte_t *huge_pte_offset(struct mm_struct *mm,
 		return NULL;
 	/* must have a valid entry and size to go further */
 
-	pmd = pmd_offset(pud, addr);
+	pmd = pmd_offset_mm(mm, pud, addr);
 	/* must be pmd huge, non-present or none */
 	return (pte_t *)pmd;
 }

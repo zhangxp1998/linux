@@ -13,7 +13,7 @@ static inline p4d_t *p4d_alloc_track(struct mm_struct *mm, pgd_t *pgd,
 		*mod_mask |= PGTBL_PGD_MODIFIED;
 	}
 
-	return p4d_offset(pgd, address);
+	return p4d_offset_mm(mm, pgd, address);
 }
 
 static inline pud_t *pud_alloc_track(struct mm_struct *mm, p4d_t *p4d,
@@ -26,7 +26,7 @@ static inline pud_t *pud_alloc_track(struct mm_struct *mm, p4d_t *p4d,
 		*mod_mask |= PGTBL_P4D_MODIFIED;
 	}
 
-	return pud_offset(p4d, address);
+	return pud_offset_mm(mm, p4d, address);
 }
 
 static inline pmd_t *pmd_alloc_track(struct mm_struct *mm, pud_t *pud,
@@ -39,7 +39,7 @@ static inline pmd_t *pmd_alloc_track(struct mm_struct *mm, pud_t *pud,
 		*mod_mask |= PGTBL_PUD_MODIFIED;
 	}
 
-	return pmd_offset(pud, address);
+	return pmd_offset_mm(mm, pud, address);
 }
 #endif /* CONFIG_MMU */
 

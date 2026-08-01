@@ -87,6 +87,10 @@ TEST_GEN_FILES += hugetlb_madv_vs_map
 TEST_GEN_FILES += hugetlb_dio
 TEST_GEN_FILES += droppable
 TEST_GEN_FILES += guard-regions
+TEST_GEN_FILES += $(PPPS_TESTS)
+ifeq ($(ARCH),arm64)
+TEST_GEN_FILES += $(PPPS_TESTS_arm64)
+endif
 
 ifneq ($(ARCH),arm64)
 TEST_GEN_FILES += soft-dirty

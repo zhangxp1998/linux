@@ -413,20 +413,20 @@ static unsigned long dev_pagemap_mapping_shift(struct vm_area_struct *vma,
 	pgd = pgd_offset(vma->vm_mm, address);
 	if (!pgd_present(*pgd))
 		return 0;
-	p4d = p4d_offset(pgd, address);
+	p4d = p4d_offset_mm(vma->vm_mm, pgd, address);
 	if (!p4d_present(*p4d))
 		return 0;
-	pud = pud_offset(p4d, address);
+	pud = pud_offset_mm(vma->vm_mm, p4d, address);
 	if (!pud_present(*pud))
 		return 0;
 	if (pud_devmap(*pud))
 		return PUD_SHIFT;
-	pmd = pmd_offset(pud, address);
+	pmd = pmd_offset_mm(vma->vm_mm, pud, address);
 	if (!pmd_present(*pmd))
 		return 0;
 	if (pmd_devmap(*pmd))
 		return PMD_SHIFT;
-	pte = pte_offset_map(pmd, address);
+	pte = pte_offset_map_mm(vma->vm_mm, pmd, address);
 	if (!pte)
 		return 0;
 	ptent = ptep_get(pte);
