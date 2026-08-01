@@ -341,20 +341,20 @@ static unsigned long dev_pagemap_mapping_shift(struct vm_area_struct *vma,
 	pgd = pgd_offset(vma->vm_mm, address);
 	if (!pgd_present(*pgd))
 		return 0;
-	p4d = p4d_offset(pgd, address);
+	p4d = p4d_offset_mm(vma->vm_mm, pgd, address);
 	if (!p4d_present(*p4d))
 		return 0;
-	pud = pud_offset(p4d, address);
+	pud = pud_offset_mm(vma->vm_mm, p4d, address);
 	if (!pud_present(*pud))
 		return 0;
 	if (pud_trans_huge(*pud))
 		return PUD_SHIFT;
-	pmd = pmd_offset(pud, address);
+	pmd = pmd_offset_mm(vma->vm_mm, pud, address);
 	if (!pmd_present(*pmd))
 		return 0;
 	if (pmd_trans_huge(*pmd))
 		return PMD_SHIFT;
-	pte = pte_offset_map(pmd, address);
+	pte = pte_offset_map_mm(vma->vm_mm, pmd, address);
 	if (!pte)
 		return 0;
 	ptent = ptep_get(pte);
@@ -696,7 +696,9 @@ static int check_hwpoisoned_entry(pte_t pte, unsigned long addr, short shift,
 			pfn = swp_offset_pfn(swp);
 	}
 
-	mask = ~((1UL << (shift - PAGE_SHIFT)) - 1);
+	/* A compat PTE still stores a native PFN; only huge mappings mask it. */
+	mask = shift > PAGE_SHIFT ?
+		~((1UL << (shift - PAGE_SHIFT)) - 1) : ~0UL;
 	if (!pfn || pfn != (poisoned_pfn & mask))
 		return 0;
 

@@ -319,7 +319,7 @@ pte_t *pte_offset_map_ro_nolock(struct mm_struct *mm, pmd_t *pmd,
 	pmd_t pmdval;
 	pte_t *pte;
 
-	pte = __pte_offset_map(pmd, addr, &pmdval);
+	pte = __pte_offset_map_mm(mm, pmd, addr, &pmdval);
 	if (likely(pte))
 		*ptlp = pte_lockptr(mm, &pmdval);
 	return pte;
@@ -332,7 +332,7 @@ pte_t *pte_offset_map_rw_nolock(struct mm_struct *mm, pmd_t *pmd,
 	pte_t *pte;
 
 	VM_WARN_ON_ONCE(!pmdvalp);
-	pte = __pte_offset_map(pmd, addr, pmdvalp);
+	pte = __pte_offset_map_mm(mm, pmd, addr, pmdvalp);
 	if (likely(pte))
 		*ptlp = pte_lockptr(mm, pmdvalp);
 	return pte;
@@ -403,7 +403,7 @@ pte_t *__pte_offset_map_lock(struct mm_struct *mm, pmd_t *pmd,
 	pmd_t pmdval;
 	pte_t *pte;
 again:
-	pte = __pte_offset_map(pmd, addr, &pmdval);
+	pte = __pte_offset_map_mm(mm, pmd, addr, &pmdval);
 	if (unlikely(!pte))
 		return pte;
 	ptl = pte_lockptr(mm, &pmdval);
