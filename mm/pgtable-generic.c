@@ -280,7 +280,8 @@ static unsigned long pmdp_get_lockless_start(void) { return 0; }
 static void pmdp_get_lockless_end(unsigned long irqflags) { }
 #endif
 
-pte_t *__pte_offset_map(pmd_t *pmd, unsigned long addr, pmd_t *pmdvalp)
+pte_t *__pte_offset_map_mm(struct mm_struct *mm, pmd_t *pmd,
+			  unsigned long addr, pmd_t *pmdvalp)
 {
 	unsigned long irqflags;
 	pmd_t pmdval;
@@ -300,10 +301,16 @@ pte_t *__pte_offset_map(pmd_t *pmd, unsigned long addr, pmd_t *pmdvalp)
 		pmd_clear_bad(pmd);
 		goto nomap;
 	}
+	if (mm)
+		return __pte_map_mm(mm, &pmdval, addr);
 	return __pte_map(&pmdval, addr);
 nomap:
 	rcu_read_unlock();
 	return NULL;
+}
+pte_t *__pte_offset_map(pmd_t *pmd, unsigned long addr, pmd_t *pmdvalp)
+{
+	return __pte_offset_map_mm(NULL, pmd, addr, pmdvalp);
 }
 EXPORT_SYMBOL_GPL(__pte_offset_map);
 

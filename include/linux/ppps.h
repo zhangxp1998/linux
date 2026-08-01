@@ -83,9 +83,20 @@
 
 #define MM_LEVEL_SHIFT(...)	(MM_PAGE_SHIFT(__VA_ARGS__) - 3)
 
-#define MM_PMD_SHIFT(...)	(MM_PAGE_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_PUD_SHIFT(...)	(MM_PMD_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_P4D_SHIFT(...)	(MM_PUD_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#define MM_PMD_SHIFT(...)	(MM_PAGE_SHIFT(__VA_ARGS__) + MM_LEVEL_SHIFT(__VA_ARGS__))
+
+#if CONFIG_PGTABLE_LEVELS > 2
+#define MM_PUD_SHIFT(mm)	(MM_PMD_SHIFT(mm) + MM_LEVEL_SHIFT(mm))
+#else
+#define MM_PUD_SHIFT(mm)	MM_PMD_SHIFT(mm)
+#endif
+
+#if CONFIG_PGTABLE_LEVELS > 3
+#define MM_P4D_SHIFT(mm)	(MM_PUD_SHIFT(mm) + MM_LEVEL_SHIFT(mm))
+#else
+#define MM_P4D_SHIFT(mm)	MM_PUD_SHIFT(mm)
+#endif
 
 /*
  * We currently only support a 3-level page table setup. Other levels
@@ -98,13 +109,25 @@
 #elif CONFIG_PGTABLE_LEVELS == 4
 #define MM_PGD_SHIFT(mm)	MM_P4D_SHIFT(mm)
 #elif CONFIG_PGTABLE_LEVELS == 5
-#define MM_PGD_SHIFT(...)	(MM_P4D_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
+#define MM_PGD_SHIFT(mm)	(MM_P4D_SHIFT(mm) + MM_LEVEL_SHIFT(mm))
 #endif
 
-#define MM_PTRS_PER_PTE(...)	(1UL << MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_PTRS_PER_PMD(...)	(1UL << MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_PTRS_PER_PUD(...)	(1UL << MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_PTRS_PER_P4D(...)	(1UL << MM_LEVEL_SHIFT(__VA_ARGS__))
+#define MM_PTRS_PER_PTE(mm)	(1UL << MM_LEVEL_SHIFT(mm))
+#if CONFIG_PGTABLE_LEVELS > 2
+#define MM_PTRS_PER_PMD(mm)	(1UL << MM_LEVEL_SHIFT(mm))
+#else
+#define MM_PTRS_PER_PMD(mm)	((void)(mm), 1UL)
+#endif
+#if CONFIG_PGTABLE_LEVELS > 3
+#define MM_PTRS_PER_PUD(mm)	(1UL << MM_LEVEL_SHIFT(mm))
+#else
+#define MM_PTRS_PER_PUD(mm)	((void)(mm), 1UL)
+#endif
+#if CONFIG_PGTABLE_LEVELS > 4
+#define MM_PTRS_PER_P4D(mm)	(1UL << MM_LEVEL_SHIFT(mm))
+#else
+#define MM_PTRS_PER_P4D(mm)	((void)(mm), 1UL)
+#endif
 #define MM_PTRS_PER_PGD(...)	(1UL << (MM_VA_BITS(__VA_ARGS__) - MM_PGD_SHIFT(__VA_ARGS__)))
 
 #define MM_PMD_SIZE(...)	(1UL << MM_PMD_SHIFT(__VA_ARGS__))
@@ -115,6 +138,27 @@
 #define MM_PGDIR_MASK(...)	(~(MM_PGDIR_SIZE(__VA_ARGS__) - 1))
 #define MM_P4D_SIZE(...)	(1UL << MM_P4D_SHIFT(__VA_ARGS__))
 #define MM_P4D_MASK(...)	(~(MM_P4D_SIZE(__VA_ARGS__) - 1))
+#else
+#define MM_PMD_SHIFT(mm)	((void)(mm), PMD_SHIFT)
+#define MM_PUD_SHIFT(mm)	((void)(mm), PUD_SHIFT)
+#define MM_P4D_SHIFT(mm)	((void)(mm), P4D_SHIFT)
+#define MM_PGD_SHIFT(mm)	((void)(mm), PGDIR_SHIFT)
+
+#define MM_PTRS_PER_PTE(mm)	((void)(mm), PTRS_PER_PTE)
+#define MM_PTRS_PER_PMD(mm)	((void)(mm), PTRS_PER_PMD)
+#define MM_PTRS_PER_PUD(mm)	((void)(mm), PTRS_PER_PUD)
+#define MM_PTRS_PER_P4D(mm)	((void)(mm), PTRS_PER_P4D)
+#define MM_PTRS_PER_PGD(mm)	((void)(mm), PTRS_PER_PGD)
+
+#define MM_PMD_SIZE(mm)	((void)(mm), PMD_SIZE)
+#define MM_PMD_MASK(mm)	((void)(mm), PMD_MASK)
+#define MM_PUD_SIZE(mm)	((void)(mm), PUD_SIZE)
+#define MM_PUD_MASK(mm)	((void)(mm), PUD_MASK)
+#define MM_PGDIR_SIZE(mm)	((void)(mm), PGDIR_SIZE)
+#define MM_PGDIR_MASK(mm)	((void)(mm), PGDIR_MASK)
+#define MM_P4D_SIZE(mm)	((void)(mm), P4D_SIZE)
+#define MM_P4D_MASK(mm)	((void)(mm), P4D_MASK)
+#endif
 
 #define IS_KERNEL_ADDR(addr)	((long)(addr) < 0)
 
