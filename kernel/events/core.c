@@ -8134,7 +8134,7 @@ static u64 perf_get_pgtable_size(struct mm_struct *mm, unsigned long addr)
 	if (pgd_leaf(pgd))
 		return pgd_leaf_size(pgd);
 
-	p4dp = p4d_offset_lockless(pgdp, pgd, addr);
+	p4dp = p4d_offset_lockless_mm(mm, pgdp, pgd, addr);
 	p4d = READ_ONCE(*p4dp);
 	if (!p4d_present(p4d))
 		return 0;
@@ -8142,7 +8142,7 @@ static u64 perf_get_pgtable_size(struct mm_struct *mm, unsigned long addr)
 	if (p4d_leaf(p4d))
 		return p4d_leaf_size(p4d);
 
-	pudp = pud_offset_lockless(p4dp, p4d, addr);
+	pudp = pud_offset_lockless_mm(mm, p4dp, p4d, addr);
 	pud = READ_ONCE(*pudp);
 	if (!pud_present(pud))
 		return 0;
@@ -8150,7 +8150,7 @@ static u64 perf_get_pgtable_size(struct mm_struct *mm, unsigned long addr)
 	if (pud_leaf(pud))
 		return pud_leaf_size(pud);
 
-	pmdp = pmd_offset_lockless(pudp, pud, addr);
+	pmdp = pmd_offset_lockless_mm(mm, pudp, pud, addr);
 again:
 	pmd = pmdp_get_lockless(pmdp);
 	if (!pmd_present(pmd))
@@ -8159,7 +8159,7 @@ again:
 	if (pmd_leaf(pmd))
 		return pmd_leaf_size(pmd);
 
-	ptep = pte_offset_map(&pmd, addr);
+	ptep = pte_offset_map_mm(mm, &pmd, addr);
 	if (!ptep)
 		goto again;
 
