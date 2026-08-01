@@ -2212,7 +2212,7 @@ static int unuse_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 		pte_t ptent;
 
 		if (!pte++) {
-			pte = pte_offset_map(pmd, addr);
+			pte = pte_offset_map_mm(vma->vm_mm, pmd, addr);
 			if (!pte)
 				break;
 		}
@@ -2276,10 +2276,10 @@ static inline int unuse_pmd_range(struct vm_area_struct *vma, pud_t *pud,
 	unsigned long next;
 	int ret;
 
-	pmd = pmd_offset(pud, addr);
+	pmd = pmd_offset_mm(vma->vm_mm, pud, addr);
 	do {
 		cond_resched();
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(vma->vm_mm, addr, end);
 		ret = unuse_pte_range(vma, pmd, addr, next, type);
 		if (ret)
 			return ret;
@@ -2295,9 +2295,9 @@ static inline int unuse_pud_range(struct vm_area_struct *vma, p4d_t *p4d,
 	unsigned long next;
 	int ret;
 
-	pud = pud_offset(p4d, addr);
+	pud = pud_offset_mm(vma->vm_mm, p4d, addr);
 	do {
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(vma->vm_mm, addr, end);
 		if (pud_none_or_clear_bad(pud))
 			continue;
 		ret = unuse_pmd_range(vma, pud, addr, next, type);
@@ -2315,9 +2315,9 @@ static inline int unuse_p4d_range(struct vm_area_struct *vma, pgd_t *pgd,
 	unsigned long next;
 	int ret;
 
-	p4d = p4d_offset(pgd, addr);
+	p4d = p4d_offset_mm(vma->vm_mm, pgd, addr);
 	do {
-		next = p4d_addr_end(addr, end);
+		next = p4d_addr_end_mm(vma->vm_mm, addr, end);
 		if (p4d_none_or_clear_bad(p4d))
 			continue;
 		ret = unuse_pud_range(vma, p4d, addr, next, type);
@@ -2338,7 +2338,7 @@ static int unuse_vma(struct vm_area_struct *vma, unsigned int type)
 
 	pgd = pgd_offset(vma->vm_mm, addr);
 	do {
-		next = pgd_addr_end(addr, end);
+		next = pgd_addr_end_mm(vma->vm_mm, addr, end);
 		if (pgd_none_or_clear_bad(pgd))
 			continue;
 		ret = unuse_p4d_range(vma, pgd, addr, next, type);

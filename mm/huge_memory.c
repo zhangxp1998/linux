@@ -2628,7 +2628,7 @@ static void __split_huge_zero_page_pmd(struct vm_area_struct *vma,
 	pgtable = pgtable_trans_huge_withdraw(mm, pmd);
 	pmd_populate(mm, &_pmd, pgtable);
 
-	pte = pte_offset_map(&_pmd, haddr);
+	pte = pte_offset_map_mm(mm, &_pmd, haddr);
 	VM_BUG_ON(!pte);
 	for (i = 0, addr = haddr; i < HPAGE_PMD_NR; i++, addr += PAGE_SIZE) {
 		pte_t entry;
@@ -2800,7 +2800,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 	pgtable = pgtable_trans_huge_withdraw(mm, pmd);
 	pmd_populate(mm, &_pmd, pgtable);
 
-	pte = pte_offset_map(&_pmd, haddr);
+	pte = pte_offset_map_mm(mm, &_pmd, haddr);
 	VM_BUG_ON(!pte);
 
 	/*
