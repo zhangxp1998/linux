@@ -289,7 +289,7 @@ static inline p4d_t *p4d_offset_mm(struct mm_struct *mm, pgd_t *pgd,
  * a shortcut to get a pgd_t in a given mm
  */
 #ifndef pgd_offset
-#define pgd_offset(mm, address)		pgd_offset_pgd((mm)->pgd, (address))
+#define pgd_offset(mm, address)		pgd_offset_pgd_mm((mm), (mm)->pgd, (address))
 #endif
 
 /*
@@ -307,7 +307,9 @@ static inline p4d_t *p4d_offset_mm(struct mm_struct *mm, pgd_t *pgd,
  */
 static inline pmd_t *pmd_off(struct mm_struct *mm, unsigned long va)
 {
-	return pmd_offset(pud_offset(p4d_offset(pgd_offset(mm, va), va), va), va);
+	return pmd_offset_mm(mm,
+		pud_offset_mm(mm, p4d_offset_mm(mm, pgd_offset(mm, va), va), va),
+		va);
 }
 
 static inline pmd_t *pmd_off_k(unsigned long va)
@@ -662,7 +664,7 @@ static inline void clear_young_dirty_ptes(struct vm_area_struct *vma,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(vma->vm_mm);
 	}
 }
 #endif
@@ -849,7 +851,7 @@ static inline pte_t get_and_clear_full_ptes(struct mm_struct *mm,
 	pte = ptep_get_and_clear_full(mm, addr, ptep, full);
 	while (--nr) {
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 		tmp_pte = ptep_get_and_clear_full(mm, addr, ptep, full);
 		if (pte_dirty(tmp_pte))
 			pte = pte_mkdirty(pte);
@@ -910,7 +912,7 @@ static inline void clear_full_ptes(struct mm_struct *mm, unsigned long addr,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 	}
 }
 #endif
@@ -997,7 +999,7 @@ static inline void clear_not_present_full_ptes(struct mm_struct *mm,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 	}
 }
 #endif
@@ -1066,7 +1068,7 @@ static inline void wrprotect_ptes(struct mm_struct *mm, unsigned long addr,
 		if (--nr == 0)
 			break;
 		ptep++;
-		addr += PAGE_SIZE;
+		addr += MM_PAGE_SIZE(mm);
 	}
 }
 #endif

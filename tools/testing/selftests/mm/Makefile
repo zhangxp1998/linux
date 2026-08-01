@@ -77,6 +77,7 @@ TEST_GEN_FILES += memfd_secret
 endif
 TEST_GEN_FILES += migration
 TEST_GEN_FILES += mkdirty
+TEST_GEN_FILES += mglru_folded
 TEST_GEN_FILES += mlock-random-test
 TEST_GEN_FILES += mlock2-tests
 TEST_GEN_FILES += mrelease_test
