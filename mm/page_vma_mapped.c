@@ -228,18 +228,18 @@ restart:
 			step_forward(pvmw, PGDIR_SIZE);
 			continue;
 		}
-		p4d = p4d_offset(pgd, pvmw->address);
+		p4d = p4d_offset_mm(mm, pgd, pvmw->address);
 		if (!p4d_present(*p4d)) {
 			step_forward(pvmw, P4D_SIZE);
 			continue;
 		}
-		pud = pud_offset(p4d, pvmw->address);
+		pud = pud_offset_mm(mm, p4d, pvmw->address);
 		if (!pud_present(*pud)) {
 			step_forward(pvmw, PUD_SIZE);
 			continue;
 		}
 
-		pvmw->pmd = pmd_offset(pud, pvmw->address);
+		pvmw->pmd = pmd_offset_mm(mm, pud, pvmw->address);
 		/*
 		 * Make sure the pmd value isn't cached in a register by the
 		 * compiler and used as a stale value after we've observed a

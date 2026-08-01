@@ -43,11 +43,11 @@ static pud_t *get_old_pud(struct mm_struct *mm, unsigned long addr)
 	if (pgd_none_or_clear_bad(pgd))
 		return NULL;
 
-	p4d = p4d_offset(pgd, addr);
+	p4d = p4d_offset_mm(mm, pgd, addr);
 	if (p4d_none_or_clear_bad(p4d))
 		return NULL;
 
-	pud = pud_offset(p4d, addr);
+	pud = pud_offset_mm(mm, p4d, addr);
 	if (pud_none_or_clear_bad(pud))
 		return NULL;
 
@@ -63,7 +63,7 @@ static pmd_t *get_old_pmd(struct mm_struct *mm, unsigned long addr)
 	if (!pud)
 		return NULL;
 
-	pmd = pmd_offset(pud, addr);
+	pmd = pmd_offset_mm(mm, pud, addr);
 	if (pmd_none(*pmd))
 		return NULL;
 

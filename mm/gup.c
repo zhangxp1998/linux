@@ -971,7 +971,7 @@ static struct page *follow_pmd_mask(struct vm_area_struct *vma,
 	struct page *page;
 	struct mm_struct *mm = vma->vm_mm;
 
-	pmd = pmd_offset(pudp, address);
+	pmd = pmd_offset_mm(mm, pudp, address);
 	pmdval = pmdp_get_lockless(pmd);
 	if (pmd_none(pmdval))
 		return no_page_table(vma, flags, address);
@@ -1023,7 +1023,7 @@ static struct page *follow_pud_mask(struct vm_area_struct *vma,
 	struct page *page;
 	struct mm_struct *mm = vma->vm_mm;
 
-	pudp = pud_offset(p4dp, address);
+	pudp = pud_offset_mm(mm, p4dp, address);
 	pud = pudp_get(pudp);
 	if (!pud_present(pud))
 		return no_page_table(vma, flags, address);
@@ -1048,7 +1048,7 @@ static struct page *follow_p4d_mask(struct vm_area_struct *vma,
 {
 	p4d_t *p4dp, p4d;
 
-	p4dp = p4d_offset(pgdp, address);
+	p4dp = p4d_offset_mm(vma->vm_mm, pgdp, address);
 	p4d = p4dp_get(p4dp);
 	BUILD_BUG_ON(p4d_leaf(p4d));
 
@@ -1126,16 +1126,16 @@ static int get_gate_page(struct mm_struct *mm, unsigned long address,
 		pgd = pgd_offset_gate(mm, address);
 	if (pgd_none(*pgd))
 		return -EFAULT;
-	p4d = p4d_offset(pgd, address);
+	p4d = p4d_offset_mm(mm, pgd, address);
 	if (p4d_none(*p4d))
 		return -EFAULT;
-	pud = pud_offset(p4d, address);
+	pud = pud_offset_mm(mm, p4d, address);
 	if (pud_none(*pud))
 		return -EFAULT;
-	pmd = pmd_offset(pud, address);
+	pmd = pmd_offset_mm(mm, pud, address);
 	if (!pmd_present(*pmd))
 		return -EFAULT;
-	pte = pte_offset_map(pmd, address);
+	pte = pte_offset_map_mm(mm, pmd, address);
 	if (!pte)
 		return -EFAULT;
 	entry = ptep_get(pte);
@@ -2941,7 +2941,8 @@ static void __maybe_unused gup_fast_undo_dev_pagemap(int *nr, int nr_start,
  * also check pmd here to make sure pmd doesn't change (corresponds to
  * pmdp_collapse_flush() in the THP collapse code path).
  */
-static int gup_fast_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
+static int gup_fast_pte_range(struct mm_struct *mm, pmd_t pmd, pmd_t *pmdp,
+		unsigned long addr,
 		unsigned long end, unsigned int flags, struct page **pages,
 		int *nr)
 {
@@ -2949,7 +2950,7 @@ static int gup_fast_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
 	int nr_start = *nr, ret = 0;
 	pte_t *ptep, *ptem;
 
-	ptem = ptep = pte_offset_map(&pmd, addr);
+	ptem = ptep = pte_offset_map_mm(mm, &pmd, addr);
 	if (!ptep)
 		return 0;
 	do {
@@ -3042,7 +3043,8 @@ pte_unmap:
  * get_user_pages_fast_only implementation that can pin pages. Thus it's still
  * useful to have gup_fast_pmd_leaf even if we can't operate on ptes.
  */
-static int gup_fast_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
+static int gup_fast_pte_range(struct mm_struct *mm, pmd_t pmd, pmd_t *pmdp,
+		unsigned long addr,
 		unsigned long end, unsigned int flags, struct page **pages,
 		int *nr)
 {
@@ -3275,18 +3277,19 @@ static int gup_fast_pgd_leaf(pgd_t orig, pgd_t *pgdp, unsigned long addr,
 	return 1;
 }
 
-static int gup_fast_pmd_range(pud_t *pudp, pud_t pud, unsigned long addr,
+static int gup_fast_pmd_range(struct mm_struct *mm, pud_t *pudp, pud_t pud,
+		unsigned long addr,
 		unsigned long end, unsigned int flags, struct page **pages,
 		int *nr)
 {
 	unsigned long next;
 	pmd_t *pmdp;
 
-	pmdp = pmd_offset_lockless(pudp, pud, addr);
+	pmdp = pmd_offset_lockless_mm(mm, pudp, pud, addr);
 	do {
 		pmd_t pmd = pmdp_get_lockless(pmdp);
 
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(mm, addr, end);
 		if (!pmd_present(pmd))
 			return 0;
 
@@ -3299,7 +3302,7 @@ static int gup_fast_pmd_range(pud_t *pudp, pud_t pud, unsigned long addr,
 				pages, nr))
 				return 0;
 
-		} else if (!gup_fast_pte_range(pmd, pmdp, addr, next, flags,
+		} else if (!gup_fast_pte_range(mm, pmd, pmdp, addr, next, flags,
 					       pages, nr))
 			return 0;
 	} while (pmdp++, addr = next, addr != end);
@@ -3307,25 +3310,26 @@ static int gup_fast_pmd_range(pud_t *pudp, pud_t pud, unsigned long addr,
 	return 1;
 }
 
-static int gup_fast_pud_range(p4d_t *p4dp, p4d_t p4d, unsigned long addr,
+static int gup_fast_pud_range(struct mm_struct *mm, p4d_t *p4dp, p4d_t p4d,
+		unsigned long addr,
 		unsigned long end, unsigned int flags, struct page **pages,
 		int *nr)
 {
 	unsigned long next;
 	pud_t *pudp;
 
-	pudp = pud_offset_lockless(p4dp, p4d, addr);
+	pudp = pud_offset_lockless_mm(mm, p4dp, p4d, addr);
 	do {
 		pud_t pud = pudp_get(pudp);
 
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(mm, addr, end);
 		if (unlikely(!pud_present(pud)))
 			return 0;
 		if (unlikely(pud_leaf(pud))) {
 			if (!gup_fast_pud_leaf(pud, pudp, addr, next, flags,
 					       pages, nr))
 				return 0;
-		} else if (!gup_fast_pmd_range(pudp, pud, addr, next, flags,
+		} else if (!gup_fast_pmd_range(mm, pudp, pud, addr, next, flags,
 					       pages, nr))
 			return 0;
 	} while (pudp++, addr = next, addr != end);
@@ -3333,22 +3337,23 @@ static int gup_fast_pud_range(p4d_t *p4dp, p4d_t p4d, unsigned long addr,
 	return 1;
 }
 
-static int gup_fast_p4d_range(pgd_t *pgdp, pgd_t pgd, unsigned long addr,
+static int gup_fast_p4d_range(struct mm_struct *mm, pgd_t *pgdp, pgd_t pgd,
+		unsigned long addr,
 		unsigned long end, unsigned int flags, struct page **pages,
 		int *nr)
 {
 	unsigned long next;
 	p4d_t *p4dp;
 
-	p4dp = p4d_offset_lockless(pgdp, pgd, addr);
+	p4dp = p4d_offset_lockless_mm(mm, pgdp, pgd, addr);
 	do {
 		p4d_t p4d = p4dp_get(p4dp);
 
-		next = p4d_addr_end(addr, end);
+		next = p4d_addr_end_mm(mm, addr, end);
 		if (!p4d_present(p4d))
 			return 0;
 		BUILD_BUG_ON(p4d_leaf(p4d));
-		if (!gup_fast_pud_range(p4dp, p4d, addr, next, flags,
+		if (!gup_fast_pud_range(mm, p4dp, p4d, addr, next, flags,
 					pages, nr))
 			return 0;
 	} while (p4dp++, addr = next, addr != end);
@@ -3356,31 +3361,33 @@ static int gup_fast_p4d_range(pgd_t *pgdp, pgd_t pgd, unsigned long addr,
 	return 1;
 }
 
-static void gup_fast_pgd_range(unsigned long addr, unsigned long end,
-		unsigned int flags, struct page **pages, int *nr)
+static void gup_fast_pgd_range(struct mm_struct *mm, unsigned long addr,
+		unsigned long end, unsigned int flags, struct page **pages,
+		int *nr)
 {
 	unsigned long next;
 	pgd_t *pgdp;
 
-	pgdp = pgd_offset(current->mm, addr);
+	pgdp = pgd_offset(mm, addr);
 	do {
 		pgd_t pgd = pgdp_get(pgdp);
 
-		next = pgd_addr_end(addr, end);
+		next = pgd_addr_end_mm(mm, addr, end);
 		if (pgd_none(pgd))
 			return;
 		if (unlikely(pgd_leaf(pgd))) {
 			if (!gup_fast_pgd_leaf(pgd, pgdp, addr, next, flags,
 					       pages, nr))
 				return;
-		} else if (!gup_fast_p4d_range(pgdp, pgd, addr, next, flags,
+		} else if (!gup_fast_p4d_range(mm, pgdp, pgd, addr, next, flags,
 					       pages, nr))
 			return;
 	} while (pgdp++, addr = next, addr != end);
 }
 #else
-static inline void gup_fast_pgd_range(unsigned long addr, unsigned long end,
-		unsigned int flags, struct page **pages, int *nr)
+static inline void gup_fast_pgd_range(struct mm_struct *mm,
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 }
 #endif /* CONFIG_HAVE_GUP_FAST */
@@ -3425,7 +3432,8 @@ static unsigned long gup_fast(unsigned long start, unsigned long end,
 	 * that come from THPs splitting.
 	 */
 	local_irq_save(flags);
-	gup_fast_pgd_range(start, end, gup_flags, pages, &nr_pinned);
+	gup_fast_pgd_range(current->mm, start, end, gup_flags, pages,
+			   &nr_pinned);
 	local_irq_restore(flags);
 
 	/*

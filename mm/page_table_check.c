@@ -270,7 +270,7 @@ void __page_table_check_pte_clear_range(struct mm_struct *mm,
 		return;
 
 	if (!pmd_bad(pmd) && !pmd_leaf(pmd)) {
-		pte_t *ptep = pte_offset_map(&pmd, addr);
+		pte_t *ptep = pte_offset_map_mm(mm, &pmd, addr);
 		unsigned long i;
 
 		if (WARN_ON(!ptep))

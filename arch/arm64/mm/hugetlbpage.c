@@ -88,9 +88,9 @@ static int find_num_contig(struct mm_struct *mm, unsigned long addr,
 	pmd_t *pmdp;
 
 	*pgsize = PAGE_SIZE;
-	p4dp = p4d_offset(pgdp, addr);
-	pudp = pud_offset(p4dp, addr);
-	pmdp = pmd_offset(pudp, addr);
+	p4dp = p4d_offset_mm(mm, pgdp, addr);
+	pudp = pud_offset_mm(mm, p4dp, addr);
+	pmdp = pmd_offset_mm(mm, pudp, addr);
 	if ((pte_t *)pmdp == ptep) {
 		*pgsize = PMD_SIZE;
 		return CONT_PMDS;
@@ -297,11 +297,11 @@ pte_t *huge_pte_offset(struct mm_struct *mm,
 	if (!pgd_present(READ_ONCE(*pgdp)))
 		return NULL;
 
-	p4dp = p4d_offset(pgdp, addr);
+	p4dp = p4d_offset_mm(mm, pgdp, addr);
 	if (!p4d_present(READ_ONCE(*p4dp)))
 		return NULL;
 
-	pudp = pud_offset(p4dp, addr);
+	pudp = pud_offset_mm(mm, p4dp, addr);
 	pud = READ_ONCE(*pudp);
 	if (sz != PUD_SIZE && pud_none(pud))
 		return NULL;
@@ -313,7 +313,7 @@ pte_t *huge_pte_offset(struct mm_struct *mm,
 	if (sz == CONT_PMD_SIZE)
 		addr &= CONT_PMD_MASK;
 
-	pmdp = pmd_offset(pudp, addr);
+	pmdp = pmd_offset_mm(mm, pudp, addr);
 	pmd = READ_ONCE(*pmdp);
 	if (!(sz == PMD_SIZE || sz == CONT_PMD_SIZE) &&
 	    pmd_none(pmd))
@@ -322,7 +322,7 @@ pte_t *huge_pte_offset(struct mm_struct *mm,
 		return (pte_t *)pmdp;
 
 	if (sz == CONT_PTE_SIZE)
-		return pte_offset_huge(pmdp, (addr & CONT_PTE_MASK));
+		return pte_offset_kernel_mm(mm, pmdp, addr & CONT_PTE_MASK);
 
 	return NULL;
 }

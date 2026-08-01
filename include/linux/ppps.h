@@ -46,9 +46,19 @@
 
 #define MM_LEVEL_SHIFT(...)	(MM_PAGE_SHIFT(__VA_ARGS__) - 3)
 
-#define MM_PMD_SHIFT(...)	(MM_PAGE_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_PUD_SHIFT(...)	(MM_PMD_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_P4D_SHIFT(...)	(MM_PUD_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
+#define MM_PMD_SHIFT(...)	(MM_PAGE_SHIFT(__VA_ARGS__) + MM_LEVEL_SHIFT(__VA_ARGS__))
+
+#if CONFIG_PGTABLE_LEVELS > 2
+#define MM_PUD_SHIFT(mm)	(MM_PMD_SHIFT(mm) + MM_LEVEL_SHIFT(mm))
+#else
+#define MM_PUD_SHIFT(mm)	MM_PMD_SHIFT(mm)
+#endif
+
+#if CONFIG_PGTABLE_LEVELS > 3
+#define MM_P4D_SHIFT(mm)	(MM_PUD_SHIFT(mm) + MM_LEVEL_SHIFT(mm))
+#else
+#define MM_P4D_SHIFT(mm)	MM_PUD_SHIFT(mm)
+#endif
 
 /*
  * We currently only support a 3-level page table setup. Other levels
@@ -61,13 +71,25 @@
 #elif CONFIG_PGTABLE_LEVELS == 4
 #define MM_PGD_SHIFT(mm)	MM_P4D_SHIFT(mm)
 #elif CONFIG_PGTABLE_LEVELS == 5
-#define MM_PGD_SHIFT(...)	(MM_P4D_SHIFT(__VA_ARGS__) +  MM_LEVEL_SHIFT(__VA_ARGS__))
+#define MM_PGD_SHIFT(mm)	(MM_P4D_SHIFT(mm) + MM_LEVEL_SHIFT(mm))
 #endif
 
-#define MM_PTRS_PER_PTE(...)	(1UL << MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_PTRS_PER_PMD(...)	(1UL << MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_PTRS_PER_PUD(...)	(1UL << MM_LEVEL_SHIFT(__VA_ARGS__))
-#define MM_PTRS_PER_P4D(...)	(1UL << MM_LEVEL_SHIFT(__VA_ARGS__))
+#define MM_PTRS_PER_PTE(mm)	(1UL << MM_LEVEL_SHIFT(mm))
+#if CONFIG_PGTABLE_LEVELS > 2
+#define MM_PTRS_PER_PMD(mm)	(1UL << MM_LEVEL_SHIFT(mm))
+#else
+#define MM_PTRS_PER_PMD(mm)	((void)(mm), 1UL)
+#endif
+#if CONFIG_PGTABLE_LEVELS > 3
+#define MM_PTRS_PER_PUD(mm)	(1UL << MM_LEVEL_SHIFT(mm))
+#else
+#define MM_PTRS_PER_PUD(mm)	((void)(mm), 1UL)
+#endif
+#if CONFIG_PGTABLE_LEVELS > 4
+#define MM_PTRS_PER_P4D(mm)	(1UL << MM_LEVEL_SHIFT(mm))
+#else
+#define MM_PTRS_PER_P4D(mm)	((void)(mm), 1UL)
+#endif
 #define MM_PTRS_PER_PGD(...)	(1UL << (MM_VA_BITS(__VA_ARGS__) - MM_PGD_SHIFT(__VA_ARGS__)))
 
 #define MM_PMD_SIZE(...)	(1UL << MM_PMD_SHIFT(__VA_ARGS__))
