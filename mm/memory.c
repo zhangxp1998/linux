@@ -210,9 +210,9 @@ static inline void free_pmd_range(struct mmu_gather *tlb, pud_t *pud,
 	unsigned long start;
 
 	start = addr;
-	pmd = pmd_offset(pud, addr);
+	pmd = pmd_offset_mm(tlb->mm, pud, addr);
 	do {
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(tlb->mm, addr, end);
 		if (pmd_none_or_clear_bad(pmd))
 			continue;
 		free_pte_range(tlb, pmd, addr);
@@ -229,7 +229,7 @@ static inline void free_pmd_range(struct mmu_gather *tlb, pud_t *pud,
 	if (end - 1 > ceiling - 1)
 		return;
 
-	pmd = pmd_offset(pud, start);
+	pmd = pmd_offset_mm(tlb->mm, pud, start);
 	pud_clear(pud);
 	pmd_free_tlb(tlb, pmd, start);
 	mm_dec_nr_pmds(tlb->mm);
@@ -244,9 +244,9 @@ static inline void free_pud_range(struct mmu_gather *tlb, p4d_t *p4d,
 	unsigned long start;
 
 	start = addr;
-	pud = pud_offset(p4d, addr);
+	pud = pud_offset_mm(tlb->mm, p4d, addr);
 	do {
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(tlb->mm, addr, end);
 		if (pud_none_or_clear_bad(pud))
 			continue;
 		free_pmd_range(tlb, pud, addr, next, floor, ceiling);
@@ -263,7 +263,7 @@ static inline void free_pud_range(struct mmu_gather *tlb, p4d_t *p4d,
 	if (end - 1 > ceiling - 1)
 		return;
 
-	pud = pud_offset(p4d, start);
+	pud = pud_offset_mm(tlb->mm, p4d, start);
 	p4d_clear(p4d);
 	pud_free_tlb(tlb, pud, start);
 	mm_dec_nr_puds(tlb->mm);
@@ -278,9 +278,9 @@ static inline void free_p4d_range(struct mmu_gather *tlb, pgd_t *pgd,
 	unsigned long start;
 
 	start = addr;
-	p4d = p4d_offset(pgd, addr);
+	p4d = p4d_offset_mm(tlb->mm, pgd, addr);
 	do {
-		next = p4d_addr_end(addr, end);
+		next = p4d_addr_end_mm(tlb->mm, addr, end);
 		if (p4d_none_or_clear_bad(p4d))
 			continue;
 		free_pud_range(tlb, p4d, addr, next, floor, ceiling);
@@ -297,7 +297,7 @@ static inline void free_p4d_range(struct mmu_gather *tlb, pgd_t *pgd,
 	if (end - 1 > ceiling - 1)
 		return;
 
-	p4d = p4d_offset(pgd, start);
+	p4d = p4d_offset_mm(tlb->mm, pgd, start);
 	pgd_clear(pgd);
 	p4d_free_tlb(tlb, p4d, start);
 }
@@ -360,7 +360,7 @@ void free_pgd_range(struct mmu_gather *tlb,
 	tlb_change_page_size(tlb, PAGE_SIZE);
 	pgd = pgd_offset(tlb->mm, addr);
 	do {
-		next = pgd_addr_end(addr, end);
+		next = pgd_addr_end_mm(tlb->mm, addr, end);
 		if (pgd_none_or_clear_bad(pgd))
 			continue;
 		free_p4d_range(tlb, pgd, addr, next, floor, ceiling);
@@ -504,9 +504,9 @@ static void print_bad_pte(struct vm_area_struct *vma, unsigned long addr,
 			  pte_t pte, struct page *page)
 {
 	pgd_t *pgd = pgd_offset(vma->vm_mm, addr);
-	p4d_t *p4d = p4d_offset(pgd, addr);
-	pud_t *pud = pud_offset(p4d, addr);
-	pmd_t *pmd = pmd_offset(pud, addr);
+	p4d_t *p4d = p4d_offset_mm(vma->vm_mm, pgd, addr);
+	pud_t *pud = pud_offset_mm(vma->vm_mm, p4d, addr);
+	pmd_t *pmd = pmd_offset_mm(vma->vm_mm, pud, addr);
 	struct address_space *mapping;
 	pgoff_t index;
 	static unsigned long resume;
@@ -1252,9 +1252,9 @@ copy_pmd_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	dst_pmd = pmd_alloc(dst_mm, dst_pud, addr);
 	if (!dst_pmd)
 		return -ENOMEM;
-	src_pmd = pmd_offset(src_pud, addr);
+	src_pmd = pmd_offset_mm(src_mm, src_pud, addr);
 	do {
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(src_mm, addr, end);
 		if (is_swap_pmd(*src_pmd) || pmd_trans_huge(*src_pmd)
 			|| pmd_devmap(*src_pmd)) {
 			int err;
@@ -1289,9 +1289,9 @@ copy_pud_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	dst_pud = pud_alloc(dst_mm, dst_p4d, addr);
 	if (!dst_pud)
 		return -ENOMEM;
-	src_pud = pud_offset(src_p4d, addr);
+	src_pud = pud_offset_mm(src_mm, src_p4d, addr);
 	do {
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(src_mm, addr, end);
 		if (pud_trans_huge(*src_pud) || pud_devmap(*src_pud)) {
 			int err;
 
@@ -1319,15 +1319,16 @@ copy_p4d_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	       unsigned long end)
 {
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
+	struct mm_struct *src_mm = src_vma->vm_mm;
 	p4d_t *src_p4d, *dst_p4d;
 	unsigned long next;
 
 	dst_p4d = p4d_alloc(dst_mm, dst_pgd, addr);
 	if (!dst_p4d)
 		return -ENOMEM;
-	src_p4d = p4d_offset(src_pgd, addr);
+	src_p4d = p4d_offset_mm(src_mm, src_pgd, addr);
 	do {
-		next = p4d_addr_end(addr, end);
+		next = p4d_addr_end_mm(src_mm, addr, end);
 		if (p4d_none_or_clear_bad(src_p4d))
 			continue;
 		if (copy_pud_range(dst_vma, src_vma, dst_p4d, src_p4d,
@@ -1421,7 +1422,7 @@ copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
 	dst_pgd = pgd_offset(dst_mm, addr);
 	src_pgd = pgd_offset(src_mm, addr);
 	do {
-		next = pgd_addr_end(addr, end);
+		next = pgd_addr_end_mm(src_mm, addr, end);
 		if (pgd_none_or_clear_bad(src_pgd))
 			continue;
 		if (unlikely(copy_p4d_range(dst_vma, src_vma, dst_pgd, src_pgd,
@@ -1816,9 +1817,9 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 	pmd_t *pmd;
 	unsigned long next;
 
-	pmd = pmd_offset(pud, addr);
+	pmd = pmd_offset_mm(tlb->mm, pud, addr);
 	do {
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(tlb->mm, addr, end);
 		if (is_swap_pmd(*pmd) || pmd_trans_huge(*pmd) || pmd_devmap(*pmd)) {
 			if (next - addr != HPAGE_PMD_SIZE)
 				__split_huge_pmd(vma, pmd, addr, false, NULL);
@@ -1858,9 +1859,9 @@ static inline unsigned long zap_pud_range(struct mmu_gather *tlb,
 	pud_t *pud;
 	unsigned long next;
 
-	pud = pud_offset(p4d, addr);
+	pud = pud_offset_mm(tlb->mm, p4d, addr);
 	do {
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(tlb->mm, addr, end);
 		if (pud_trans_huge(*pud) || pud_devmap(*pud)) {
 			if (next - addr != HPAGE_PUD_SIZE) {
 				mmap_assert_locked(tlb->mm);
@@ -1887,9 +1888,9 @@ static inline unsigned long zap_p4d_range(struct mmu_gather *tlb,
 	p4d_t *p4d;
 	unsigned long next;
 
-	p4d = p4d_offset(pgd, addr);
+	p4d = p4d_offset_mm(tlb->mm, pgd, addr);
 	do {
-		next = p4d_addr_end(addr, end);
+		next = p4d_addr_end_mm(tlb->mm, addr, end);
 		if (p4d_none_or_clear_bad(p4d))
 			continue;
 		next = zap_pud_range(tlb, vma, p4d, addr, next, details);
@@ -1910,7 +1911,7 @@ void unmap_page_range(struct mmu_gather *tlb,
 	tlb_start_vma(tlb, vma);
 	pgd = pgd_offset(vma->vm_mm, addr);
 	do {
-		next = pgd_addr_end(addr, end);
+		next = pgd_addr_end_mm(tlb->mm, addr, end);
 		if (pgd_none_or_clear_bad(pgd))
 			continue;
 		next = zap_p4d_range(tlb, vma, pgd, addr, next, details);
@@ -2221,7 +2222,8 @@ more:
 		goto out;
 
 	pages_to_write_in_pmd = min_t(unsigned long,
-		remaining_pages_total, PTRS_PER_PTE - pte_index(addr));
+		remaining_pages_total,
+		MM_PTRS_PER_PTE(mm) - pte_index_mm(mm, addr));
 
 	/* Allocate the PTE if necessary; takes PMD lock once only. */
 	ret = -ENOMEM;
@@ -2246,7 +2248,7 @@ more:
 				remaining_pages_total -= pte_idx;
 				goto out;
 			}
-			addr += PAGE_SIZE;
+			addr += MM_PAGE_SIZE(mm);
 			++curr_page_idx;
 		}
 		pte_unmap_unlock(start_pte, pte_lock);
@@ -2681,7 +2683,7 @@ static inline int remap_pmd_range(struct mm_struct *mm, pud_t *pud,
 		return -ENOMEM;
 	VM_BUG_ON(pmd_trans_huge(*pmd));
 	do {
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(mm, addr, end);
 		err = remap_pte_range(mm, pmd, addr, next,
 				pfn + (addr >> PAGE_SHIFT), prot);
 		if (err)
@@ -2703,7 +2705,7 @@ static inline int remap_pud_range(struct mm_struct *mm, p4d_t *p4d,
 	if (!pud)
 		return -ENOMEM;
 	do {
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(mm, addr, end);
 		err = remap_pmd_range(mm, pud, addr, next,
 				pfn + (addr >> PAGE_SHIFT), prot);
 		if (err)
@@ -2725,7 +2727,7 @@ static inline int remap_p4d_range(struct mm_struct *mm, pgd_t *pgd,
 	if (!p4d)
 		return -ENOMEM;
 	do {
-		next = p4d_addr_end(addr, end);
+		next = p4d_addr_end_mm(mm, addr, end);
 		err = remap_pud_range(mm, p4d, addr, next,
 				pfn + (addr >> PAGE_SHIFT), prot);
 		if (err)
@@ -2777,7 +2779,7 @@ static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long ad
 	pgd = pgd_offset(mm, addr);
 	flush_cache_range(vma, addr, end);
 	do {
-		next = pgd_addr_end(addr, end);
+		next = pgd_addr_end_mm(mm, addr, end);
 		err = remap_p4d_range(mm, pgd, addr, next,
 				pfn + (addr >> PAGE_SHIFT), prot);
 		if (err)
@@ -2902,7 +2904,7 @@ static int apply_to_pte_range(struct mm_struct *mm, pmd_t *pmd,
 			return -ENOMEM;
 	} else {
 		mapped_pte = pte = (mm == &init_mm) ?
-			pte_offset_kernel(pmd, addr) :
+			pte_offset_kernel_mm(mm, pmd, addr) :
 			pte_offset_map_lock(mm, pmd, addr, &ptl);
 		if (!pte)
 			return -EINVAL;
@@ -2917,7 +2919,7 @@ static int apply_to_pte_range(struct mm_struct *mm, pmd_t *pmd,
 				if (err)
 					break;
 			}
-		} while (pte++, addr += PAGE_SIZE, addr != end);
+		} while (pte++, addr += MM_PAGE_SIZE(mm), addr != end);
 	}
 	*mask |= PGTBL_PTE_MODIFIED;
 
@@ -2944,10 +2946,10 @@ static int apply_to_pmd_range(struct mm_struct *mm, pud_t *pud,
 		if (!pmd)
 			return -ENOMEM;
 	} else {
-		pmd = pmd_offset(pud, addr);
+		pmd = pmd_offset_mm(mm, pud, addr);
 	}
 	do {
-		next = pmd_addr_end(addr, end);
+		next = pmd_addr_end_mm(mm, addr, end);
 		if (pmd_none(*pmd) && !create)
 			continue;
 		if (WARN_ON_ONCE(pmd_leaf(*pmd)))
@@ -2980,10 +2982,10 @@ static int apply_to_pud_range(struct mm_struct *mm, p4d_t *p4d,
 		if (!pud)
 			return -ENOMEM;
 	} else {
-		pud = pud_offset(p4d, addr);
+		pud = pud_offset_mm(mm, p4d, addr);
 	}
 	do {
-		next = pud_addr_end(addr, end);
+		next = pud_addr_end_mm(mm, addr, end);
 		if (pud_none(*pud) && !create)
 			continue;
 		if (WARN_ON_ONCE(pud_leaf(*pud)))
@@ -3016,10 +3018,10 @@ static int apply_to_p4d_range(struct mm_struct *mm, pgd_t *pgd,
 		if (!p4d)
 			return -ENOMEM;
 	} else {
-		p4d = p4d_offset(pgd, addr);
+		p4d = p4d_offset_mm(mm, pgd, addr);
 	}
 	do {
-		next = p4d_addr_end(addr, end);
+		next = p4d_addr_end_mm(mm, addr, end);
 		if (p4d_none(*p4d) && !create)
 			continue;
 		if (WARN_ON_ONCE(p4d_leaf(*p4d)))
@@ -3053,7 +3055,7 @@ static int __apply_to_page_range(struct mm_struct *mm, unsigned long addr,
 
 	pgd = pgd_offset(mm, addr);
 	do {
-		next = pgd_addr_end(addr, end);
+		next = pgd_addr_end_mm(mm, addr, end);
 		if (pgd_none(*pgd) && !create)
 			continue;
 		if (WARN_ON_ONCE(pgd_leaf(*pgd))) {
@@ -4264,7 +4266,9 @@ static struct folio *alloc_swap_folio(struct vm_fault *vmf)
 	order = highest_order(orders);
 	while (orders) {
 		addr = ALIGN_DOWN(vmf->address, PAGE_SIZE << order);
-		if (can_swapin_thp(vmf, pte + pte_index(addr), 1 << order))
+		if (can_swapin_thp(vmf,
+				   pte + pte_index_mm(vma->vm_mm, addr),
+				   1 << order))
 			break;
 		order = next_order(&orders, order);
 	}
@@ -4561,7 +4565,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
 		if (unlikely(folio_start < max(address & PMD_MASK, vma->vm_start)))
 			goto check_folio;
-		if (unlikely(folio_end > pmd_addr_end(address, vma->vm_end)))
+		if (unlikely(folio_end >
+			     pmd_addr_end_mm(vma->vm_mm, address, vma->vm_end)))
 			goto check_folio;
 
 		folio_ptep = vmf->pte - idx;
@@ -4799,7 +4804,8 @@ static struct folio *alloc_anon_folio(struct vm_fault *vmf)
 	if (!orders)
 		goto fallback;
 
-	pte = pte_offset_map(vmf->pmd, vmf->address & PMD_MASK);
+	pte = pte_offset_map_mm(vma->vm_mm, vmf->pmd,
+				vmf->address & PMD_MASK);
 	if (!pte)
 		return ERR_PTR(-EAGAIN);
 
@@ -4811,7 +4817,8 @@ static struct folio *alloc_anon_folio(struct vm_fault *vmf)
 	order = highest_order(orders);
 	while (orders) {
 		addr = ALIGN_DOWN(vmf->address, PAGE_SIZE << order);
-		if (pte_range_none(pte + pte_index(addr), 1 << order))
+		if (pte_range_none(pte + pte_index_mm(vma->vm_mm, addr),
+				   1 << order))
 			break;
 		order = next_order(&orders, order);
 	}
@@ -5268,7 +5275,7 @@ fallback:
 		/* The page offset of vmf->address within the VMA. */
 		pgoff_t vma_off = vmf->pgoff - vmf->vma->vm_pgoff;
 		/* The index of the entry in the pagetable for fault page. */
-		pgoff_t pte_off = pte_index(vmf->address);
+		pgoff_t pte_off = pte_index_mm(vma->vm_mm, vmf->address);
 
 		/*
 		 * Fallback to per-page fault in case the folio size in page
@@ -5376,7 +5383,7 @@ late_initcall(fault_around_debugfs);
 static vm_fault_t do_fault_around(struct vm_fault *vmf)
 {
 	pgoff_t nr_pages = READ_ONCE(fault_around_pages);
-	pgoff_t pte_off = pte_index(vmf->address);
+	pgoff_t pte_off = pte_index_mm(vmf->vma->vm_mm, vmf->address);
 	/* The page offset of vmf->address within the VMA. */
 	pgoff_t vma_off = vmf->pgoff - vmf->vma->vm_pgoff;
 	pgoff_t nr_data_pages = vma_data_pages(vmf->vma);
@@ -6780,12 +6787,12 @@ retry:
 	if (pgd_none(*pgdp) || unlikely(pgd_bad(*pgdp)))
 		goto out;
 
-	p4dp = p4d_offset(pgdp, address);
+	p4dp = p4d_offset_mm(mm, pgdp, address);
 	p4d = p4dp_get(p4dp);
 	if (p4d_none(p4d) || unlikely(p4d_bad(p4d)))
 		goto out;
 
-	pudp = pud_offset(p4dp, address);
+	pudp = pud_offset_mm(mm, p4dp, address);
 	pud = pudp_get(pudp);
 	if (!pud_present(pud))
 		goto out;
@@ -6806,7 +6813,7 @@ retry:
 		return 0;
 	}
 
-	pmdp = pmd_offset(pudp, address);
+	pmdp = pmd_offset_mm(mm, pudp, address);
 	pmd = pmdp_get_lockless(pmdp);
 	if (!pmd_present(pmd))
 		goto out;

@@ -284,6 +284,7 @@ if test_selected "hugetlb"; then
 fi
 
 CATEGORY="mmap" run_test ./map_fixed_noreplace
+CATEGORY="mmap" run_test ./mglru_folded
 
 if $RUN_ALL; then
     run_gup_matrix
