@@ -3219,6 +3219,8 @@ static inline bool pagetable_pte_ctor(struct mm_struct *mm,
 }
 
 pte_t *___pte_offset_map(pmd_t *pmd, unsigned long addr, pmd_t *pmdvalp);
+pte_t *___pte_offset_map_mm(struct mm_struct *mm, pmd_t *pmd,
+			   unsigned long addr, pmd_t *pmdvalp);
 static inline pte_t *__pte_offset_map(pmd_t *pmd, unsigned long addr,
 			pmd_t *pmdvalp)
 {
@@ -3227,9 +3229,22 @@ static inline pte_t *__pte_offset_map(pmd_t *pmd, unsigned long addr,
 	__cond_lock(RCU, pte = ___pte_offset_map(pmd, addr, pmdvalp));
 	return pte;
 }
+static inline pte_t *__pte_offset_map_mm(struct mm_struct *mm, pmd_t *pmd,
+					 unsigned long addr, pmd_t *pmdvalp)
+{
+	pte_t *pte;
+
+	__cond_lock(RCU, pte = ___pte_offset_map_mm(mm, pmd, addr, pmdvalp));
+	return pte;
+}
 static inline pte_t *pte_offset_map(pmd_t *pmd, unsigned long addr)
 {
 	return __pte_offset_map(pmd, addr, NULL);
+}
+static inline pte_t *pte_offset_map_mm(struct mm_struct *mm, pmd_t *pmd,
+				       unsigned long addr)
+{
+	return __pte_offset_map_mm(mm, pmd, addr, NULL);
 }
 
 pte_t *__pte_offset_map_lock(struct mm_struct *mm, pmd_t *pmd,
