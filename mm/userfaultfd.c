@@ -1185,6 +1185,10 @@ static int move_swap_pte(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 			 struct folio *src_folio,
 			 struct swap_info_struct *si, swp_entry_t entry)
 {
+	/* The packed slice identity is tied to src_addr until it is faulted in. */
+	if (pte_swp_ppps_packed(orig_src_pte))
+		return -EBUSY;
+
 	/*
 	 * Check if the folio still belongs to the target swap entry after
 	 * acquiring the lock. Folio can be freed in the swap cache while
@@ -1463,6 +1467,12 @@ retry:
 					len, ppps_depack);
 	} else {
 		struct folio *folio = NULL;
+
+		if (pte_swp_ppps_packed(orig_src_pte)) {
+			*ppps_depack = true;
+			ret = -EAGAIN;
+			goto out;
+		}
 
 		entry = pte_to_swp_entry(orig_src_pte);
 		if (non_swap_entry(entry)) {

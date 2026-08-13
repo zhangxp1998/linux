@@ -919,6 +919,15 @@ static int smaps_ppps_packed_anon_mapcount(struct folio *folio)
 	return DIV_ROUND_UP(mapcount, (int)PPPS_SLICES_PER_PAGE);
 }
 
+static int smaps_ppps_packed_swap_mapcount(pte_t pte, int mapcount)
+{
+	if (!pte_swp_ppps_packed(pte))
+		return mapcount;
+
+	mapcount = max(mapcount, 1);
+	return DIV_ROUND_UP(mapcount, (int)PPPS_SLICES_PER_PAGE);
+}
+
 static void smaps_account(struct mem_size_stats *mss, struct mm_struct *mm,
 		struct page *page, bool compound, bool young, bool dirty,
 		bool locked, bool present, int precise_mapcount)
@@ -1036,6 +1045,7 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 
 			mss->swap += page_size;
 			mapcount = swp_swapcount(swpent);
+			mapcount = smaps_ppps_packed_swap_mapcount(ptent, mapcount);
 			if (mapcount >= 2) {
 				u64 pss_delta = (u64)page_size << PSS_SHIFT;
 
