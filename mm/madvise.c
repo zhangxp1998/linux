@@ -867,13 +867,10 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 			clear_young_dirty_ptes(vma, addr, pte, nr, cydp_flags);
 			tlb_remove_tlb_entries(tlb, pte, nr, addr);
 		}
-		/*
-		 * Reclaim handles a lazy-free small folio one PTE at a time. A
-		 * packed PPPS folio has four PTEs for one indivisible native page;
-		 * keep it swap-backed so reclaim preserves or removes the tuple.
-		 */
-		if (!ppps_packed)
-			folio_mark_lazyfree(folio);
+		/* Do not create an unreclaimable lazy-free packed tuple. */
+		if (ppps_packed)
+			continue;
+		folio_mark_lazyfree(folio);
 	}
 
 	if (nr_swap)
@@ -2074,7 +2071,6 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 		.tlb = &tlb,
 	};
 	bool bypass = false;
-	bool depack_all;
 
 	if (madvise_should_skip(mm, start, len_in, behavior, &error))
 		return error;
@@ -2084,9 +2080,8 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	 * retain the native madvise locking protocol. The walkers skip any
 	 * partial tuple created by a concurrent fault after this pre-pass.
 	 */
-	depack_all = behavior == MADV_FREE;
 	if (ppps_mm_is_compat(mm) &&
-	    (depack_all || behavior == MADV_DONTNEED ||
+	    (behavior == MADV_FREE || behavior == MADV_DONTNEED ||
 	     behavior == MADV_DONTNEED_LOCKED ||
 	     behavior == MADV_GUARD_INSTALL)) {
 		unsigned long depack_start;
@@ -2098,7 +2093,7 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 			untagged_addr_remote(mm, start);
 		error = ppps_depack_anon_range(mm, depack_start,
 					       depack_start + depack_len,
-					       depack_all);
+					       false);
 		mmap_write_unlock(mm);
 		if (error)
 			return error;

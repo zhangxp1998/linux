@@ -48,6 +48,40 @@ static inline bool ppps_anon_pte_is_packed(struct vm_area_struct *vma,
 }
 
 /*
+ * A zero tuple maps the four slices of the native global zero page.  Unlike
+ * a packed anonymous folio, it owns no rmap or page-table references and can
+ * be split freely.  Recognizing the complete shape lets a write fault replace
+ * it atomically with one private packed folio.
+ */
+static inline bool ppps_anon_pte_is_zero_tuple(struct vm_area_struct *vma,
+					       unsigned long address, pte_t *ptep)
+{
+	unsigned long base;
+	unsigned int i, slice;
+	pte_t *base_ptep;
+
+	if (!ppps_mm_is_compat(vma->vm_mm) || !vma_is_anonymous(vma))
+		return false;
+
+	base = ALIGN_DOWN(address, PAGE_SIZE);
+	if (base < vma->vm_start || base + PAGE_SIZE > vma->vm_end)
+		return false;
+
+	slice = (address - base) >> PAGE_SHIFT_COMPAT;
+	base_ptep = ptep - slice;
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		pte_t pte = ptep_get(base_ptep + i);
+
+		if (!pte_present(pte) || !pte_special(pte) || pte_write(pte) ||
+		    !is_zero_pfn(pte_pfn(pte)) ||
+		    pte_page_offset(pte) != i * PAGE_SIZE_COMPAT)
+			return false;
+	}
+
+	return true;
+}
+
+/*
  * A packed swap tuple stores the same swap offset in all four process PTEs,
  * unlike the consecutive offsets handled by swap_pte_batch().  Batch the
  * identical entries so callers release every swap reference while accounting
@@ -214,6 +248,12 @@ static inline unsigned int mmap_slice_offset(struct mm_struct *mm,
 static inline bool ppps_anon_pte_is_packed(struct vm_area_struct *vma,
 					   struct folio *folio,
 					   unsigned long address, pte_t *ptep)
+{
+	return false;
+}
+
+static inline bool ppps_anon_pte_is_zero_tuple(struct vm_area_struct *vma,
+					       unsigned long address, pte_t *ptep)
 {
 	return false;
 }
