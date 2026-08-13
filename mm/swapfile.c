@@ -2086,10 +2086,11 @@ static inline int pte_same_as_swp(pte_t pte, pte_t swp_pte)
 
 static struct folio *
 copy_unuse_ppps(struct vm_area_struct *vma, struct folio *src,
-		unsigned long addr, bool full_group)
+		unsigned long addr)
 {
 	unsigned int slice = offset_in_page(addr) >> PAGE_SHIFT_COMPAT;
 	struct folio *dst;
+	void *kaddr;
 
 	dst = vma_alloc_folio(GFP_HIGHUSER_MOVABLE, 0, vma, addr, false);
 	if (!dst)
@@ -2102,16 +2103,12 @@ copy_unuse_ppps(struct vm_area_struct *vma, struct folio *src,
 	__folio_set_locked(dst);
 	copy_highpage(&dst->page, &src->page);
 	kmsan_copy_page_meta(&dst->page, &src->page);
-	if (!full_group) {
-		void *kaddr = kmap_local_page(&dst->page);
-
-		memmove(kaddr, kaddr + slice * PAGE_SIZE_COMPAT,
-			PAGE_SIZE_COMPAT);
-		memset(kaddr + PAGE_SIZE_COMPAT, 0,
-		       PAGE_SIZE - PAGE_SIZE_COMPAT);
-		kunmap_local(kaddr);
-	}
+	kaddr = kmap_local_page(&dst->page);
+	memmove(kaddr, kaddr + slice * PAGE_SIZE_COMPAT, PAGE_SIZE_COMPAT);
+	memset(kaddr + PAGE_SIZE_COMPAT, 0, PAGE_SIZE - PAGE_SIZE_COMPAT);
+	kunmap_local(kaddr);
 	flush_dcache_page(&dst->page);
+	flush_icache_page(vma, &dst->page);
 	__folio_mark_uptodate(dst);
 	return dst;
 }
@@ -2128,12 +2125,9 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	struct folio *swapcache;
 	spinlock_t *ptl;
 	pte_t *pte = NULL, new_pte, old_pte;
-	pte_t packed_ptes[PPPS_SLICES_PER_PAGE];
 	bool hwpoisoned = false;
 	bool packed;
-	bool packed_group = false;
 	unsigned int packed_slice;
-	unsigned long packed_base;
 	int ret = 1;
 
 	swapcache = folio;
@@ -2145,40 +2139,23 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	}
 	packed = pte_swp_ppps_packed(ptep_get(pte));
 	packed_slice = offset_in_page(addr) >> PAGE_SHIFT_COMPAT;
-	packed_base = ALIGN_DOWN(addr, PAGE_SIZE);
-	if (packed && packed_base >= vma->vm_start &&
-	    packed_base + PAGE_SIZE <= vma->vm_end) {
-		pte_t *base_pte = pte - packed_slice;
-		unsigned int i;
-
-		packed_group = true;
-		for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-			packed_ptes[i] = ptep_get(base_pte + i);
-			if (!is_swap_pte(packed_ptes[i]) ||
-			    !pte_swp_ppps_packed(packed_ptes[i]) ||
-			    pte_to_swp_entry(packed_ptes[i]).val != entry.val) {
-				packed_group = false;
-				break;
-			}
-		}
-	}
 	pte_unmap_unlock(pte, ptl);
 	pte = NULL;
 
 	page = folio_file_page(swapcache, swp_offset(entry));
 	if (packed) {
+		/*
+		 * Fault-driven swapin restores a validated tuple as one folio.
+		 * Swapoff visits PTE aliases independently, so restore one slice
+		 * into a singleton and tolerate a temporarily partial swap tuple.
+		 */
 		if (PageHWPoison(page)) {
-			packed_group = false;
 			hwpoisoned = true;
 			folio = swapcache;
 		} else if (!folio_test_uptodate(swapcache)) {
-			packed_group = false;
 			folio = swapcache;
 		} else {
-			unsigned long copy_addr = packed_group ? packed_base : addr;
-			bool full_group = packed_group;
-
-			folio = copy_unuse_ppps(vma, swapcache, copy_addr, full_group);
+			folio = copy_unuse_ppps(vma, swapcache, addr);
 			if (unlikely(!folio))
 				return -ENOMEM;
 		}
@@ -2205,55 +2182,14 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 		ret = 0;
 		goto out;
 	}
-	if (packed_group) {
-		pte_t *base_pte = pte - packed_slice;
-		unsigned int i;
-
-		for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-			packed_ptes[i] = ptep_get(base_pte + i);
-			if (unlikely(!is_swap_pte(packed_ptes[i]) ||
-				     !pte_swp_ppps_packed(packed_ptes[i]) ||
-				     pte_to_swp_entry(packed_ptes[i]).val !=
-					entry.val)) {
-				ret = 0;
-				goto out;
-			}
-		}
-
-		arch_swap_restore(folio_swap(entry, folio), folio);
-		add_mm_counter(vma->vm_mm, MM_SWAPENTS,
-			       -PPPS_SLICES_PER_PAGE);
-		add_mm_counter(vma->vm_mm, MM_ANONPAGES,
-			       PPPS_SLICES_PER_PAGE);
-		/* Add one mapping reference per PTE; out: drops our local one. */
-		folio_ref_add(folio, PPPS_SLICES_PER_PAGE);
-		folio_add_new_anon_rmap_ptes(folio, vma, packed_base,
-					     PPPS_SLICES_PER_PAGE,
-					     RMAP_EXCLUSIVE);
-		folio_add_lru_vma(folio, vma);
-		for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-			unsigned long cur = packed_base + i * PAGE_SIZE_COMPAT;
-
-			new_pte = mk_pte(&folio->page, vma->vm_page_prot);
-			new_pte = pte_mkold(new_pte);
-			new_pte = ppps_folio_mk_pte_explicit_slice(vma, folio,
-								   new_pte, i);
-			if (pte_swp_soft_dirty(packed_ptes[i]))
-				new_pte = pte_mksoft_dirty(new_pte);
-			if (pte_swp_uffd_wp(packed_ptes[i]))
-				new_pte = pte_mkuffd_wp(new_pte);
-			set_pte_at(vma->vm_mm, cur, base_pte + i, new_pte);
-			swap_free(entry);
-		}
-		goto out;
-	}
 
 	old_pte = ptep_get(pte);
 
 	if (unlikely(hwpoisoned || !folio_test_uptodate(folio))) {
 		swp_entry_t swp_entry;
 
-		dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
+		if (!packed || IS_ALIGNED(addr, PAGE_SIZE))
+			dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
 		if (hwpoisoned) {
 			swp_entry = make_hwpoison_entry(page);
 		} else {
@@ -2275,7 +2211,8 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	else
 		arch_swap_restore(folio_swap(entry, folio), folio);
 
-	dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
+	if (!packed || IS_ALIGNED(addr, PAGE_SIZE))
+		dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
 	inc_mm_counter(vma->vm_mm, MM_ANONPAGES);
 	folio_get(folio);
 	if (folio == swapcache) {
