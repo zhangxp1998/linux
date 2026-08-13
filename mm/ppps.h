@@ -47,6 +47,71 @@ static inline bool ppps_anon_pte_is_packed(struct vm_area_struct *vma,
 	return true;
 }
 
+/*
+ * A zero tuple maps the four slices of the native global zero page.  Unlike
+ * a packed anonymous folio, it owns no rmap or page-table references and can
+ * be split freely.  Recognizing the complete shape lets a write fault replace
+ * it atomically with one private packed folio.
+ */
+static inline bool ppps_anon_pte_is_zero_tuple(struct vm_area_struct *vma,
+					       unsigned long address, pte_t *ptep)
+{
+	unsigned long base;
+	unsigned int i, slice;
+	pte_t *base_ptep;
+
+	if (!ppps_mm_is_compat(vma->vm_mm) || !vma_is_anonymous(vma))
+		return false;
+
+	base = ALIGN_DOWN(address, PAGE_SIZE);
+	if (base < vma->vm_start || base + PAGE_SIZE > vma->vm_end)
+		return false;
+
+	slice = (address - base) >> PAGE_SHIFT_COMPAT;
+	base_ptep = ptep - slice;
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		pte_t pte = ptep_get(base_ptep + i);
+
+		if (!pte_present(pte) || !pte_special(pte) || pte_write(pte) ||
+		    !is_zero_pfn(pte_pfn(pte)) ||
+		    pte_page_offset(pte) != i * PAGE_SIZE_COMPAT)
+			return false;
+	}
+
+	return true;
+}
+
+/*
+ * A packed swap tuple stores the same swap offset in all four process PTEs,
+ * unlike the consecutive offsets handled by swap_pte_batch().  Batch the
+ * identical entries so callers release every swap reference while accounting
+ * the tuple only once at its native-page-aligned first PTE.
+ */
+static inline int ppps_swap_pte_batch(pte_t *ptep, int max_nr, pte_t first,
+				      unsigned long address)
+{
+	swp_entry_t entry;
+	unsigned int slice;
+	int nr = 1;
+
+	if (!pte_swp_ppps_packed(first))
+		return 0;
+
+	entry = pte_to_swp_entry(first);
+	slice = (address & ~PAGE_MASK) >> PAGE_SHIFT_COMPAT;
+	max_nr = min_t(int, max_nr, PPPS_SLICES_PER_PAGE - slice);
+	while (nr < max_nr) {
+		pte_t pte = ptep_get(ptep + nr);
+
+		if (!is_swap_pte(pte) || !pte_swp_ppps_packed(pte) ||
+		    pte_to_swp_entry(pte).val != entry.val)
+			break;
+		nr++;
+	}
+
+	return nr;
+}
+
 static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
 {
 	bool is_compat = ppps_mm_is_compat(vma->vm_mm);
@@ -185,6 +250,18 @@ static inline bool ppps_anon_pte_is_packed(struct vm_area_struct *vma,
 					   unsigned long address, pte_t *ptep)
 {
 	return false;
+}
+
+static inline bool ppps_anon_pte_is_zero_tuple(struct vm_area_struct *vma,
+					       unsigned long address, pte_t *ptep)
+{
+	return false;
+}
+
+static inline int ppps_swap_pte_batch(pte_t *ptep, int max_nr, pte_t first,
+				      unsigned long address)
+{
+	return 0;
 }
 
 static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
