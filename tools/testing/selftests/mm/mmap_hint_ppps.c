@@ -6,21 +6,35 @@
  */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 
 #include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
+#define RESERVE_SIZE	(4 * PROCESS_PAGE_SIZE)
+#define ALIGNMENT_TRIALS 32
 
-#define USER_PAGE_SIZE	4096UL
-#define RESERVE_SIZE	(4 * USER_PAGE_SIZE)
+static bool default_mmaps_are_native_aligned(void)
+{
+	void *mappings[ALIGNMENT_TRIALS];
+	unsigned int mapped = 0;
+	bool passed = true;
+
+	for (mapped = 0; mapped < ALIGNMENT_TRIALS; mapped++) {
+		mappings[mapped] = mmap(NULL, PROCESS_PAGE_SIZE,
+					PROT_READ | PROT_WRITE,
+					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (mappings[mapped] == MAP_FAILED) {
+			passed = false;
+			break;
+		}
+		if ((uintptr_t)mappings[mapped] & (NATIVE_PAGE_SIZE - 1))
+			passed = false;
+	}
+	while (mapped)
+		munmap(mappings[--mapped], PROCESS_PAGE_SIZE);
+
+	return passed;
+}
 
 static int run_test(void)
 {
@@ -32,8 +46,8 @@ static int run_test(void)
 
 	ksft_print_header();
 	ksft_set_plan(4);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_test_result(default_mmaps_are_native_aligned(),
+			 "default mmap addresses are native-page aligned\n");
 
 	reservation = mmap(NULL, RESERVE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

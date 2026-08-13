@@ -162,13 +162,8 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 			      mm->end_data, mm->start_data))
 		goto out;
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	newbrk = MM_PAGE_ALIGN(mm, brk);
-	oldbrk = MM_PAGE_ALIGN(mm, mm->brk);
-#else
-	newbrk = __PAGE_ALIGN(brk);
-	oldbrk = __PAGE_ALIGN(mm->brk);
-#endif
+	newbrk = MM_UAPI_PAGE_ALIGN(mm, brk);
+	oldbrk = MM_UAPI_PAGE_ALIGN(mm, mm->brk);
 	if (oldbrk == newbrk) {
 		mm->brk = brk;
 		goto success;
@@ -202,15 +197,9 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	 * expansion area
 	 */
 	vma_iter_init(&vmi, mm, oldbrk);
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	next = vma_find(&vmi, newbrk + MM_PAGE_SIZE(mm) +
+	next = vma_find(&vmi, newbrk + MM_UAPI_PAGE_SIZE(mm) +
 			mm_stack_guard_gap(mm));
-	if (next && newbrk + MM_PAGE_SIZE(mm) > vm_start_gap(next))
-#else
-	next = vma_find(&vmi, newbrk + __PAGE_SIZE +
-			mm_stack_guard_gap(mm));
-	if (next && newbrk + __PAGE_SIZE > vm_start_gap(next))
-#endif
+	if (next && newbrk + MM_UAPI_PAGE_SIZE(mm) > vm_start_gap(next))
 		goto out;
 
 	brkvma = vma_prev_limit(&vmi, mm->start_brk);
@@ -242,19 +231,10 @@ out:
  */
 static inline unsigned long round_hint_to_min(unsigned long hint)
 {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	struct mm_struct *mm = current->mm;
-
-	hint &= MM_PAGE_MASK(mm);
+	hint &= MM_UAPI_PAGE_MASK(current->mm);
 	if (((void *)hint != NULL) &&
 	    (hint < mmap_min_addr))
-		return MM_PAGE_ALIGN(mm, mmap_min_addr);
-#else
-	hint &= __PAGE_MASK;
-	if (((void *)hint != NULL) &&
-	    (hint < mmap_min_addr))
-		return __PAGE_ALIGN(mmap_min_addr);
-#endif
+		return MM_UAPI_PAGE_ALIGN(current->mm, mmap_min_addr);
 	return hint;
 }
 
@@ -346,7 +326,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 	/* Careful about overflows.. */
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	len = MM_PAGE_ALIGN(mm, len);
+	len = MM_UAPI_PAGE_ALIGN(mm, len);
 #else
 	len = __COMPAT_PAGE_ALIGN(len, flags);
 #endif
@@ -782,6 +762,19 @@ unsigned long vm_unmapped_area(struct vm_unmapped_area_info *info)
 }
 EXPORT_SYMBOL_GPL(vm_unmapped_area);
 
+static inline void
+ppps_align_unmapped_area(struct mm_struct *mm,
+			 struct vm_unmapped_area_info *info)
+{
+	/*
+	 * Keep automatically selected PPPS VMAs on native-page boundaries.
+	 * Explicit MAP_FIXED addresses and successful user hints are handled
+	 * before this search and retain their 4K-granular ABI.
+	 */
+	if (ppps_mm_is_compat(mm))
+		info->align_mask = PAGE_SIZE - 1;
+}
+
 /* Get an address range which is currently unmapped.
  * For shmat() with addr=0.
  *
@@ -822,6 +815,7 @@ generic_get_unmapped_area(struct file *filp, unsigned long addr,
 	info.low_limit = mm->mmap_base;
 	info.high_limit = mmap_end;
 	info.start_gap = stack_guard_placement(vm_flags);
+	ppps_align_unmapped_area(mm, &info);
 	return vm_unmapped_area(&info);
 }
 
@@ -872,6 +866,7 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 	info.low_limit = PAGE_SIZE;
 	info.high_limit = arch_get_mmap_base(addr, mm->mmap_base);
 	info.start_gap = stack_guard_placement(vm_flags);
+	ppps_align_unmapped_area(mm, &info);
 	addr = vm_unmapped_area(&info);
 
 	/*
@@ -1199,11 +1194,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 	if (!(vma->vm_flags & VM_GROWSDOWN))
 		return -EFAULT;
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	address &= MM_PAGE_MASK(mm);
-#else
-	address &= __PAGE_MASK;
-#endif
+	address &= MM_UAPI_PAGE_MASK(mm);
 	if (address < mmap_min_addr || address < FIRST_USER_ADDRESS)
 		return -EPERM;
 
@@ -1711,23 +1702,14 @@ EXPORT_SYMBOL(vm_munmap);
 
 SYSCALL_DEFINE2(munmap, unsigned long, addr, size_t, len)
 {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	struct mm_struct *mm = current->mm;
-#endif
 
 	addr = untagged_addr(addr);
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	if (mm_offset_in_page(mm, addr))
+	if (!MM_UAPI_PAGE_ALIGNED(mm, addr))
 		return -EINVAL;
 
-	len = MM_PAGE_ALIGN(mm, len);
-#else
-	if (!__PAGE_ALIGNED(addr))
-		return -EINVAL;
-
-	len = __PAGE_ALIGN(len);
-#endif
+	len = MM_UAPI_PAGE_ALIGN(mm, len);
 
 	profile_munmap(addr);
 	return __vm_munmap(addr, len, true);
