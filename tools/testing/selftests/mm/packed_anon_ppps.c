@@ -29,6 +29,7 @@
 #define PAGEMAP_SWAPPED	UINT64_C(0x4000000000000000)
 #define PAGEMAP_PFN_MASK ((1ULL << 55) - 1)
 #define DISCARD_GROUPS	8
+#define ALIGNMENT_TRIALS 32
 
 static unsigned char *map_aligned(size_t size, unsigned char **reservation)
 {
@@ -61,6 +62,29 @@ static bool verify(const unsigned char *base)
 		if (base[offset] != 0x31 + offset / PROCESS_PAGE)
 			return false;
 	return true;
+}
+
+static bool default_mmaps_are_native_aligned(void)
+{
+	void *mappings[ALIGNMENT_TRIALS];
+	unsigned int mapped = 0;
+	bool passed = true;
+
+	for (mapped = 0; mapped < ALIGNMENT_TRIALS; mapped++) {
+		mappings[mapped] = mmap(NULL, PROCESS_PAGE,
+					PROT_READ | PROT_WRITE,
+					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (mappings[mapped] == MAP_FAILED) {
+			passed = false;
+			break;
+		}
+		if ((uintptr_t)mappings[mapped] & (NATIVE_PAGE - 1))
+			passed = false;
+	}
+	while (mapped)
+		munmap(mappings[--mapped], PROCESS_PAGE);
+
+	return passed;
 }
 
 static bool all_zero(const unsigned char *base)
@@ -279,9 +303,11 @@ static int run_test(void)
 	unsigned char value = 1;
 
 	ksft_print_header();
-	ksft_set_plan(16);
+	ksft_set_plan(17);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE,
 			 "process uses 4K pages\n");
+	ksft_test_result(default_mmaps_are_native_aligned(),
+			 "default mmap addresses are native-page aligned\n");
 
 	base = map_aligned(2 * NATIVE_PAGE, &reservation);
 	ksft_test_result(base != MAP_FAILED, "map anonymous test range\n");
