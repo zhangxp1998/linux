@@ -164,7 +164,7 @@ static void tlb_batch_list_free(struct mmu_gather *tlb)
 
 static bool __tlb_remove_folio_pages_size(struct mmu_gather *tlb,
 		struct page *page, unsigned int nr_pages, bool delay_rmap,
-		int page_size)
+		int page_size, bool same_page_refs)
 {
 	int flags = delay_rmap ? ENCODED_PAGE_BIT_DELAY_RMAP : 0;
 	struct mmu_gather_batch *batch;
@@ -174,7 +174,8 @@ static bool __tlb_remove_folio_pages_size(struct mmu_gather *tlb,
 #ifdef CONFIG_MMU_GATHER_PAGE_SIZE
 	VM_WARN_ON(tlb->page_size != page_size);
 	VM_WARN_ON_ONCE(nr_pages != 1 && page_size != PAGE_SIZE);
-	VM_WARN_ON_ONCE(page_folio(page) != page_folio(page + nr_pages - 1));
+	VM_WARN_ON_ONCE(!same_page_refs &&
+			page_folio(page) != page_folio(page + nr_pages - 1));
 #endif
 
 	batch = tlb->active;
@@ -207,13 +208,21 @@ bool __tlb_remove_folio_pages(struct mmu_gather *tlb, struct page *page,
 		unsigned int nr_pages, bool delay_rmap)
 {
 	return __tlb_remove_folio_pages_size(tlb, page, nr_pages, delay_rmap,
-					     PAGE_SIZE);
+					     PAGE_SIZE, false);
+}
+
+bool __tlb_remove_folio_refs(struct mmu_gather *tlb, struct folio *folio,
+			     unsigned int nr_refs, bool delay_rmap)
+{
+	return __tlb_remove_folio_pages_size(tlb, &folio->page, nr_refs,
+					     delay_rmap, PAGE_SIZE, true);
 }
 
 bool __tlb_remove_page_size(struct mmu_gather *tlb, struct page *page,
 		bool delay_rmap, int page_size)
 {
-	return __tlb_remove_folio_pages_size(tlb, page, 1, delay_rmap, page_size);
+	return __tlb_remove_folio_pages_size(tlb, page, 1, delay_rmap,
+					     page_size, false);
 }
 
 #endif /* MMU_GATHER_NO_GATHER */

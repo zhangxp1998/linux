@@ -9,6 +9,44 @@
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 
+/*
+ * A packed anonymous mapping uses one native folio as four consecutive
+ * process-page PTEs.  The invariant is deliberately strict: a mapping
+ * instance is either this complete tuple, or a singleton mapping of slice 0.
+ * Keeping tuple recognition in one helper avoids subtly different tests in
+ * fault, fork, COW and rmap paths.
+ */
+static inline bool ppps_anon_pte_is_packed(struct vm_area_struct *vma,
+					   struct folio *folio,
+					   unsigned long address, pte_t *ptep)
+{
+	unsigned long base;
+	unsigned int i, slice;
+	pte_t *base_ptep;
+
+	if (!ppps_mm_is_compat(vma->vm_mm) || !vma_is_anonymous(vma) ||
+	    !folio_test_anon(folio) || folio_test_large(folio) ||
+	    !folio_test_ppps_packed_anon(folio))
+		return false;
+
+	base = ALIGN_DOWN(address, PAGE_SIZE);
+	if (base < vma->vm_start || base + PAGE_SIZE > vma->vm_end)
+		return false;
+
+	slice = (address - base) >> PAGE_SHIFT_COMPAT;
+	base_ptep = ptep - slice;
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		pte_t pte = ptep_get(base_ptep + i);
+
+		if (!pte_present(pte) || pte_special(pte) ||
+		    pte_page(pte) != &folio->page ||
+		    pte_page_offset(pte) != i * PAGE_SIZE_COMPAT)
+			return false;
+	}
+
+	return true;
+}
+
 static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
 {
 	bool is_compat = ppps_mm_is_compat(vma->vm_mm);
@@ -141,6 +179,13 @@ static inline unsigned int mmap_slice_offset(struct mm_struct *mm,
 }
 
 #else /* !CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
+
+static inline bool ppps_anon_pte_is_packed(struct vm_area_struct *vma,
+					   struct folio *folio,
+					   unsigned long address, pte_t *ptep)
+{
+	return false;
+}
 
 static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
 {
