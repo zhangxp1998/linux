@@ -12,7 +12,7 @@
 
 #define PROCESS_PAGE_SIZE 4096UL
 
-static const u8 expected[] = { 0x31, 0x72 };
+static const u8 expected[] = { 0x31, 0x72, 0x93, 0xb4 };
 
 static int check_page_value(struct page *page, size_t offset, u8 value)
 {
@@ -27,13 +27,29 @@ static int check_page_value(struct page *page, size_t offset, u8 value)
 	return ret;
 }
 
-static int run_get_pages(unsigned long address, size_t length)
+static int check_page(struct page *page, size_t offset, u8 value,
+		      bool expect_packed, struct page **first_page)
 {
+	if (expect_packed) {
+		if (!folio_test_ppps_packed_anon(page_folio(page)))
+			return -ENODATA;
+		if (*first_page && page != *first_page)
+			return -ENXIO;
+		*first_page = page;
+	}
+	return check_page_value(page, offset, value);
+}
+
+static int run_get_pages(unsigned long address, size_t length,
+			 bool expect_packed)
+{
+	struct page *first_page = NULL;
 	struct iov_iter iter;
+	unsigned int nr_slices = length / PROCESS_PAGE_SIZE;
 	unsigned int i;
 
 	iov_iter_ubuf(&iter, ITER_SOURCE, (void __user *)address, length);
-	for (i = 0; i < ARRAY_SIZE(expected); i++) {
+	for (i = 0; i < nr_slices; i++) {
 		struct page *page = NULL;
 		size_t offset = 0;
 		ssize_t ret;
@@ -43,7 +59,8 @@ static int run_get_pages(unsigned long address, size_t length)
 					  &offset);
 		if (ret != PROCESS_PAGE_SIZE)
 			return ret < 0 ? ret : -EMSGSIZE;
-		err = check_page_value(page, offset, expected[i]);
+		err = check_page(page, offset, expected[i], expect_packed,
+				 &first_page);
 		put_page(page);
 		if (err)
 			return err;
@@ -51,13 +68,16 @@ static int run_get_pages(unsigned long address, size_t length)
 	return iov_iter_count(&iter) ? -EMSGSIZE : 0;
 }
 
-static int run_extract_pages(unsigned long address, size_t length)
+static int run_extract_pages(unsigned long address, size_t length,
+			     bool expect_packed)
 {
+	struct page *first_page = NULL;
 	struct iov_iter iter;
+	unsigned int nr_slices = length / PROCESS_PAGE_SIZE;
 	unsigned int i;
 
 	iov_iter_ubuf(&iter, ITER_SOURCE, (void __user *)address, length);
-	for (i = 0; i < ARRAY_SIZE(expected); i++) {
+	for (i = 0; i < nr_slices; i++) {
 		struct page *storage[1];
 		struct page **pages = storage;
 		size_t offset = 0;
@@ -68,7 +88,8 @@ static int run_extract_pages(unsigned long address, size_t length)
 					     PROCESS_PAGE_SIZE, 1, 0, &offset);
 		if (ret != PROCESS_PAGE_SIZE)
 			return ret < 0 ? ret : -EMSGSIZE;
-		err = check_page_value(pages[0], offset, expected[i]);
+		err = check_page(pages[0], offset, expected[i], expect_packed,
+				 &first_page);
 		unpin_user_page(pages[0]);
 		if (err)
 			return err;
@@ -101,22 +122,26 @@ static long iov_iter_ppps_ioctl(struct file *file, unsigned int cmd,
 				unsigned long arg)
 {
 	struct iov_iter_ppps_args request;
+	bool expect_packed;
 
 	if (cmd != IOV_ITER_PPPS_IOCTL)
 		return -EINVAL;
 	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
 		return -EFAULT;
-	if (request.length != ARRAY_SIZE(expected) * PROCESS_PAGE_SIZE)
+	if (!request.length || request.length % PROCESS_PAGE_SIZE ||
+	    request.length > ARRAY_SIZE(expected) * PROCESS_PAGE_SIZE ||
+	    request.flags & ~IOV_ITER_PPPS_F_EXPECT_PACKED)
 		return -EINVAL;
+	expect_packed = request.flags & IOV_ITER_PPPS_F_EXPECT_PACKED;
 
 	request.native_page_size = PAGE_SIZE;
 	request.get_pages_result = run_get_pages(request.address,
-						 request.length);
+						 request.length, expect_packed);
 	request.extract_pages_result = run_extract_pages(request.address,
-							 request.length);
+							 request.length,
+							 expect_packed);
 	request.bulk_first_len = run_bulk_extract(request.address,
 						  request.length);
-	request.reserved = 0;
 	if (copy_to_user((void __user *)arg, &request, sizeof(request)))
 		return -EFAULT;
 	return 0;

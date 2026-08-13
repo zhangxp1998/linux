@@ -1157,6 +1157,30 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 		goto out;
 	}
 
+	/*
+	 * A native-page-aligned move to the same native-page slice preserves
+	 * complete packed tuples even though move_page_tables() advances one
+	 * process PTE at a time.  Only depack the boundary tuples in that case.
+	 * A fixed destination, or an available MREMAP_DONTUNMAP hint, on a
+	 * different slice can split every tuple and must depack the full range.
+	 */
+	if (old_len > vma->vm_end - addr) {
+		ret = -EFAULT;
+		goto out;
+	}
+	{
+		bool depack_all =
+			(flags & MREMAP_FIXED) ||
+			((flags & MREMAP_DONTUNMAP) && new_addr);
+
+		depack_all = depack_all &&
+			     offset_in_page(addr) != offset_in_page(new_addr);
+		ret = ppps_depack_anon_range(mm, addr, addr + old_len,
+					     depack_all);
+	}
+	if (ret)
+		goto out;
+
 	if (is_vm_hugetlb_page(vma)) {
 		struct hstate *h __maybe_unused = hstate_vma(vma);
 

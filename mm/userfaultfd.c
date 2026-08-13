@@ -1075,7 +1075,8 @@ static struct folio *check_ptes_for_batched_move(struct vm_area_struct *src_vma,
 	folio = vm_normal_folio(src_vma, src_addr, orig_src_pte);
 	if (!folio || !folio_trylock(folio))
 		return NULL;
-	if (!PageAnonExclusive(&folio->page) || folio_test_large(folio)) {
+	if (!PageAnonExclusive(&folio->page) || folio_test_large(folio) ||
+	    folio_test_ppps_packed_anon(folio)) {
 		folio_unlock(folio);
 		return NULL;
 	}
@@ -1094,7 +1095,8 @@ static long move_present_ptes(struct mm_struct *mm,
 			      pte_t orig_dst_pte, pte_t orig_src_pte,
 			      pmd_t *dst_pmd, pmd_t dst_pmdval,
 			      spinlock_t *dst_ptl, spinlock_t *src_ptl,
-			      struct folio **first_src_folio, unsigned long len)
+			      struct folio **first_src_folio, unsigned long len,
+			      bool *ppps_depack)
 {
 	int err = 0;
 	struct folio *src_folio = *first_src_folio;
@@ -1108,6 +1110,11 @@ static long move_present_ptes(struct mm_struct *mm,
 
 	if (!is_pte_pages_stable(dst_pte, src_pte, orig_dst_pte, orig_src_pte,
 				 dst_pmd, dst_pmdval)) {
+		err = -EAGAIN;
+		goto out;
+	}
+	if (folio_test_ppps_packed_anon(src_folio)) {
+		*ppps_depack = true;
 		err = -EAGAIN;
 		goto out;
 	}
@@ -1271,7 +1278,7 @@ static long move_pages_ptes(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd
 			    struct vm_area_struct *dst_vma,
 			    struct vm_area_struct *src_vma,
 			    unsigned long dst_addr, unsigned long src_addr,
-			    unsigned long len, __u64 mode)
+			    unsigned long len, __u64 mode, bool *ppps_depack)
 {
 	swp_entry_t entry;
 	struct swap_info_struct *si = NULL;
@@ -1391,6 +1398,12 @@ retry:
 				ret = -EBUSY;
 				goto out;
 			}
+			if (folio_test_ppps_packed_anon(folio)) {
+				spin_unlock(src_ptl);
+				*ppps_depack = true;
+				ret = -EAGAIN;
+				goto out;
+			}
 
 			locked = folio_trylock(folio);
 			/*
@@ -1447,7 +1460,7 @@ retry:
 					orig_dst_pte, orig_src_pte,
 					dst_pmd, dst_pmdval,
 					dst_ptl, src_ptl, &src_folio,
-					len);
+					len, ppps_depack);
 	} else {
 		struct folio *folio = NULL;
 
@@ -1796,6 +1809,7 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	struct vm_area_struct *src_vma, *dst_vma;
 	unsigned long src_addr, dst_addr, src_end;
 	pmd_t *src_pmd, *dst_pmd;
+	bool ppps_depack = false;
 	long err = -EINVAL;
 	ssize_t moved = 0;
 
@@ -1810,7 +1824,12 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	    WARN_ON_ONCE(dst_start + len <= dst_start))
 		goto out;
 
-	err = uffd_move_lock(mm, dst_start, src_start, &dst_vma, &src_vma);
+	src_addr = src_start;
+	dst_addr = dst_start;
+	src_end = src_start + len;
+
+retry_lock:
+	err = uffd_move_lock(mm, dst_addr, src_addr, &dst_vma, &src_vma);
 	if (err)
 		goto out;
 
@@ -1827,7 +1846,7 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	err = -EINVAL;
 	if (src_vma->vm_flags & VM_SHARED)
 		goto out_unlock;
-	if (src_start + len > src_vma->vm_end)
+	if (src_end > src_vma->vm_end)
 		goto out_unlock;
 
 	if (dst_vma->vm_flags & VM_SHARED)
@@ -1839,8 +1858,7 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	if (err)
 		goto out_unlock;
 
-	for (src_addr = src_start, dst_addr = dst_start, src_end = src_start + len;
-	     src_addr < src_end;) {
+	for (; src_addr < src_end;) {
 		spinlock_t *ptl;
 		pmd_t dst_pmdval;
 		unsigned long step_size;
@@ -1934,7 +1952,12 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 
 			ret = move_pages_ptes(mm, dst_pmd, src_pmd,
 					      dst_vma, src_vma, dst_addr,
-					      src_addr, src_end - src_addr, mode);
+					      src_addr, src_end - src_addr, mode,
+					      &ppps_depack);
+			if (ppps_depack) {
+				err = -EAGAIN;
+				break;
+			}
 			if (ret < 0)
 				err = ret;
 			else
@@ -1965,6 +1988,15 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 out_unlock:
 	up_read(&ctx->map_changing_lock);
 	uffd_move_unlock(dst_vma, src_vma);
+	if (ppps_depack) {
+		ppps_depack = false;
+		mmap_write_lock(mm);
+		err = ppps_depack_anon_range(mm, src_addr,
+					     src_addr + MM_PAGE_SIZE(mm), true);
+		mmap_write_unlock(mm);
+		if (!err)
+			goto retry_lock;
+	}
 out:
 	VM_WARN_ON(moved < 0);
 	VM_WARN_ON(err > 0);

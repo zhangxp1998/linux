@@ -107,6 +107,7 @@ TEST_GEN_FILES += mglru_ppps
 TEST_GEN_FILES += mmu_notifier_ppps
 TEST_GEN_FILES += fault_in_ppps
 TEST_GEN_FILES += anon_pageout_ppps
+TEST_GEN_FILES += packed_anon_ppps
 TEST_GEN_FILES += swapoff_ppps
 TEST_GEN_FILES += swap_vma_readahead_ppps
 TEST_GEN_FILES += madvise_free_ppps

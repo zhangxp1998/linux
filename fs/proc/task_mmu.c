@@ -901,6 +901,24 @@ static void smaps_page_accumulate(struct mem_size_stats *mss,
 	}
 }
 
+/*
+ * A packed anonymous mapping has one PTE for every process-page slice of the
+ * same native order-0 folio.  folio_mapcount() counts those PTEs separately,
+ * while PSS must divide the native backing by the number of complete tuple
+ * mappings.  Tuple rmap additions and removals change the mapcount by the
+ * full slice count, but another mm can race with this statistics snapshot.
+ */
+static int smaps_ppps_packed_anon_mapcount(struct folio *folio)
+{
+	int mapcount;
+
+	if (!folio_test_ppps_packed_anon(folio))
+		return -1;
+
+	mapcount = max(folio_mapcount(folio), 1);
+	return DIV_ROUND_UP(mapcount, (int)PPPS_SLICES_PER_PAGE);
+}
+
 static void smaps_account(struct mem_size_stats *mss, struct mm_struct *mm,
 		struct page *page, bool compound, bool young, bool dirty,
 		bool locked, bool present, int precise_mapcount)
@@ -1043,7 +1061,8 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 		return;
 
 	smaps_account(mss, vma->vm_mm, page, false, young, dirty, locked,
-		      present, -1);
+		      present,
+		      smaps_ppps_packed_anon_mapcount(page_folio(page)));
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE

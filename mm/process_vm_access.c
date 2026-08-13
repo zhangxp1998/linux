@@ -22,6 +22,7 @@
  * @len: number of bytes to copy
  * @iter: where to copy to/from locally
  * @page_size: page size of the target process
+ * @addr: target-process address of the first page
  * @slice_idx: first subpage slice within the host page
  * @advance_slice: whether each target page advances the subpage slice
  * @vm_write: 0 means copy from, 1 means copy to
@@ -32,6 +33,7 @@ static int process_vm_rw_pages(struct page **pages,
 			       size_t len,
 			       struct iov_iter *iter,
 			       unsigned int page_size,
+			       unsigned long addr,
 			       unsigned int slice_idx,
 			       bool advance_slice,
 			       int vm_write)
@@ -39,9 +41,14 @@ static int process_vm_rw_pages(struct page **pages,
 	/* Do the copy for each page */
 	while (len && iov_iter_count(iter)) {
 		struct page *page = *pages++;
-		unsigned int page_offset = slice_idx * page_size + offset;
+		unsigned int page_offset;
 		size_t copy = page_size - offset;
 		size_t copied;
+
+		if (folio_test_ppps_packed_anon(page_folio(page)))
+			page_offset = offset_in_page(addr) + offset;
+		else
+			page_offset = slice_idx * page_size + offset;
 
 		if (copy > len)
 			copy = len;
@@ -55,6 +62,7 @@ static int process_vm_rw_pages(struct page **pages,
 		if (copied < copy && iov_iter_count(iter))
 			return -EFAULT;
 		offset = 0;
+		addr += page_size;
 		if (advance_slice)
 			slice_idx = (slice_idx + 1) & PPPS_SLICE_MASK;
 	}
@@ -145,7 +153,7 @@ static int process_vm_rw_single_vec(unsigned long addr,
 			bytes = len;
 
 		rc = process_vm_rw_pages(process_pages,
-					 start_offset, bytes, iter, page_size,
+					 start_offset, bytes, iter, page_size, pa,
 					 slice_idx, advance_slice,
 					 vm_write);
 		len -= bytes;
