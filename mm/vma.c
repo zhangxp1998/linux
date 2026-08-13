@@ -3105,7 +3105,7 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 	mmap_assert_write_locked(mm);
 
 	/* Guard against exceeding limits of the address space. */
-	address &= MM_PAGE_MASK(mm);
+	address &= MM_UAPI_PAGE_MASK(mm);
 	if (address >= (TASK_SIZE & MM_PAGE_MASK(mm)))
 		return -ENOMEM;
 	address += MM_PAGE_SIZE(mm);
@@ -3190,7 +3190,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 
 	mmap_assert_write_locked(mm);
 
-	address &= MM_PAGE_MASK(mm);
+	address &= MM_UAPI_PAGE_MASK(mm);
 	if (address < mmap_min_addr || address < FIRST_USER_ADDRESS)
 		return -EPERM;
 
