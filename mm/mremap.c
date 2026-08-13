@@ -1157,6 +1157,19 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 		goto out;
 	}
 
+	/*
+	 * move_page_tables() moves one process PTE at a time.  Depack the
+	 * source first so an unaligned destination or a partial move cannot
+	 * split a packed anonymous mapping instance.
+	 */
+	if (old_len > vma->vm_end - addr) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ret = ppps_depack_anon_range(mm, addr, addr + old_len, true);
+	if (ret)
+		goto out;
+
 	if (is_vm_hugetlb_page(vma)) {
 		struct hstate *h __maybe_unused = hstate_vma(vma);
 
