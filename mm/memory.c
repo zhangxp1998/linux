@@ -829,7 +829,10 @@ copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 			pte = pte_swp_clear_exclusive(orig_pte);
 			set_pte_at(src_mm, addr, src_pte, pte);
 		}
-		rss[MM_SWAPENTS]++;
+		/* A packed tuple occupies one native RSS/swap accounting unit. */
+		if (!pte_swp_ppps_packed(orig_pte) ||
+		    IS_ALIGNED(addr, PAGE_SIZE))
+			rss[MM_SWAPENTS]++;
 	} else if (is_migration_entry(entry)) {
 		folio = pfn_swap_entry_folio(entry);
 
@@ -1014,7 +1017,7 @@ static inline int copy_packed_anon_ptes(struct vm_area_struct *dst_vma,
 		folio_add_new_anon_rmap_ptes(new_folio, dst_vma, addr,
 					     nr_ptes, RMAP_EXCLUSIVE);
 		folio_add_lru_vma(new_folio, dst_vma);
-		rss[MM_ANONPAGES] += nr_ptes;
+		rss[MM_ANONPAGES] += folio_nr_pages(new_folio);
 
 		for (i = 0; i < nr_ptes; i++) {
 			unsigned long cur = addr + i * PAGE_SIZE_COMPAT;
@@ -1039,7 +1042,7 @@ static inline int copy_packed_anon_ptes(struct vm_area_struct *dst_vma,
 		return -EAGAIN;
 	}
 
-	rss[MM_ANONPAGES] += nr_ptes;
+	rss[MM_ANONPAGES] += folio_nr_pages(folio);
 	for (i = 0; i < nr_ptes; i++) {
 		pte_t pte = ptep_get(src_pte + i);
 		unsigned long cur = addr + i * PAGE_SIZE_COMPAT;
@@ -1334,6 +1337,8 @@ static int ppps_depack_anon_folio(struct vm_area_struct *vma,
 	}
 	folio_remove_rmap_ptes_same_page(old_folio, PPPS_SLICES_PER_PAGE,
 					 vma);
+	add_mm_counter(mm, MM_ANONPAGES,
+		       PPPS_SLICES_PER_PAGE - folio_nr_pages(old_folio));
 	pte_unmap_unlock(ptep, ptl);
 	mmu_notifier_invalidate_range_end(&range);
 
@@ -1436,6 +1441,9 @@ int ppps_depack_anon_range(struct mm_struct *mm, unsigned long start,
 			vma = find_vma(mm, start);
 			if (vma && start >= vma->vm_start) {
 				base = ALIGN_DOWN(start, PAGE_SIZE);
+				ret = ppps_swapin_anon_folio(vma, base);
+				if (ret)
+					return ret;
 				ret = ppps_depack_anon_folio(vma, base);
 				if (ret)
 					return ret;
@@ -1447,6 +1455,9 @@ int ppps_depack_anon_range(struct mm_struct *mm, unsigned long start,
 				base = ALIGN_DOWN(end, PAGE_SIZE);
 				if (IS_ALIGNED(start, PAGE_SIZE) ||
 				    base != ALIGN_DOWN(start, PAGE_SIZE)) {
+					ret = ppps_swapin_anon_folio(vma, base);
+					if (ret)
+						return ret;
 					ret = ppps_depack_anon_folio(vma, base);
 					if (ret)
 						return ret;
@@ -1954,7 +1965,7 @@ zap_packed_anon_ptes(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	struct mm_struct *mm = tlb->mm;
 
 	clear_full_ptes(mm, addr, pte, nr, tlb->fullmm);
-	rss[MM_ANONPAGES] -= nr;
+	rss[MM_ANONPAGES] -= folio_nr_pages(folio);
 	arch_check_zapped_pte(vma, ptent);
 	tlb_remove_tlb_entries(tlb, pte, nr, addr);
 	if (unlikely(userfaultfd_pte_wp(vma, ptent)))
@@ -2068,15 +2079,33 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
 		folio_put(folio);
 	} else if (!non_swap_entry(entry)) {
 		bool bypass = false;
+		int packed_nr;
 		/* Genuine swap entries, hence a private anon pages */
 		if (!should_zap_cows(details))
 			return 1;
 
-		nr = swap_pte_batch(pte, max_nr, ptent);
-		rss[MM_SWAPENTS] -= nr;
-		trace_android_vh_swapmem_gather_add_bypass(vma->vm_mm, entry, nr, &bypass);
-		if (!bypass)
-			free_swap_and_cache_nr(entry, nr);
+		packed_nr = ppps_swap_pte_batch(pte, max_nr, ptent, addr);
+		if (packed_nr) {
+			int i;
+
+			nr = packed_nr;
+			if (IS_ALIGNED(addr, PAGE_SIZE))
+				rss[MM_SWAPENTS]--;
+			for (i = 0; i < nr; i++) {
+				bypass = false;
+				trace_android_vh_swapmem_gather_add_bypass(vma->vm_mm,
+									   entry, 1, &bypass);
+				if (!bypass)
+					free_swap_and_cache(entry);
+			}
+		} else {
+			nr = swap_pte_batch(pte, max_nr, ptent);
+			rss[MM_SWAPENTS] -= nr;
+			trace_android_vh_swapmem_gather_add_bypass(vma->vm_mm,
+								   entry, nr, &bypass);
+			if (!bypass)
+				free_swap_and_cache_nr(entry, nr);
+		}
 	} else if (is_migration_entry(entry)) {
 		struct folio *folio = pfn_swap_entry_folio(entry);
 
@@ -4062,6 +4091,112 @@ vm_fault_t __vmf_anon_prepare(struct vm_fault *vmf)
 	return ret;
 }
 
+static bool ppps_anon_vma_can_pack(struct vm_area_struct *vma,
+				   unsigned long address)
+{
+	unsigned long base = ALIGN_DOWN(address, PAGE_SIZE);
+
+	return ppps_mm_is_compat(vma->vm_mm) && !userfaultfd_armed(vma) &&
+		!(vma->vm_flags & (VM_MTE | VM_DROPPABLE | VM_LOCKED |
+				    VM_MERGEABLE)) &&
+		base >= vma->vm_start && base + PAGE_SIZE <= vma->vm_end;
+}
+
+/*
+ * Promote four read-only mappings of the native global zero page to one
+ * private packed anonymous folio.  The surrounding PTEs were installed by a
+ * single read fault, so the common read-then-write pattern retains zero-page
+ * sharing until the first write and then gets one-to-one physical backing.
+ */
+static vm_fault_t wp_zero_tuple_copy(struct vm_fault *vmf)
+{
+	const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
+	const int nr_ptes = PPPS_SLICES_PER_PAGE;
+	struct vm_area_struct *vma = vmf->vma;
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned long base = ALIGN_DOWN(vmf->address, PAGE_SIZE);
+	unsigned int fault_slice = (vmf->address - base) >> PAGE_SHIFT_COMPAT;
+	struct folio *new_folio;
+	struct mmu_notifier_range range;
+	pte_t old_ptes[PPPS_SLICES_PER_PAGE];
+	/* Protects the complete zero tuple. */
+	spinlock_t *ptl;
+	pte_t *ptep;
+	vm_fault_t ret;
+	int i;
+
+	delayacct_wpcopy_start();
+	ret = vmf_anon_prepare(vmf);
+	if (ret)
+		goto out;
+
+	new_folio = folio_prealloc(mm, vma, base, true);
+	if (!new_folio) {
+		ret = VM_FAULT_OOM;
+		goto out;
+	}
+	__folio_mark_uptodate(new_folio);
+
+	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm, base,
+				base + PAGE_SIZE);
+	mmu_notifier_invalidate_range_start(&range);
+
+	ptep = pte_offset_map_lock(mm, vmf->pmd, base, &ptl);
+	if (!ptep || !ppps_anon_vma_can_pack(vma, base) ||
+	    !ppps_anon_pte_is_zero_tuple(vma, base, ptep) ||
+	    !pte_same(ptep_get(ptep + fault_slice), vmf->orig_pte)) {
+		if (ptep)
+			pte_unmap_unlock(ptep, ptl);
+		mmu_notifier_invalidate_range_end(&range);
+		folio_put(new_folio);
+		ret = 0;
+		goto out;
+	}
+
+	for (i = 0; i < nr_ptes; i++)
+		old_ptes[i] = ptep_get(ptep + i);
+	flush_cache_range(vma, base, base + PAGE_SIZE);
+	for (i = 0; i < nr_ptes; i++) {
+		unsigned long address = base + i * PAGE_SIZE_COMPAT;
+
+		ptep_clear_flush(vma, address, ptep + i);
+		ksm_might_unmap_zero_page(mm, old_ptes[i]);
+	}
+
+	folio_ref_add(new_folio, nr_ptes - 1);
+	add_mm_counter(mm, MM_ANONPAGES, folio_nr_pages(new_folio));
+	folio_add_new_anon_rmap_ptes(new_folio, vma, base, nr_ptes,
+				     RMAP_EXCLUSIVE);
+	folio_add_lru_vma(new_folio, vma);
+
+	for (i = 0; i < nr_ptes; i++) {
+		unsigned long address = base + i * PAGE_SIZE_COMPAT;
+		pte_t entry = mk_pte(&new_folio->page, vma->vm_page_prot);
+
+		entry = ppps_folio_mk_pte_explicit_slice(vma, new_folio,
+							 entry, i);
+		entry = pte_sw_mkyoung(entry);
+		if (pte_soft_dirty(old_ptes[i]))
+			entry = pte_mksoft_dirty(entry);
+		if (pte_uffd_wp(old_ptes[i]))
+			entry = pte_mkuffd_wp(entry);
+		if (i == fault_slice && !unshare)
+			entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+		else
+			entry = pte_wrprotect(entry);
+
+		set_pte_at(mm, address, ptep + i, entry);
+		update_mmu_cache_range(vmf, vma, address, ptep + i, 1);
+	}
+
+	pte_unmap_unlock(ptep, ptl);
+	mmu_notifier_invalidate_range_end(&range);
+	ret = 0;
+out:
+	delayacct_wpcopy_end();
+	return ret;
+}
+
 static vm_fault_t wp_packed_anon_copy(struct vm_fault *vmf,
 				      struct folio *old_folio)
 {
@@ -4506,6 +4641,7 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 	struct vm_area_struct *vma = vmf->vma;
 	struct folio *folio = NULL;
 	bool packed = false;
+	bool zero_tuple = false;
 	pte_t pte;
 
 	if (likely(!unshare)) {
@@ -4546,6 +4682,9 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 	if (folio)
 		packed = ppps_anon_pte_is_packed(vma, folio, vmf->address,
 						 vmf->pte);
+	else if (ppps_anon_vma_can_pack(vma, vmf->address))
+		zero_tuple = ppps_anon_pte_is_zero_tuple(vma, vmf->address,
+							 vmf->pte);
 
 	/*
 	 * Shared mapping: we are guaranteed to have VM_WRITE and
@@ -4597,6 +4736,8 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 #endif
 	if (packed)
 		return wp_packed_anon_copy(vmf, folio);
+	if (zero_tuple)
+		return wp_zero_tuple_copy(vmf);
 	return wp_page_copy(vmf);
 }
 
@@ -5547,8 +5688,8 @@ map_packed_group:
 	if (should_try_to_free_swap(swapcache, vma, vmf->flags))
 		folio_free_swap(swapcache);
 
-	add_mm_counter(vma->vm_mm, MM_ANONPAGES, PPPS_SLICES_PER_PAGE);
-	add_mm_counter(vma->vm_mm, MM_SWAPENTS, -PPPS_SLICES_PER_PAGE);
+	add_mm_counter(vma->vm_mm, MM_ANONPAGES, folio_nr_pages(folio));
+	add_mm_counter(vma->vm_mm, MM_SWAPENTS, -folio_nr_pages(folio));
 	folio_ref_add(folio, PPPS_SLICES_PER_PAGE - 1);
 	flush_icache_page(vma, &folio->page);
 	folio_add_new_anon_rmap_ptes(folio, vma, address,
@@ -5792,10 +5933,7 @@ static bool ppps_anon_fault_can_pack(struct vm_fault *vmf)
 	pte_t *pte;
 	bool empty;
 
-	if (!ppps_mm_is_compat(vma->vm_mm) || userfaultfd_armed(vma) ||
-	    (vma->vm_flags & (VM_MTE | VM_DROPPABLE | VM_LOCKED)) ||
-	    (vma->vm_flags & VM_MERGEABLE) || addr < vma->vm_start ||
-	    addr + PAGE_SIZE > vma->vm_end)
+	if (!ppps_anon_vma_can_pack(vma, addr))
 		return false;
 
 	pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, addr, &ptl);
@@ -5831,17 +5969,22 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	if (pte_alloc(vma->vm_mm, vmf->pmd))
 		return VM_FAULT_OOM;
 
-	/* Use the zero-page for reads */
+	/* Use the zero-page for reads. */
 	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
 			!mm_forbids_zeropage(vma->vm_mm)) {
-		entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address),
-						vma->vm_page_prot));
+		nr_pages = ppps_anon_fault_can_pack(vmf) ?
+			PPPS_SLICES_PER_PAGE : 1;
+		if (nr_pages > 1)
+			addr = ALIGN_DOWN(vmf->address, PAGE_SIZE);
+		entry = pte_mkspecial(pfn_pte(my_zero_pfn(addr),
+					      vma->vm_page_prot));
 		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
-				vmf->address, &vmf->ptl);
+				addr, &vmf->ptl);
 		if (!vmf->pte)
 			goto unlock;
-		if (vmf_pte_changed(vmf)) {
-			update_mmu_tlb(vma, vmf->address, vmf->pte);
+		if ((nr_pages == 1 && vmf_pte_changed(vmf)) ||
+		    (nr_pages > 1 && !pte_range_none(vmf->pte, nr_pages))) {
+			update_mmu_tlb_range(vma, addr, vmf->pte, nr_pages);
 			goto unlock;
 		}
 		ret = check_stable_address_space(vma->vm_mm);
@@ -5911,7 +6054,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	}
 
 	folio_ref_add(folio, nr_pages - 1);
-	add_mm_counter(vma->vm_mm, MM_ANONPAGES, nr_pages);
+	add_mm_counter(vma->vm_mm, MM_ANONPAGES, folio_nr_pages(folio));
 	count_mthp_stat(folio_order(folio), MTHP_STAT_ANON_FAULT_ALLOC);
 	folio_add_new_anon_rmap_ptes(folio, vma, addr, nr_pages, RMAP_EXCLUSIVE);
 	folio_add_lru_vma(folio, vma);

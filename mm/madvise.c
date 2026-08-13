@@ -725,6 +725,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 	struct folio *folio;
 	int folio_nr_ptes;
 	int nr_swap = 0;
+	bool drain_lazyfree = false;
 	unsigned long next;
 	int nr, max_nr;
 
@@ -754,13 +755,26 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 */
 		if (!pte_present(ptent)) {
 			swp_entry_t entry;
+			int packed_nr;
 
 			entry = pte_to_swp_entry(ptent);
 			if (!non_swap_entry(entry)) {
 				max_nr = (end - addr) / MM_PAGE_SIZE(mm);
-				nr = swap_pte_batch(pte, max_nr, ptent);
-				nr_swap -= nr;
-				free_swap_and_cache_nr(entry, nr);
+				packed_nr = ppps_swap_pte_batch(pte, max_nr, ptent,
+								addr);
+				if (packed_nr) {
+					int i;
+
+					nr = packed_nr;
+					if (IS_ALIGNED(addr, PAGE_SIZE))
+						nr_swap--;
+					for (i = 0; i < nr; i++)
+						free_swap_and_cache(entry);
+				} else {
+					nr = swap_pte_batch(pte, max_nr, ptent);
+					nr_swap -= nr;
+					free_swap_and_cache_nr(entry, nr);
+				}
 				clear_not_present_full_ptes(mm, addr, pte, nr, tlb->fullmm);
 			} else if (is_hwpoison_entry(entry) ||
 				   is_poisoned_swp_entry(entry)) {
@@ -849,17 +863,11 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 			clear_young_dirty_ptes(vma, addr, pte, nr, cydp_flags);
 			tlb_remove_tlb_entries(tlb, pte, nr, addr);
 		}
-		/*
-		 * Reclaim handles a lazy-free small folio one PTE at a time.  A
-		 * packed PPPS folio has four PTEs for one indivisible native page;
-		 * discarding a clean slice before observing a dirty sibling would
-		 * leave an arbitrary partial tuple.  Keep it swap-backed for now,
-		 * so reclaim preserves or removes the complete tuple.  Atomic
-		 * packed MADV_FREE reclaim can restore the discard optimization
-		 * later without weakening the mapping invariant.
-		 */
-		if (!ppps_packed)
-			folio_mark_lazyfree(folio);
+		/* A shared packed folio cannot be made lazy-free for one alias. */
+		if (ppps_packed && folio_mapcount(folio) != folio_nr_ptes)
+			continue;
+		folio_mark_lazyfree(folio);
+		drain_lazyfree |= ppps_packed;
 	}
 
 	if (nr_swap)
@@ -868,6 +876,9 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		arch_leave_lazy_mmu_mode();
 		pte_unmap_unlock(start_pte, ptl);
 	}
+	/* Make a packed folio's single batched LRU move visible immediately. */
+	if (drain_lazyfree)
+		lru_add_drain();
 	cond_resched();
 
 	return 0;
@@ -1903,7 +1914,6 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	struct blk_plug plug;
 	struct madvise_behavior madv_behavior = {.behavior = behavior};
 	bool bypass = false;
-	bool depack_all;
 
 	if (!madvise_behavior_valid(behavior))
 		return -EINVAL;
@@ -1940,9 +1950,8 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	 * The page-table walkers skip any partial tuple created by a concurrent
 	 * fault after this pre-pass.
 	 */
-	depack_all = behavior == MADV_FREE;
 	if (ppps_mm_is_compat(mm) &&
-	    (depack_all || behavior == MADV_DONTNEED ||
+	    (behavior == MADV_FREE || behavior == MADV_DONTNEED ||
 	     behavior == MADV_DONTNEED_LOCKED ||
 	     behavior == MADV_GUARD_INSTALL)) {
 		unsigned long depack_start = untagged_addr(start);
@@ -1950,7 +1959,7 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 		if (mmap_write_lock_killable(mm))
 			return -EINTR;
 		error = ppps_depack_anon_range(mm, depack_start,
-					       depack_start + len, depack_all);
+					       depack_start + len, false);
 		mmap_write_unlock(mm);
 		if (error)
 			return error;
