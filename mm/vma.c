@@ -531,6 +531,19 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 			return err;
 	}
 
+	/*
+	 * This is the final common gate for VMA splitting.  A packed-anon
+	 * mapping instance may not straddle two VMAs, so convert the native
+	 * folio at a process-page-only boundary to singleton folios first.
+	 * Callers normally do this before reaching __split_vma(), but keeping
+	 * the invariant here also covers direct split users.
+	 */
+	if (!IS_ALIGNED(addr, PAGE_SIZE)) {
+		err = ppps_depack_anon_range(vma->vm_mm, addr, addr + 1, false);
+		if (err)
+			return err;
+	}
+
 	new = vm_area_dup(vma);
 	if (!new)
 		return -ENOMEM;
@@ -1597,6 +1610,10 @@ int do_vmi_align_munmap(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	struct vma_munmap_struct vms;
 	int error;
 
+	error = ppps_depack_anon_range(mm, start, end, false);
+	if (error)
+		goto gather_failed;
+
 	init_vma_munmap(&vms, vmi, vma, start, end, uf, unlock);
 	error = vms_gather_munmap_vmas(&vms, &mas_detach);
 	if (error)
@@ -1677,6 +1694,20 @@ static struct vm_area_struct *vma_modify(struct vma_merge_struct *vmg)
 	unsigned long start = vmg->start;
 	unsigned long end = vmg->end;
 	struct vm_area_struct *merged;
+	bool depack_all;
+	int err;
+
+	/*
+	 * A packed anonymous tuple must never straddle VMAs.  Depack tuples at
+	 * prospective VMA boundaries before merge/split changes the topology.
+	 * Facilities with per-process-page state need singleton folios across
+	 * the complete modified range.
+	 */
+	depack_all = vmg->vm_flags &
+		(VM_LOCKED | VM_MERGEABLE | VM_MTE | __VM_UFFD_FLAGS);
+	err = ppps_depack_anon_range(vma->vm_mm, start, end, depack_all);
+	if (err)
+		return ERR_PTR(err);
 
 	/* First, try to merge. */
 	merged = vma_merge_existing_range(vmg);

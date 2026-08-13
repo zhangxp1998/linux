@@ -475,6 +475,14 @@ void folio_add_anon_rmap_pmd(struct folio *, struct page *,
 		struct vm_area_struct *, unsigned long address, rmap_t flags);
 void folio_add_new_anon_rmap(struct folio *, struct vm_area_struct *,
 		unsigned long address, rmap_t flags);
+void folio_add_new_anon_rmap_ptes(struct folio *folio,
+				  struct vm_area_struct *vma,
+				  unsigned long address, int nr_ptes,
+				  rmap_t flags);
+void folio_remove_rmap_ptes_same_page(struct folio *folio, int nr_ptes,
+				      struct vm_area_struct *vma);
+int folio_try_dup_anon_rmap_ptes_same_page(struct folio *folio, int nr_ptes,
+					   struct vm_area_struct *src_vma);
 void folio_add_file_rmap_ptes(struct folio *, struct page *, int nr_pages,
 		struct vm_area_struct *);
 #define folio_add_file_rmap_pte(folio, page, vma) \

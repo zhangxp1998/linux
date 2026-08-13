@@ -136,6 +136,9 @@ enum pageflags {
 	PG_oem_reserved_3,
 	PG_oem_reserved_4,
 #endif
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	PG_ppps_packed_anon,
+#endif
 	__NR_PAGEFLAGS,
 
 	PG_readahead = PG_reclaim,
@@ -588,8 +591,11 @@ PAGEFLAG(Reserved, reserved, PF_NO_COMPOUND)
 FOLIO_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 	__FOLIO_CLEAR_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 	__FOLIO_SET_FLAG(swapbacked, FOLIO_HEAD_PAGE)
-/* Packed mappings are not introduced until the packed-anon commit. */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+FOLIO_FLAG(ppps_packed_anon, FOLIO_HEAD_PAGE)
+#else
 FOLIO_FLAG_FALSE(ppps_packed_anon)
+#endif
 
 /*
  * Private page markings that may be used by the filesystem that owns the page

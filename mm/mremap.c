@@ -1962,6 +1962,23 @@ static unsigned long remap_move(struct vma_remap_struct *vrm)
 	return res;
 }
 
+static int ppps_depack_mremap(struct vma_remap_struct *vrm)
+{
+	bool depack_all = (vrm->flags & MREMAP_FIXED) ||
+		((vrm->flags & MREMAP_DONTUNMAP) && vrm->new_addr);
+
+	/*
+	 * Moving to a different native-page slice can split every tuple.
+	 * A same-slice move only needs its boundary tuples depacked.
+	 */
+	depack_all = depack_all &&
+		offset_in_page(vrm->addr) != offset_in_page(vrm->new_addr);
+
+	return ppps_depack_anon_range(current->mm, vrm->addr,
+				      vrm->addr + vrm->old_len,
+				      depack_all);
+}
+
 static unsigned long do_mremap(struct vma_remap_struct *vrm)
 {
 	struct mm_struct *mm = current->mm;
@@ -1980,10 +1997,15 @@ static unsigned long do_mremap(struct vma_remap_struct *vrm)
 	vrm->mmap_locked = true;
 
 	if (vrm_move_only(vrm)) {
-		res = remap_move(vrm);
+		res = ppps_depack_mremap(vrm);
+		if (!res)
+			res = remap_move(vrm);
 	} else {
 		vrm->vma = vma_lookup(current->mm, vrm->addr);
 		res = check_prep_vma(vrm);
+		if (res)
+			goto out;
+		res = ppps_depack_mremap(vrm);
 		if (res)
 			goto out;
 

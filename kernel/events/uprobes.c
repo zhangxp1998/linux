@@ -455,7 +455,9 @@ static int __uprobe_write(struct vm_area_struct *vma,
 	 * When unregistering, we may only zap a PTE if uffd is disabled and
 	 * there are no unexpected folio references ...
 	 */
-	if (is_register || userfaultfd_missing(vma) ||
+	/* A slice does not own the packed folio's rmap/reference alone. */
+	if (is_register || folio_test_ppps_compat_anon(folio) ||
+	    userfaultfd_missing(vma) ||
 	    (folio_ref_count(folio) != folio_expected_ref_count(folio) + 1))
 		goto remap;
 

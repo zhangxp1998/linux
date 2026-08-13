@@ -117,6 +117,7 @@ TEST_GEN_FILES += mglru_ppps
 TEST_GEN_FILES += mmu_notifier_ppps
 TEST_GEN_FILES += fault_in_ppps
 TEST_GEN_FILES += anon_pageout_ppps
+TEST_GEN_FILES += packed_anon_ppps
 TEST_GEN_FILES += swapoff_ppps
 TEST_GEN_FILES += swap_vma_readahead_ppps
 TEST_GEN_FILES += madvise_free_ppps
@@ -245,6 +246,7 @@ TEST_GEN_FILES += vm_map_pages_ppps
 TEST_GEN_FILES += vb2_mmap_ppps
 TEST_GEN_FILES += vb2_userptr_ppps
 TEST_GEN_FILES += xdp_umem_ppps
+TEST_GEN_FILES += tcp_zerocopy_align_ppps
 TEST_GEN_FILES += split_huge_page_test
 TEST_GEN_FILES += ksm_tests
 TEST_GEN_FILES += ksm_functional_tests
@@ -334,6 +336,7 @@ TEST_FILES += $(VM_MAP_PAGES_PPPS_MODULE)
 TEST_FILES += test_vb2_mmap_ppps.sh
 TEST_FILES += $(VB2_MMAP_PPPS_MODULE)
 TEST_FILES += test_vb2_userptr_ppps.sh
+TEST_FILES += test_tcp_zerocopy_align_ppps.sh
 TEST_FILES += $(VB2_USERPTR_PPPS_MODULE)
 
 # required by charge_reserved_hugetlb.sh
