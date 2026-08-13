@@ -40,6 +40,7 @@
 #include <asm/tlb.h>
 
 #include "internal.h"
+#include "ppps.h"
 #include "swap.h"
 
 /*
@@ -516,6 +517,8 @@ restart:
 		 * when a PPPS range covers only some of its slices.
 		 */
 		folio_nr_ptes = madvise_folio_nr_ptes(mm, folio);
+		if (ppps_anon_pte_is_packed(vma, folio, addr, pte))
+			folio_nr_ptes = PPPS_SLICES_PER_PAGE;
 		if (folio_nr_ptes > 1) {
 			bool any_young;
 
@@ -737,6 +740,8 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
 	for (; addr != end; pte += nr, addr += MM_PAGE_SIZE(mm) * nr) {
+		bool ppps_packed = false;
+
 		nr = 1;
 		ptent = ptep_get(pte);
 
@@ -775,6 +780,10 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 * when a PPPS range covers only some of its slices.
 		 */
 		folio_nr_ptes = madvise_folio_nr_ptes(mm, folio);
+		if (ppps_anon_pte_is_packed(vma, folio, addr, pte)) {
+			folio_nr_ptes = PPPS_SLICES_PER_PAGE;
+			ppps_packed = true;
+		}
 		if (folio_nr_ptes > 1) {
 			bool any_young, any_dirty;
 
@@ -840,7 +849,17 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 			clear_young_dirty_ptes(vma, addr, pte, nr, cydp_flags);
 			tlb_remove_tlb_entries(tlb, pte, nr, addr);
 		}
-		folio_mark_lazyfree(folio);
+		/*
+		 * Reclaim handles a lazy-free small folio one PTE at a time.  A
+		 * packed PPPS folio has four PTEs for one indivisible native page;
+		 * discarding a clean slice before observing a dirty sibling would
+		 * leave an arbitrary partial tuple.  Keep it swap-backed for now,
+		 * so reclaim preserves or removes the complete tuple.  Atomic
+		 * packed MADV_FREE reclaim can restore the discard optimization
+		 * later without weakening the mapping invariant.
+		 */
+		if (!ppps_packed)
+			folio_mark_lazyfree(folio);
 	}
 
 	if (nr_swap)
@@ -1884,6 +1903,7 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	struct blk_plug plug;
 	struct madvise_behavior madv_behavior = {.behavior = behavior};
 	bool bypass = false;
+	bool depack_all;
 
 	if (!madvise_behavior_valid(behavior))
 		return -EINVAL;
@@ -1913,6 +1933,29 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 					      &error, &bypass);
 	if (bypass)
 		return error;
+
+	/*
+	 * Depack established boundary tuples under mmap_lock for writing, then
+	 * retain the native madvise locking protocol (notably for userfaultfd).
+	 * The page-table walkers skip any partial tuple created by a concurrent
+	 * fault after this pre-pass.
+	 */
+	depack_all = behavior == MADV_COLD || behavior == MADV_PAGEOUT ||
+		behavior == MADV_FREE;
+	if (ppps_mm_is_compat(mm) &&
+	    (depack_all || behavior == MADV_DONTNEED ||
+	     behavior == MADV_DONTNEED_LOCKED ||
+	     behavior == MADV_GUARD_INSTALL)) {
+		unsigned long depack_start = untagged_addr(start);
+
+		if (mmap_write_lock_killable(mm))
+			return -EINTR;
+		error = ppps_depack_anon_range(mm, depack_start,
+					       depack_start + len, depack_all);
+		mmap_write_unlock(mm);
+		if (error)
+			return error;
+	}
 
 	error = madvise_lock(mm, &madv_behavior);
 	if (error)
