@@ -282,39 +282,17 @@ again:
 	 * include the slice the process page occupies within it.
 	 */
 	key->both.offset = futex_offset;
-	if (ppps_mm_is_compat(mm)) {
-		struct vm_area_struct *vma;
-
-		/*
-		 * File-backed futex offsets are relative to a native page-cache
-		 * page. Include the backing slice rather than the virtual slice,
-		 * since aliases of one file offset may have different alignment.
-		 */
-		mmap_read_lock(mm);
-		vma = vma_lookup(mm, address);
-		if (!vma) {
-			err = -EFAULT;
-			goto unlock;
-		}
-		key->both.offset += vma_address_to_slice(vma, address) <<
-				    MM_PAGE_SHIFT(mm);
-		err = get_user_pages(address, 1, FOLL_WRITE, &page);
-		if (err == -EFAULT && rw == FUTEX_READ) {
-			err = get_user_pages(address, 1, 0, &page);
-			ro = 1;
-		}
-unlock:
-		mmap_read_unlock(mm);
-	} else {
-		err = get_user_pages_fast(address, 1, FOLL_WRITE, &page);
-		/*
-		 * If write access is not required (eg. FUTEX_WAIT), try
-		 * and get read-only access.
-		 */
-		if (err == -EFAULT && rw == FUTEX_READ) {
-			err = get_user_pages_fast(address, 1, 0, &page);
-			ro = 1;
-		}
+	if (ppps_mm_is_compat(mm))
+		key->both.offset += mm_user_slice_offset(mm,
+							 untagged_addr(address));
+	err = get_user_pages_fast(address, 1, FOLL_WRITE, &page);
+	/*
+	 * If write access is not required (eg. FUTEX_WAIT), try
+	 * and get read-only access.
+	 */
+	if (err == -EFAULT && rw == FUTEX_READ) {
+		err = get_user_pages_fast(address, 1, 0, &page);
+		ro = 1;
 	}
 	if (err < 0)
 		return err;

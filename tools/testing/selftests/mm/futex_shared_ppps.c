@@ -17,8 +17,7 @@
 
 #include "kselftest_ppps.h"
 
-#define PROCESS_PAGE_SIZE 4096UL
-#define PPPS_NATIVE_PAGE_SIZE 16384UL
+#define POINTER_TAG 0xb4UL
 #define WAKE_RETRIES 1000
 
 struct alias_mapping {
@@ -100,6 +99,7 @@ static int run_test(void)
 	struct alias_mapping alias_a = { .reservation = MAP_FAILED };
 	struct alias_mapping alias_b = { .reservation = MAP_FAILED };
 	struct waiter_state waiter = {};
+	uint32_t *anonymous_word;
 	char path[] = "/tmp/futex-shared-XXXXXX";
 	struct timespec delay = { .tv_nsec = 1000000 };
 	pthread_t thread;
@@ -111,8 +111,24 @@ static int run_test(void)
 
 	ksft_print_header();
 	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE,
-			 "process uses 4K pages\n");
+
+	anonymous_word = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (anonymous_word == MAP_FAILED)
+		ksft_exit_fail_msg("anonymous mapping failed: %s\n",
+				   strerror(errno));
+#ifdef __aarch64__
+	*anonymous_word = 0;
+	errno = 0;
+	wake_result = futex_wake((uint32_t *)((uintptr_t)anonymous_word |
+				      (POINTER_TAG << 56)), 1);
+	ksft_test_result(wake_result == 0,
+			 "tagged anonymous shared wake succeeds (ret=%d errno=%d)\n",
+			 wake_result, errno);
+#else
+	ksft_test_result_skip("tagged-address futex test requires arm64\n");
+#endif
+	munmap(anonymous_word, PROCESS_PAGE_SIZE);
 
 	fd = mkstemp(path);
 	if (fd >= 0)
