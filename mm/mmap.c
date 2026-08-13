@@ -796,6 +796,19 @@ unsigned long vm_unmapped_area(struct vm_unmapped_area_info *info)
 }
 EXPORT_SYMBOL_GPL(vm_unmapped_area);
 
+static inline void
+ppps_align_unmapped_area(struct mm_struct *mm,
+			 struct vm_unmapped_area_info *info)
+{
+	/*
+	 * Keep automatically selected PPPS VMAs on native-page boundaries.
+	 * Explicit MAP_FIXED addresses and successful user hints are handled
+	 * before this search and retain their 4K-granular ABI.
+	 */
+	if (ppps_mm_is_compat(mm))
+		info->align_mask = PAGE_SIZE - 1;
+}
+
 /* Get an address range which is currently unmapped.
  * For shmat() with addr=0.
  *
@@ -836,6 +849,7 @@ generic_get_unmapped_area(struct file *filp, unsigned long addr,
 	info.low_limit = mm->mmap_base;
 	info.high_limit = mmap_end;
 	info.start_gap = stack_guard_placement(vm_flags);
+	ppps_align_unmapped_area(mm, &info);
 	return vm_unmapped_area(&info);
 }
 
@@ -886,6 +900,7 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 	info.low_limit = PAGE_SIZE;
 	info.high_limit = arch_get_mmap_base(addr, mm->mmap_base);
 	info.start_gap = stack_guard_placement(vm_flags);
+	ppps_align_unmapped_area(mm, &info);
 	addr = vm_unmapped_area(&info);
 
 	/*
