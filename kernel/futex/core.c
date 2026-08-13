@@ -44,6 +44,7 @@
 #include <linux/prctl.h>
 #include <linux/mempolicy.h>
 #include <linux/mmap_lock.h>
+#include <linux/uaccess.h>
 
 #include "futex.h"
 #include "../locking/rtmutex_common.h"
@@ -640,6 +641,7 @@ again:
 
 	key->both.offset = futex_offset;
 	if (ppps_mm_is_compat(mm)) {
+		unsigned long gup_address;
 		struct vm_area_struct *vma;
 
 		/*
@@ -648,16 +650,17 @@ again:
 		 * since aliases of one file offset may have different alignment.
 		 */
 		mmap_read_lock(mm);
-		vma = vma_lookup(mm, address);
+		gup_address = untagged_addr_remote(mm, address);
+		vma = vma_lookup(mm, gup_address);
 		if (!vma) {
 			err = -EFAULT;
 			goto unlock;
 		}
-		key->both.offset += vma_address_to_slice(vma, address) <<
+		key->both.offset += vma_address_to_slice(vma, gup_address) <<
 				    MM_PAGE_SHIFT(mm);
-		err = get_user_pages(address, 1, FOLL_WRITE, &page);
+		err = get_user_pages(gup_address, 1, FOLL_WRITE, &page);
 		if (err == -EFAULT && rw == FUTEX_READ) {
-			err = get_user_pages(address, 1, 0, &page);
+			err = get_user_pages(gup_address, 1, 0, &page);
 			ro = 1;
 		}
 unlock:
