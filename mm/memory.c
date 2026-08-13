@@ -1373,6 +1373,52 @@ out_put:
 }
 #endif
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * A packed swap PTE derives its slice from its current virtual address.  Any
+ * operation that can move process PTEs must therefore materialize it first.
+ * The caller holds mmap_lock for writing and does not permit fault retry, so
+ * handle_mm_fault() cannot drop that lock underneath us.
+ */
+static int ppps_swapin_anon_folio(struct vm_area_struct *vma,
+				  unsigned long base)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned long start = max(base, vma->vm_start);
+	unsigned long end = min(base + PAGE_SIZE, vma->vm_end);
+	unsigned long address;
+
+	if (!ppps_mm_is_compat(mm) || !vma_is_anonymous(vma))
+		return 0;
+
+	for (address = start; address < end; address += PAGE_SIZE_COMPAT) {
+		vm_fault_t fault;
+		spinlock_t *ptl; /* Protects the inspected PTE. */
+		pte_t *ptep;
+		pmd_t *pmd;
+		pte_t pte;
+
+		pmd = mm_find_pmd(mm, address);
+		if (!pmd)
+			continue;
+		ptep = pte_offset_map_lock(mm, pmd, address, &ptl);
+		if (!ptep)
+			continue;
+		pte = ptep_get(ptep);
+		pte_unmap_unlock(ptep, ptl);
+		if (!is_swap_pte(pte) || !pte_swp_ppps_packed(pte))
+			continue;
+
+		fault = handle_mm_fault(vma, address, FAULT_FLAG_REMOTE, NULL);
+		if (fault & VM_FAULT_ERROR)
+			return vm_fault_to_errno(fault, 0);
+		if (WARN_ON_ONCE(fault & (VM_FAULT_RETRY | VM_FAULT_COMPLETED)))
+			return -EAGAIN;
+	}
+	return 0;
+}
+#endif
+
 int ppps_depack_anon_range(struct mm_struct *mm, unsigned long start,
 			   unsigned long end, bool all)
 {
@@ -1417,6 +1463,9 @@ int ppps_depack_anon_range(struct mm_struct *mm, unsigned long start,
 
 		for (base = ALIGN_DOWN(first, PAGE_SIZE); base < last;
 		     base += PAGE_SIZE) {
+			ret = ppps_swapin_anon_folio(vma, base);
+			if (ret)
+				return ret;
 			ret = ppps_depack_anon_folio(vma, base);
 			if (ret)
 				return ret;
@@ -5027,12 +5076,17 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct folio *swapcache, *folio = NULL;
+	struct folio *packed_folio = NULL;
 	DECLARE_WAITQUEUE(wait, current);
 	struct page *page;
 	struct swap_info_struct *si = NULL;
 	rmap_t rmap_flags = RMAP_NONE;
 	bool need_clear_cache = false;
 	bool exclusive = false;
+	bool packed_entry = false;
+	bool packed_group = false;
+	unsigned int packed_slice = 0;
+	pte_t packed_ptes[PPPS_SLICES_PER_PAGE];
 	swp_entry_t entry;
 	pte_t pte;
 	vm_fault_t ret = 0;
@@ -5091,6 +5145,10 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		}
 		goto out;
 	}
+	packed_entry = ppps_mm_is_compat(vma->vm_mm) &&
+		pte_swp_ppps_packed(vmf->orig_pte);
+	if (packed_entry)
+		packed_slice = offset_in_page(vmf->address) >> PAGE_SHIFT_COMPAT;
 
 	/* Prevent swapoff from happening to us. */
 	si = get_swap_device(entry);
@@ -5103,7 +5161,9 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	swapcache = folio;
 
 	if (!folio) {
-		if (data_race(si->flags & SWP_SYNCHRONOUS_IO) &&
+		if (!packed_entry &&
+		    /* get_swap_device() makes this data race safe. */
+		    data_race(si->flags & SWP_SYNCHRONOUS_IO) &&
 		    __swap_count(entry) == 1) {
 			/* skip swapcache */
 			folio = alloc_swap_folio(vmf);
@@ -5203,23 +5263,45 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			     page_swap_entry(page).val != entry.val))
 			goto out_page;
 
-		/*
-		 * KSM sometimes has to copy on read faults, for example, if
-		 * page->index of !PageKSM() pages would be nonlinear inside the
-		 * anon VMA -- PageKSM() is lost on actual swapout.
-		 */
-		folio = ksm_might_need_to_copy(folio, vma, vmf->address);
-		if (unlikely(!folio)) {
-			ret = VM_FAULT_OOM;
-			folio = swapcache;
-			goto out_page;
-		} else if (unlikely(folio == ERR_PTR(-EHWPOISON))) {
-			ret = VM_FAULT_HWPOISON;
-			folio = swapcache;
-			goto out_page;
+		if (packed_entry) {
+			if (unlikely(!folio_test_uptodate(folio))) {
+				ret = VM_FAULT_SIGBUS;
+				goto out_page;
+			}
+			packed_folio = folio_prealloc(vma->vm_mm, vma,
+						      ALIGN_DOWN(vmf->address,
+								 PAGE_SIZE), false);
+			if (unlikely(!packed_folio)) {
+				ret = VM_FAULT_OOM;
+				goto out_page;
+			}
+			__folio_set_locked(packed_folio);
+			if (copy_mc_highpage(&packed_folio->page, &folio->page)) {
+				ret = VM_FAULT_HWPOISON;
+				goto out_page;
+			}
+			kmsan_copy_page_meta(&packed_folio->page, &folio->page);
+			flush_dcache_page(&packed_folio->page);
+			__folio_mark_uptodate(packed_folio);
+		} else {
+			/*
+			 * KSM sometimes has to copy on read faults, for example, if
+			 * page->index of !PageKSM() pages would be nonlinear inside the
+			 * anon VMA -- PageKSM() is lost on actual swapout.
+			 */
+			folio = ksm_might_need_to_copy(folio, vma, vmf->address);
+			if (unlikely(!folio)) {
+				ret = VM_FAULT_OOM;
+				folio = swapcache;
+				goto out_page;
+			} else if (unlikely(folio == ERR_PTR(-EHWPOISON))) {
+				ret = VM_FAULT_HWPOISON;
+				folio = swapcache;
+				goto out_page;
+			}
+			if (folio != swapcache)
+				page = folio_page(folio, 0);
 		}
-		if (folio != swapcache)
-			page = folio_page(folio, 0);
 
 		/*
 		 * If we want to map a page that's in the swapcache writable, we
@@ -5241,6 +5323,29 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 			&vmf->ptl);
 	if (unlikely(!vmf->pte || !pte_same(ptep_get(vmf->pte), vmf->orig_pte)))
 		goto out_nomap;
+	if (packed_folio) {
+		unsigned long base = ALIGN_DOWN(vmf->address, PAGE_SIZE);
+		pte_t *base_ptep = vmf->pte - packed_slice;
+		unsigned int i;
+
+		if (unlikely(base < vma->vm_start ||
+			     base + PAGE_SIZE > vma->vm_end))
+			goto out_nomap;
+		for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+			packed_ptes[i] = ptep_get(base_ptep + i);
+			if (unlikely(!is_swap_pte(packed_ptes[i]) ||
+				     !pte_swp_ppps_packed(packed_ptes[i]) ||
+				     pte_to_swp_entry(packed_ptes[i]).val !=
+					entry.val))
+				goto out_nomap;
+		}
+		folio = packed_folio;
+		packed_folio = NULL;
+		page = &folio->page;
+		address = base;
+		ptep = base_ptep;
+		packed_group = true;
+	}
 
 	if (unlikely(!folio_test_uptodate(folio))) {
 		ret = VM_FAULT_SIGBUS;
@@ -5269,6 +5374,11 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	page_idx = 0;
 	address = vmf->address;
 	ptep = vmf->pte;
+	if (packed_group) {
+		address = ALIGN_DOWN(vmf->address, PAGE_SIZE);
+		ptep = vmf->pte - packed_slice;
+		goto map_packed_group;
+	}
 	if (folio_test_large(folio) && folio_test_swapcache(folio)) {
 		int nr = folio_nr_pages(folio);
 		unsigned long idx = folio_page_idx(folio, page);
@@ -5350,7 +5460,11 @@ check_folio:
 	 * when reading from swap. This metadata may be indexed by swap entry
 	 * so this must be called before swap_free().
 	 */
-	arch_swap_restore(folio_swap(entry, folio), folio);
+	if (packed_entry)
+		arch_swap_restore_ppps(folio_swap(entry, folio), folio,
+				       packed_slice);
+	else
+		arch_swap_restore(folio_swap(entry, folio), folio);
 
 	/*
 	 * Remove the swap entry and conditionally try to free up the swapcache.
@@ -5417,6 +5531,60 @@ check_folio:
 	set_ptes(vma->vm_mm, address, ptep, pte, nr_pages);
 	arch_do_swap_page_nr(vma->vm_mm, vma, address,
 			pte, pte, nr_pages);
+	goto mapped;
+
+map_packed_group:
+	/*
+	 * The swapcache folio can be shared by several mms.  Restore one mm by
+	 * eagerly copying it to a fresh folio, then atomically replace its four
+	 * equal packed swap PTEs with the complete slice 0..3 tuple.  This keeps
+	 * one native backing folio after swapin and avoids cross-mm rmap state on
+	 * the swapcache folio.
+	 */
+	arch_swap_restore(folio_swap(entry, folio), folio);
+	for (unsigned int i = 0; i < PPPS_SLICES_PER_PAGE; i++)
+		swap_free(entry);
+	if (should_try_to_free_swap(swapcache, vma, vmf->flags))
+		folio_free_swap(swapcache);
+
+	add_mm_counter(vma->vm_mm, MM_ANONPAGES, PPPS_SLICES_PER_PAGE);
+	add_mm_counter(vma->vm_mm, MM_SWAPENTS, -PPPS_SLICES_PER_PAGE);
+	folio_ref_add(folio, PPPS_SLICES_PER_PAGE - 1);
+	flush_icache_page(vma, &folio->page);
+	folio_add_new_anon_rmap_ptes(folio, vma, address,
+				     PPPS_SLICES_PER_PAGE, RMAP_EXCLUSIVE);
+	folio_add_lru_vma(folio, vma);
+	for (unsigned int i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		unsigned long addr = address + i * PAGE_SIZE_COMPAT;
+		pte_t new_pte = mk_pte(&folio->page, vma->vm_page_prot);
+
+		new_pte = ppps_folio_mk_pte_explicit_slice(vma, folio,
+							   new_pte, i);
+		if (pte_swp_soft_dirty(packed_ptes[i]))
+			new_pte = pte_mksoft_dirty(new_pte);
+		if (pte_swp_uffd_wp(packed_ptes[i]))
+			new_pte = pte_mkuffd_wp(new_pte);
+		if ((vma->vm_flags & VM_WRITE) &&
+		    !userfaultfd_pte_wp(vma, new_pte) &&
+		    !pte_needs_soft_dirty_wp(vma, new_pte))
+			new_pte = pte_mkwrite(pte_mkdirty(new_pte), vma);
+		if (i == packed_slice) {
+			trace_android_vh_do_swap_page(folio, &new_pte, vmf,
+						      entry);
+			vmf->orig_pte = new_pte;
+			if (pte_write(new_pte))
+				vmf->flags &= ~FAULT_FLAG_WRITE;
+		}
+		if (WARN_ON_ONCE(pte_write(new_pte) &&
+				 !PageAnonExclusive(&folio->page)))
+			new_pte = pte_wrprotect(new_pte);
+		set_pte_at(vma->vm_mm, addr, ptep + i, new_pte);
+		arch_do_swap_page_nr(vma->vm_mm, vma, addr, new_pte,
+				     packed_ptes[i], 1);
+	}
+	nr_pages = PPPS_SLICES_PER_PAGE;
+
+mapped:
 
 	folio_unlock(folio);
 	if (folio != swapcache && swapcache) {
@@ -5445,6 +5613,10 @@ unlock:
 	if (vmf->pte)
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 out:
+	if (packed_folio) {
+		folio_unlock(packed_folio);
+		folio_put(packed_folio);
+	}
 	/* Clear the swap cache pin for direct swapin after PTL unlock */
 	if (need_clear_cache) {
 		swapcache_clear(si, entry, nr_pages);
@@ -5465,6 +5637,10 @@ out_release:
 	if (folio != swapcache && swapcache) {
 		folio_unlock(swapcache);
 		folio_put(swapcache);
+	}
+	if (packed_folio) {
+		folio_unlock(packed_folio);
+		folio_put(packed_folio);
 	}
 	if (need_clear_cache) {
 		swapcache_clear(si, entry, nr_pages);

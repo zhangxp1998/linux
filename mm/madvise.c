@@ -1940,8 +1940,7 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	 * The page-table walkers skip any partial tuple created by a concurrent
 	 * fault after this pre-pass.
 	 */
-	depack_all = behavior == MADV_COLD || behavior == MADV_PAGEOUT ||
-		behavior == MADV_FREE;
+	depack_all = behavior == MADV_FREE;
 	if (ppps_mm_is_compat(mm) &&
 	    (depack_all || behavior == MADV_DONTNEED ||
 	     behavior == MADV_DONTNEED_LOCKED ||
