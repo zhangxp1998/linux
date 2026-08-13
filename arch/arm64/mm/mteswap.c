@@ -5,6 +5,7 @@
 #include <linux/slab.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
+#include <linux/ppps.h>
 #include <asm/mte.h>
 
 static DEFINE_XARRAY(mte_pages);
@@ -128,3 +129,29 @@ void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 		entry.val++;
 	}
 }
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+void arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
+			    unsigned int slice)
+{
+	u8 selected[MTE_PAGE_TAG_STORAGE] = {};
+	const size_t slice_storage = PAGE_SIZE_COMPAT * MTE_TAG_SIZE /
+		(MTE_GRANULE_SIZE * BITS_PER_BYTE);
+	void *tags;
+
+	if (!system_supports_mte())
+		return;
+	tags = xa_load(&mte_pages, entry.val);
+	if (!tags)
+		return;
+
+	VM_WARN_ON_ONCE_FOLIO(slice >= PPPS_SLICES_PER_PAGE, folio);
+	if (slice >= PPPS_SLICES_PER_PAGE)
+		return;
+	memcpy(selected, tags + slice * slice_storage, slice_storage);
+	/* The destination is a fresh, locked singleton owned by the caller. */
+	try_page_mte_tagging(&folio->page);
+	mte_restore_page_tags(page_address(&folio->page), selected);
+	set_page_mte_tagged(&folio->page);
+}
+#endif

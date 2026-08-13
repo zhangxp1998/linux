@@ -1288,6 +1288,15 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 }
 #endif
 
+#ifndef __HAVE_ARCH_SWAP_RESTORE_PPPS
+static inline void
+arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
+		       unsigned int slice)
+{
+	arch_swap_restore(entry, folio);
+}
+#endif
+
 #ifndef __HAVE_ARCH_PGD_OFFSET_GATE
 #define pgd_offset_gate(mm, addr)	pgd_offset(mm, addr)
 #endif
