@@ -23,6 +23,7 @@
 #define NATIVE_PAGE	16384UL
 #define SLICES		(NATIVE_PAGE / PROCESS_PAGE)
 #define PAGEMAP_PRESENT	UINT64_C(0x8000000000000000)
+#define PAGEMAP_SWAPPED	UINT64_C(0x4000000000000000)
 #define PAGEMAP_PFN_MASK ((1ULL << 55) - 1)
 
 static unsigned char *map_aligned(size_t size, unsigned char **reservation)
@@ -91,6 +92,36 @@ static bool same_pfn(const uint64_t pfn[SLICES])
 	for (i = 1; i < SLICES; i++)
 		if (pfn[i] != pfn[0])
 			return false;
+	return true;
+}
+
+static bool same_swap_entry(const unsigned char *base)
+{
+	uint64_t first = 0;
+	uint64_t entry;
+	off_t offset;
+	int fd;
+	unsigned int i;
+
+	fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return false;
+	for (i = 0; i < SLICES; i++) {
+		offset = ((uintptr_t)(base + i * PROCESS_PAGE) / PROCESS_PAGE) *
+			 sizeof(entry);
+		if (pread(fd, &entry, sizeof(entry), offset) != sizeof(entry) ||
+		    !(entry & PAGEMAP_SWAPPED) || (entry & PAGEMAP_PRESENT)) {
+			close(fd);
+			return false;
+		}
+		entry &= PAGEMAP_PFN_MASK;
+		if (i && entry != first) {
+			close(fd);
+			return false;
+		}
+		first = entry;
+	}
+	close(fd);
 	return true;
 }
 
@@ -177,9 +208,10 @@ static int run_test(void)
 		populate(base);
 	passed = base != MAP_FAILED && !madvise(base, NATIVE_PAGE,
 						  MADV_PAGEOUT) &&
-		 verify(base) && read_pfns(base, pfn) && distinct_pfns(pfn);
+		 same_swap_entry(base) && verify(base) &&
+		 read_pfns(base, pfn) && same_pfn(pfn);
 	ksft_test_result(passed,
-			 "pageout depacks safely and preserves contents\n");
+			 "pageout uses one slot then restores one packed folio\n");
 	if (base != MAP_FAILED)
 		munmap(reservation, 3 * NATIVE_PAGE);
 
