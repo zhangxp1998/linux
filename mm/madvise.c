@@ -729,6 +729,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 	struct folio *folio;
 	int folio_nr_ptes;
 	int nr_swap = 0;
+	bool drain_lazyfree = false;
 	unsigned long next;
 	int nr, max_nr;
 
@@ -866,17 +867,11 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 			clear_young_dirty_ptes(vma, addr, pte, nr, cydp_flags);
 			tlb_remove_tlb_entries(tlb, pte, nr, addr);
 		}
-		/*
-		 * Reclaim handles a lazy-free small folio one PTE at a time.  A
-		 * packed PPPS folio has four PTEs for one indivisible native page;
-		 * discarding a clean slice before observing a dirty sibling would
-		 * leave an arbitrary partial tuple.  Keep it swap-backed for now,
-		 * so reclaim preserves or removes the complete tuple.  Atomic
-		 * packed MADV_FREE reclaim can restore the discard optimization
-		 * later without weakening the mapping invariant.
-		 */
-		if (!ppps_packed)
-			folio_mark_lazyfree(folio);
+		/* Do not create an unreclaimable lazy-free packed tuple. */
+		if (ppps_packed)
+			continue;
+		folio_mark_lazyfree(folio);
+		drain_lazyfree |= ppps_packed;
 	}
 
 	if (nr_swap)
@@ -885,6 +880,9 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		arch_leave_lazy_mmu_mode();
 		pte_unmap_unlock(start_pte, ptl);
 	}
+	/* Make a packed folio's single batched LRU move visible immediately. */
+	if (drain_lazyfree)
+		lru_add_drain();
 	cond_resched();
 
 	return 0;
@@ -1921,7 +1919,6 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	struct blk_plug plug;
 	struct madvise_behavior madv_behavior = {.behavior = behavior};
 	bool bypass = false;
-	bool depack_all;
 
 	if (!madvise_behavior_valid(behavior))
 		return -EINVAL;
@@ -1958,9 +1955,8 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	 * The page-table walkers skip any partial tuple created by a concurrent
 	 * fault after this pre-pass.
 	 */
-	depack_all = behavior == MADV_FREE;
 	if (ppps_mm_is_compat(mm) &&
-	    (depack_all || behavior == MADV_DONTNEED ||
+	    (behavior == MADV_FREE || behavior == MADV_DONTNEED ||
 	     behavior == MADV_DONTNEED_LOCKED ||
 	     behavior == MADV_GUARD_INSTALL)) {
 		unsigned long depack_start = untagged_addr(start);
@@ -1968,7 +1964,7 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 		if (mmap_write_lock_killable(mm))
 			return -EINTR;
 		error = ppps_depack_anon_range(mm, depack_start,
-					       depack_start + len, depack_all);
+					       depack_start + len, false);
 		mmap_write_unlock(mm);
 		if (error)
 			return error;

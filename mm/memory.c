@@ -1426,7 +1426,9 @@ static int ppps_swapin_anon_folio(struct vm_area_struct *vma,
 	}
 	return 0;
 }
+#endif
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 /*
  * mmap_lock for writing does not exclude faults already running under a
  * per-VMA read lock.  Write-lock the VMA before either operation can expose a
@@ -4108,6 +4110,112 @@ vm_fault_t __vmf_anon_prepare(struct vm_fault *vmf)
 	return ret;
 }
 
+static bool ppps_anon_vma_can_pack(struct vm_area_struct *vma,
+				   unsigned long address)
+{
+	unsigned long base = ALIGN_DOWN(address, PAGE_SIZE);
+
+	return ppps_mm_is_compat(vma->vm_mm) && !userfaultfd_armed(vma) &&
+		!(vma->vm_flags & (VM_MTE | VM_DROPPABLE | VM_LOCKED |
+				    VM_MERGEABLE)) &&
+		base >= vma->vm_start && base + PAGE_SIZE <= vma->vm_end;
+}
+
+/*
+ * Promote four read-only mappings of the native global zero page to one
+ * private packed anonymous folio.  The surrounding PTEs were installed by a
+ * single read fault, so the common read-then-write pattern retains zero-page
+ * sharing until the first write and then gets one-to-one physical backing.
+ */
+static vm_fault_t wp_zero_tuple_copy(struct vm_fault *vmf)
+{
+	const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
+	const int nr_ptes = PPPS_SLICES_PER_PAGE;
+	struct vm_area_struct *vma = vmf->vma;
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned long base = ALIGN_DOWN(vmf->address, PAGE_SIZE);
+	unsigned int fault_slice = (vmf->address - base) >> PAGE_SHIFT_COMPAT;
+	struct folio *new_folio;
+	struct mmu_notifier_range range;
+	pte_t old_ptes[PPPS_SLICES_PER_PAGE];
+	/* Protects the complete zero tuple. */
+	spinlock_t *ptl;
+	pte_t *ptep;
+	vm_fault_t ret;
+	int i;
+
+	delayacct_wpcopy_start();
+	ret = vmf_anon_prepare(vmf);
+	if (ret)
+		goto out;
+
+	new_folio = folio_prealloc(mm, vma, base, true);
+	if (!new_folio) {
+		ret = VM_FAULT_OOM;
+		goto out;
+	}
+	__folio_mark_uptodate(new_folio);
+
+	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm, base,
+				base + PAGE_SIZE);
+	mmu_notifier_invalidate_range_start(&range);
+
+	ptep = pte_offset_map_lock(mm, vmf->pmd, base, &ptl);
+	if (!ptep || !ppps_anon_vma_can_pack(vma, base) ||
+	    !ppps_anon_pte_is_zero_tuple(vma, base, ptep) ||
+	    !pte_same(ptep_get(ptep + fault_slice), vmf->orig_pte)) {
+		if (ptep)
+			pte_unmap_unlock(ptep, ptl);
+		mmu_notifier_invalidate_range_end(&range);
+		folio_put(new_folio);
+		ret = 0;
+		goto out;
+	}
+
+	for (i = 0; i < nr_ptes; i++)
+		old_ptes[i] = ptep_get(ptep + i);
+	flush_cache_range(vma, base, base + PAGE_SIZE);
+	for (i = 0; i < nr_ptes; i++) {
+		unsigned long address = base + i * PAGE_SIZE_COMPAT;
+
+		ptep_clear_flush(vma, address, ptep + i);
+		ksm_might_unmap_zero_page(mm, old_ptes[i]);
+	}
+
+	folio_ref_add(new_folio, nr_ptes - 1);
+	add_mm_counter(mm, MM_ANONPAGES, folio_nr_pages(new_folio));
+	folio_add_new_anon_rmap_ptes(new_folio, vma, base, nr_ptes,
+				     RMAP_EXCLUSIVE);
+	folio_add_lru_vma(new_folio, vma);
+
+	for (i = 0; i < nr_ptes; i++) {
+		unsigned long address = base + i * PAGE_SIZE_COMPAT;
+		pte_t entry = mk_pte(&new_folio->page, vma->vm_page_prot);
+
+		entry = ppps_folio_mk_pte_explicit_slice(vma, new_folio,
+							 entry, i);
+		entry = pte_sw_mkyoung(entry);
+		if (pte_soft_dirty(old_ptes[i]))
+			entry = pte_mksoft_dirty(entry);
+		if (pte_uffd_wp(old_ptes[i]))
+			entry = pte_mkuffd_wp(entry);
+		if (i == fault_slice && !unshare)
+			entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+		else
+			entry = pte_wrprotect(entry);
+
+		set_pte_at(mm, address, ptep + i, entry);
+		update_mmu_cache_range(vmf, vma, address, ptep + i, 1);
+	}
+
+	pte_unmap_unlock(ptep, ptl);
+	mmu_notifier_invalidate_range_end(&range);
+	ret = 0;
+out:
+	delayacct_wpcopy_end();
+	return ret;
+}
+
 static vm_fault_t wp_packed_anon_copy(struct vm_fault *vmf,
 				      struct folio *old_folio)
 {
@@ -4598,6 +4706,7 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 	struct vm_area_struct *vma = vmf->vma;
 	struct folio *folio = NULL;
 	bool packed = false;
+	bool zero_tuple = false;
 	pte_t pte;
 
 	if (likely(!unshare)) {
@@ -4638,6 +4747,9 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 	if (folio)
 		packed = ppps_anon_pte_is_packed(vma, folio, vmf->address,
 						 vmf->pte);
+	else if (ppps_anon_vma_can_pack(vma, vmf->address))
+		zero_tuple = ppps_anon_pte_is_zero_tuple(vma, vmf->address,
+							 vmf->pte);
 
 	/*
 	 * Shared mapping: we are guaranteed to have VM_WRITE and
@@ -4691,6 +4803,8 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 #endif
 	if (packed)
 		return wp_packed_anon_copy(vmf, folio);
+	if (zero_tuple)
+		return wp_zero_tuple_copy(vmf);
 	return wp_page_copy(vmf);
 }
 
@@ -5888,10 +6002,7 @@ static bool ppps_anon_fault_can_pack(struct vm_fault *vmf)
 	pte_t *pte;
 	bool empty;
 
-	if (!ppps_mm_is_compat(vma->vm_mm) || userfaultfd_armed(vma) ||
-	    (vma->vm_flags & (VM_MTE | VM_DROPPABLE | VM_LOCKED)) ||
-	    (vma->vm_flags & VM_MERGEABLE) || addr < vma->vm_start ||
-	    addr + PAGE_SIZE > vma->vm_end)
+	if (!ppps_anon_vma_can_pack(vma, addr))
 		return false;
 
 	pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, addr, &ptl);
@@ -5927,17 +6038,22 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	if (pte_alloc(vma->vm_mm, vmf->pmd))
 		return VM_FAULT_OOM;
 
-	/* Use the zero-page for reads */
+	/* Use the zero-page for reads. */
 	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
 			!mm_forbids_zeropage(vma->vm_mm)) {
-		entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address),
-						vma->vm_page_prot));
+		nr_pages = ppps_anon_fault_can_pack(vmf) ?
+			PPPS_SLICES_PER_PAGE : 1;
+		if (nr_pages > 1)
+			addr = ALIGN_DOWN(vmf->address, PAGE_SIZE);
+		entry = pte_mkspecial(pfn_pte(my_zero_pfn(addr),
+					      vma->vm_page_prot));
 		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
-				vmf->address, &vmf->ptl);
+				addr, &vmf->ptl);
 		if (!vmf->pte)
 			goto unlock;
-		if (vmf_pte_changed(vmf)) {
-			update_mmu_tlb(vma, vmf->address, vmf->pte);
+		if ((nr_pages == 1 && vmf_pte_changed(vmf)) ||
+		    (nr_pages > 1 && !pte_range_none(vmf->pte, nr_pages))) {
+			update_mmu_tlb_range(vma, addr, vmf->pte, nr_pages);
 			goto unlock;
 		}
 		ret = check_stable_address_space(vma->vm_mm);

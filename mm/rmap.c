@@ -1747,6 +1747,63 @@ void folio_remove_rmap_pmd(struct folio *folio, struct page *page,
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 /*
+ * Discard a complete lazy-free packed tuple as one physical unit.  If a PTE
+ * was redirtied or an extra reference appeared after MADV_FREE, restore the
+ * entire tuple and make it swap-backed again, matching the generic lazy-free
+ * failure semantics without ever exposing a partial packed mapping.
+ */
+static int
+try_to_unmap_ppps_packed_lazyfree(struct folio *folio,
+				  struct vm_area_struct *vma,
+				  unsigned long address, pte_t *ptep)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned long base = ALIGN_DOWN(address, PAGE_SIZE);
+	unsigned int slice = (address - base) >> PAGE_SHIFT_COMPAT;
+	pte_t old_ptes[PPPS_SLICES_PER_PAGE];
+	pte_t *base_ptep = ptep - slice;
+	int ref_count, map_count;
+	unsigned int i;
+
+	if (userfaultfd_armed(vma) || folio_test_swapbacked(folio) ||
+	    !ppps_anon_pte_is_packed(vma, folio, address, ptep))
+		return -EBUSY;
+
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		unsigned long addr = base + i * PAGE_SIZE_COMPAT;
+
+		old_ptes[i] = ptep_get(base_ptep + i);
+		flush_cache_page(vma, addr, pte_pfn(old_ptes[i]));
+		old_ptes[i] = ptep_clear_flush(vma, addr, base_ptep + i);
+		if (pte_dirty(old_ptes[i]))
+			folio_mark_dirty(folio);
+	}
+
+	/* Pairs with the lockless GUP PTE recheck, as in the generic path. */
+	smp_mb();
+	ref_count = folio_ref_count(folio);
+	map_count = folio_mapcount(folio);
+	/* Order the refcount read before testing whether the folio is dirty. */
+	smp_rmb();
+
+	if (map_count == PPPS_SLICES_PER_PAGE &&
+	    ref_count == 1 + map_count && !folio_test_dirty(folio)) {
+		update_hiwater_rss(mm);
+		add_mm_counter(mm, MM_ANONPAGES, -folio_nr_pages(folio));
+		folio_remove_rmap_ptes_same_page(folio,
+						 PPPS_SLICES_PER_PAGE, vma);
+		folio_ref_sub(folio, PPPS_SLICES_PER_PAGE);
+		return 0;
+	}
+
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
+		set_pte_at(mm, base + i * PAGE_SIZE_COMPAT,
+			   base_ptep + i, old_ptes[i]);
+	folio_set_swapbacked(folio);
+	return -EBUSY;
+}
+
+/*
  * Replace a complete packed tuple with four references to one native swap
  * slot. Each PTE carries only the packed marker; its slice is implicit in
  * the virtual address. The invalidations must be immediate: deferring any
@@ -1777,6 +1834,10 @@ try_to_unmap_ppps_packed_anon(struct folio *folio,
 	 */
 	if (!anon_exclusive)
 		return -EBUSY;
+
+	if (!folio_test_swapbacked(folio))
+		return try_to_unmap_ppps_packed_lazyfree(folio, vma,
+							 address, ptep);
 	if (userfaultfd_armed(vma) || PageHWPoison(&folio->page) ||
 	    unlikely(folio_test_swapbacked(folio) !=
 		     folio_test_swapcache(folio)) ||

@@ -31,6 +31,7 @@
 #define SLICES		(NATIVE_PAGE / PROCESS_PAGE)
 #define PAGEMAP_PRESENT	UINT64_C(0x8000000000000000)
 #define PAGEMAP_PFN_MASK ((1ULL << 55) - 1)
+#define DISCARD_GROUPS	8
 #define DEPACK_RACE_ATTEMPTS 1000
 
 static unsigned char *map_aligned(size_t size, unsigned char **reservation)
@@ -62,6 +63,16 @@ static bool verify(const unsigned char *base)
 
 	for (offset = 0; offset < NATIVE_PAGE; offset++)
 		if (base[offset] != 0x31 + offset / PROCESS_PAGE)
+			return false;
+	return true;
+}
+
+static bool verify_groups(const unsigned char *base, unsigned int groups)
+{
+	unsigned int i;
+
+	for (i = 0; i < groups; i++)
+		if (!verify(base + i * NATIVE_PAGE))
 			return false;
 	return true;
 }
@@ -334,6 +345,53 @@ static bool fork_cow_preserves_parent(unsigned char *base)
 	return WIFEXITED(status) && !WEXITSTATUS(status) && verify(base);
 }
 
+struct concurrent_write_args {
+	unsigned char *base;
+	unsigned int slice;
+	atomic_bool *start;
+};
+
+static void *write_zero_tuple_slice(void *data)
+{
+	struct concurrent_write_args *args = data;
+
+	while (!atomic_load_explicit(args->start, memory_order_acquire))
+		sched_yield();
+	memset(args->base + args->slice * PROCESS_PAGE, 0x31 + args->slice,
+	       PROCESS_PAGE);
+	return NULL;
+}
+
+static bool concurrent_zero_tuple_promotion(unsigned char *base)
+{
+	struct concurrent_write_args args[SLICES];
+	pthread_t threads[SLICES];
+	atomic_bool start = false;
+	unsigned char value;
+	unsigned int created = 0;
+	bool passed = true;
+
+	value = base[2 * PROCESS_PAGE];
+	if (value)
+		return false;
+
+	for (created = 0; created < SLICES; created++) {
+		args[created].base = base;
+		args[created].slice = created;
+		args[created].start = &start;
+		if (pthread_create(&threads[created], NULL,
+				   write_zero_tuple_slice, &args[created])) {
+			passed = false;
+			break;
+		}
+	}
+	atomic_store_explicit(&start, true, memory_order_release);
+	while (created)
+		passed &= !pthread_join(threads[--created], NULL);
+
+	return passed && verify(base);
+}
+
 struct depack_race_args {
 	unsigned char *base;
 	atomic_bool ready;
@@ -532,9 +590,10 @@ static int run_test(void)
 	bool passed;
 	bool process_vm_read_ok;
 	bool process_vm_write_ok;
+	unsigned char value = 1;
 
 	ksft_print_header();
-	ksft_set_plan(19);
+	ksft_set_plan(26);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE,
 			 "process uses 4K pages\n");
 
@@ -586,6 +645,14 @@ static int run_test(void)
 		munmap(reservation, 3 * NATIVE_PAGE);
 
 	base = map_aligned(2 * NATIVE_PAGE, &reservation);
+	passed = base != MAP_FAILED && concurrent_zero_tuple_promotion(base) &&
+		 read_pfns(base, pfn) && same_pfn(pfn);
+	ksft_test_result(passed,
+			 "concurrent writes promote one zero tuple without splitting\n");
+	if (base != MAP_FAILED)
+		munmap(reservation, 3 * NATIVE_PAGE);
+
+	base = map_aligned(2 * NATIVE_PAGE, &reservation);
 	if (base != MAP_FAILED)
 		populate(base);
 	passed = base != MAP_FAILED && read_pfns(base, pfn_before) &&
@@ -630,6 +697,68 @@ static int run_test(void)
 		ksft_test_result(uffd_move.unregistered_source_preserved,
 				 "UFFDIO_MOVE depacks an unregistered source tuple\n");
 	}
+
+	base = map_aligned(2 * NATIVE_PAGE, &reservation);
+	if (base != MAP_FAILED)
+		value = base[2 * PROCESS_PAGE];
+	passed = base != MAP_FAILED && !value && read_pfns(base, pfn) &&
+		 same_pfn(pfn);
+	ksft_test_result(passed,
+			 "one read fault maps a shared four-PTE zero tuple\n");
+	if (base != MAP_FAILED)
+		populate(base);
+	passed = base != MAP_FAILED && verify(base) && read_pfns(base, pfn) &&
+		 same_pfn(pfn);
+	ksft_test_result(passed,
+			 "first write promotes the zero tuple to one packed folio\n");
+	if (base != MAP_FAILED)
+		munmap(reservation, 3 * NATIVE_PAGE);
+
+	base = map_aligned(2 * NATIVE_PAGE, &reservation);
+	if (base != MAP_FAILED)
+		populate(base);
+	passed = base != MAP_FAILED && read_pfns(base, pfn_before) &&
+		 same_pfn(pfn_before) &&
+		 !madvise(base, NATIVE_PAGE, MADV_FREE) && verify(base) &&
+		 read_pfns(base, pfn) && same_pfn(pfn) &&
+		 !memcmp(pfn_before, pfn, sizeof(pfn)) &&
+		 range_stat_bytes(base, NATIVE_PAGE, "Rss", &rss) &&
+		 rss == NATIVE_PAGE;
+	ksft_test_result(passed,
+			 "full MADV_FREE preserves a complete packed tuple\n");
+	passed = passed && !madvise(base, NATIVE_PAGE, MADV_PAGEOUT) &&
+		 verify(base) && read_pfns(base, pfn) && same_pfn(pfn) &&
+		 !memcmp(pfn_before, pfn, sizeof(pfn)) &&
+		 range_stat_bytes(base, NATIVE_PAGE, "Rss", &rss) &&
+		 rss == NATIVE_PAGE &&
+		 range_stat_bytes(base, NATIVE_PAGE, "Swap", &swap) && !swap;
+	ksft_test_result(passed,
+			 "pageout keeps a MADV_FREE packed tuple resident\n");
+	if (base != MAP_FAILED)
+		munmap(reservation, 3 * NATIVE_PAGE);
+
+	base = map_aligned(DISCARD_GROUPS * NATIVE_PAGE, &reservation);
+	if (base != MAP_FAILED)
+		for (unsigned int i = 0; i < DISCARD_GROUPS; i++)
+			populate(base + i * NATIVE_PAGE);
+	passed = base != MAP_FAILED &&
+		 !madvise(base, DISCARD_GROUPS * NATIVE_PAGE, MADV_PAGEOUT) &&
+		 verify_groups(base, DISCARD_GROUPS) &&
+		 range_stat_bytes(base, DISCARD_GROUPS * NATIVE_PAGE,
+				  "Rss", &rss) &&
+		 rss == DISCARD_GROUPS * NATIVE_PAGE &&
+		 range_stat_bytes(base, DISCARD_GROUPS * NATIVE_PAGE,
+				  "Swap", &swap) && !swap &&
+		 !madvise(base, NATIVE_PAGE, MADV_FREE) &&
+		 verify_groups(base, DISCARD_GROUPS);
+	ksft_test_result(passed,
+			 "MADV_FREE keeps resident packed tuples intact\n");
+	passed = passed && !munmap(base + 4 * NATIVE_PAGE, NATIVE_PAGE) &&
+		 verify(base + 5 * NATIVE_PAGE);
+	ksft_test_result(passed,
+			 "munmap preserves an adjacent resident packed tuple\n");
+	if (base != MAP_FAILED)
+		munmap(reservation, (DISCARD_GROUPS + 1) * NATIVE_PAGE);
 
 	base = map_aligned(2 * NATIVE_PAGE, &reservation);
 	process_vm_read_ok = false;
