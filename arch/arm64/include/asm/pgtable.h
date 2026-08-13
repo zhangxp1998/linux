@@ -591,6 +591,32 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 	return clear_pte_bit(pte, __pgprot(PTE_SWP_EXCLUSIVE));
 }
 
+/*
+ * Bit 1 is ignored by pte_present() for an invalid PTE and is not part of
+ * arm64's swap type or offset encoding.  PPPS uses it to say that the swap
+ * slot contains all four 4K slices of one packed native folio.  The slice is
+ * deliberately not encoded: it is derived from the faulting virtual address.
+ */
+#define PTE_SWP_PPPS_PACKED	(_AT(pteval_t, 1) << 1)
+
+#define pte_swp_ppps_packed pte_swp_ppps_packed
+static inline bool pte_swp_ppps_packed(pte_t pte)
+{
+	return pte_val(pte) & PTE_SWP_PPPS_PACKED;
+}
+
+#define pte_swp_mk_ppps_packed pte_swp_mk_ppps_packed
+static inline pte_t pte_swp_mk_ppps_packed(pte_t pte)
+{
+	return set_pte_bit(pte, __pgprot(PTE_SWP_PPPS_PACKED));
+}
+
+#define pte_swp_clear_ppps_packed pte_swp_clear_ppps_packed
+static inline pte_t pte_swp_clear_ppps_packed(pte_t pte)
+{
+	return clear_pte_bit(pte, __pgprot(PTE_SWP_PPPS_PACKED));
+}
+
 #ifdef CONFIG_HAVE_ARCH_USERFAULTFD_WP
 static inline pte_t pte_swp_mkuffd_wp(pte_t pte)
 {
@@ -1615,7 +1641,8 @@ static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
 
 /*
  * Encode and decode a swap entry:
- *	bits 0-1:	present (must be zero)
+ *	bit  0:	present (must be zero)
+ *	bit  1:	PPPS packed-anon marker
  *	bits 2:		remember PG_anon_exclusive
  *	bit  3:		remember uffd-wp state
  *	bits 6-10:	swap type
@@ -1667,6 +1694,12 @@ static inline void arch_swap_invalidate_area(int type)
 
 #define __HAVE_ARCH_SWAP_RESTORE
 extern void arch_swap_restore(swp_entry_t entry, struct folio *folio);
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#define __HAVE_ARCH_SWAP_RESTORE_PPPS
+void arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
+			    unsigned int slice);
+#endif
 
 #endif /* CONFIG_ARM64_MTE */
 

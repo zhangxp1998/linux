@@ -126,13 +126,14 @@ void *swap_cache_get_shadow(swp_entry_t entry)
  * swap_cache_add_folio - Add a folio into the swap cache.
  * @folio: The folio to be added.
  * @entry: The swap entry corresponding to the folio.
- * @gfp: gfp_mask for XArray node allocation.
  * @shadowp: If a shadow is found, return the shadow.
  *
  * Context: Caller must ensure @entry is valid and protect the swap device
  * with reference count or locks.
  * The caller also needs to update the corresponding swap_map slots with
  * SWAP_HAS_CACHE bit to avoid race or conflict.
+ * Newly allocated swap-in folios are not uptodate yet: the caller starts
+ * the read after insertion. Swap-out checks uptodate in folio_alloc_swap().
  */
 void swap_cache_add_folio(struct folio *folio, swp_entry_t entry, void **shadowp)
 {
@@ -145,6 +146,7 @@ void swap_cache_add_folio(struct folio *folio, swp_entry_t entry, void **shadowp
 	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
 	VM_WARN_ON_ONCE_FOLIO(folio_test_swapcache(folio), folio);
 	VM_WARN_ON_ONCE_FOLIO(!folio_test_swapbacked(folio), folio);
+	VM_WARN_ON_ONCE_FOLIO(folio_test_ppps_packed_anon(folio), folio);
 
 	new_tb = folio_to_swp_tb(folio);
 	ci_start = swp_cluster_offset(entry);

@@ -523,8 +523,11 @@ static int run_test(void)
 	unsigned char *reservation;
 	unsigned char *base;
 	uint64_t pfn[SLICES];
+	uint64_t pfn_before[SLICES];
+	unsigned long rss = 0;
 	unsigned long rss_before = 0;
 	unsigned long rss_after = 0;
+	unsigned long swap = 0;
 	bool have_pfns;
 	bool passed;
 	bool process_vm_read_ok;
@@ -585,11 +588,16 @@ static int run_test(void)
 	base = map_aligned(2 * NATIVE_PAGE, &reservation);
 	if (base != MAP_FAILED)
 		populate(base);
-	passed = base != MAP_FAILED && !madvise(base, NATIVE_PAGE,
-						  MADV_PAGEOUT) &&
-		 verify(base) && read_pfns(base, pfn) && distinct_pfns(pfn);
+	passed = base != MAP_FAILED && read_pfns(base, pfn_before) &&
+		 same_pfn(pfn_before) &&
+		 !madvise(base, NATIVE_PAGE, MADV_PAGEOUT) &&
+		 verify(base) && read_pfns(base, pfn) && same_pfn(pfn) &&
+		 !memcmp(pfn_before, pfn, sizeof(pfn)) &&
+		 range_stat_bytes(base, NATIVE_PAGE, "Rss", &rss) &&
+		 rss == NATIVE_PAGE &&
+		 range_stat_bytes(base, NATIVE_PAGE, "Swap", &swap) && !swap;
 	ksft_test_result(passed,
-			 "pageout depacks safely and preserves contents\n");
+			 "pageout keeps a packed tuple resident\n");
 	if (base != MAP_FAILED)
 		munmap(reservation, 3 * NATIVE_PAGE);
 

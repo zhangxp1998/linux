@@ -570,6 +570,10 @@ restart:
 			}
 		}
 
+		/* Packed tuples remain resident until packed swap is made safe. */
+		if (pageout && folio_test_ppps_packed_anon(folio))
+			continue;
+
 		/*
 		 * Do not interfere with other mappings of this folio and
 		 * non-LRU folio. The folio is fully mapped at this point, so it
@@ -762,13 +766,26 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 */
 		if (!pte_present(ptent)) {
 			swp_entry_t entry;
+			int packed_nr;
 
 			entry = pte_to_swp_entry(ptent);
 			if (!non_swap_entry(entry)) {
 				max_nr = (end - addr) / MM_PAGE_SIZE(mm);
-				nr = swap_pte_batch(pte, max_nr, ptent);
-				nr_swap -= nr;
-				free_swap_and_cache_nr(entry, nr);
+				packed_nr = ppps_swap_pte_batch(pte, max_nr, ptent,
+								addr);
+				if (packed_nr) {
+					int i;
+
+					nr = packed_nr;
+					if (IS_ALIGNED(addr, PAGE_SIZE))
+						nr_swap--;
+					for (i = 0; i < nr; i++)
+						free_swap_and_cache(entry);
+				} else {
+					nr = swap_pte_batch(pte, max_nr, ptent);
+					nr_swap -= nr;
+					free_swap_and_cache_nr(entry, nr);
+				}
 				clear_not_present_full_ptes(mm, addr, pte, nr, tlb->fullmm);
 			} else if (is_hwpoison_entry(entry) ||
 				   is_poisoned_swp_entry(entry)) {
@@ -2067,8 +2084,7 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	 * retain the native madvise locking protocol. The walkers skip any
 	 * partial tuple created by a concurrent fault after this pre-pass.
 	 */
-	depack_all = behavior == MADV_COLD || behavior == MADV_PAGEOUT ||
-		behavior == MADV_FREE;
+	depack_all = behavior == MADV_FREE;
 	if (ppps_mm_is_compat(mm) &&
 	    (depack_all || behavior == MADV_DONTNEED ||
 	     behavior == MADV_DONTNEED_LOCKED ||

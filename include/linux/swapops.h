@@ -68,9 +68,32 @@
 
 static inline bool is_pfn_swap_entry(swp_entry_t entry);
 
+#ifndef pte_swp_ppps_packed
+static inline bool pte_swp_ppps_packed(pte_t pte)
+{
+	return false;
+}
+#endif
+
+#ifndef pte_swp_mk_ppps_packed
+static inline pte_t pte_swp_mk_ppps_packed(pte_t pte)
+{
+	return pte;
+}
+#endif
+
+#ifndef pte_swp_clear_ppps_packed
+static inline pte_t pte_swp_clear_ppps_packed(pte_t pte)
+{
+	return pte;
+}
+#endif
+
 /* Clear all flags but only keep swp_entry_t related information */
 static inline pte_t pte_swp_clear_flags(pte_t pte)
 {
+	if (pte_swp_ppps_packed(pte))
+		pte = pte_swp_clear_ppps_packed(pte);
 	if (pte_swp_exclusive(pte))
 		pte = pte_swp_clear_exclusive(pte);
 	if (pte_swp_soft_dirty(pte))
