@@ -3103,6 +3103,8 @@ static long ublk_pin_user_pages(struct mm_struct *mm, unsigned long start,
 	long pinned;
 
 	mmap_read_lock(mm);
+	start = untagged_addr_remote(mm, start);
+	addr = start;
 	for (i = 0; i < nr_pages; i++, addr += process_page_size) {
 		struct vm_area_struct *vma = vma_lookup(mm, addr);
 
