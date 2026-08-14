@@ -89,8 +89,8 @@ static int process_vm_rw_single_vec(unsigned long addr,
 {
 	unsigned long page_size = MM_PAGE_SIZE(mm);
 	unsigned int page_shift = MM_PAGE_SHIFT(mm);
-	unsigned long pa = addr & MM_PAGE_MASK(mm);
-	unsigned long start_offset = addr - pa;
+	unsigned long pa;
+	unsigned long start_offset;
 	unsigned long nr_pages;
 	ssize_t rc = 0;
 	unsigned int flags = 0;
@@ -98,6 +98,11 @@ static int process_vm_rw_single_vec(unsigned long addr,
 	/* Work out address and page range required */
 	if (len == 0)
 		return 0;
+	mmap_read_lock(mm);
+	addr = untagged_addr_remote(mm, addr);
+	mmap_read_unlock(mm);
+	pa = addr & MM_PAGE_MASK(mm);
+	start_offset = addr - pa;
 	nr_pages = (addr + len - 1) / page_size - addr / page_size + 1;
 
 	if (vm_write)
