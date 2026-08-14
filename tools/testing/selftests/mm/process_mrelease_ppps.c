@@ -63,6 +63,7 @@ static bool read_smaps_rss(pid_t pid, unsigned long address,
 	size_t capacity = 0;
 	bool found = false;
 	bool in_target = false;
+	bool target_seen = false;
 	FILE *smaps;
 
 	snprintf(path, sizeof(path), "/proc/%d/smaps", pid);
@@ -74,6 +75,7 @@ static bool read_smaps_rss(pid_t pid, unsigned long address,
 			if (in_target)
 				break;
 			in_target = address >= start && address < end;
+			target_seen |= in_target;
 			continue;
 		}
 		if (in_target && sscanf(line, "Rss: %lu kB", &value_kb) == 1) {
@@ -81,6 +83,10 @@ static bool read_smaps_rss(pid_t pid, unsigned long address,
 			found = true;
 			break;
 		}
+	}
+	if (!target_seen) {
+		*rss_bytes = 0;
+		found = true;
 	}
 	free(line);
 	fclose(smaps);
@@ -122,6 +128,8 @@ static int run_compat_child(int ready_fd)
 static int run_parent(void)
 {
 	struct child_status child = {};
+	cpu_set_t saved_cpus, one_cpu;
+	int cpu;
 	struct sched_param realtime = { .sched_priority = 1 };
 	struct sched_param normal = {};
 	unsigned long rss_after = ~0UL;
@@ -139,6 +147,22 @@ static int run_parent(void)
 
 	ksft_print_header();
 	ksft_set_plan(7);
+	/*
+	 * SCHED_FIFO alone cannot prevent the child from completing exit on
+	 * another CPU between kill() and process_mrelease(). Keep both on one
+	 * allowed CPU; the child inherits this affinity across fork/exec.
+	 */
+	if (sched_getaffinity(0, sizeof(saved_cpus), &saved_cpus))
+		ksft_exit_fail_msg("sched_getaffinity failed: %s\n", strerror(errno));
+	for (cpu = 0; cpu < CPU_SETSIZE; cpu++)
+		if (CPU_ISSET(cpu, &saved_cpus))
+			break;
+	if (cpu == CPU_SETSIZE)
+		ksft_exit_fail_msg("no allowed CPU\n");
+	CPU_ZERO(&one_cpu);
+	CPU_SET(cpu, &one_cpu);
+	if (sched_setaffinity(0, sizeof(one_cpu), &one_cpu))
+		ksft_exit_fail_msg("sched_setaffinity failed: %s\n", strerror(errno));
 	if (pipe(ready_pipe))
 		ksft_exit_fail_msg("pipe failed: %s\n", strerror(errno));
 	pid = fork();
@@ -199,6 +223,8 @@ out_wait:
 	waitpid(pid, &child_wait_status, 0);
 	if (pidfd >= 0)
 		close(pidfd);
+	if (sched_setaffinity(0, sizeof(saved_cpus), &saved_cpus))
+		ksft_exit_fail_msg("restore affinity failed: %s\n", strerror(errno));
 	ksft_finished();
 }
 
