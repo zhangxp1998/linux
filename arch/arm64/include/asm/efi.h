@@ -120,6 +120,9 @@ extern unsigned long primary_entry_offset(void);
 
 static inline void efi_set_pgd(struct mm_struct *mm)
 {
+	/* Reserve TTBR0 before changing the active translation granule. */
+	if (system_uses_ttbr0_pan())
+		uaccess_ttbr0_disable();
 	__switch_mm(mm);
 
 	if (system_uses_ttbr0_pan()) {
@@ -140,7 +143,6 @@ static inline void efi_set_pgd(struct mm_struct *mm)
 			 * until uaccess_enable(). Restore the current
 			 * thread's saved ttbr0 corresponding to its active_mm
 			 */
-			uaccess_ttbr0_disable();
 			update_saved_ttbr0(current, current->active_mm);
 		}
 	}

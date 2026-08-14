@@ -1792,6 +1792,8 @@ static u64 __kvm_read_sanitised_id_reg(const struct kvm_vcpu *vcpu,
 
 		if (!system_supports_poe())
 			val &= ~ID_AA64MMFR3_EL1_S1POE;
+		if (!cpus_have_final_cap(ARM64_HAS_S1PIE))
+			val &= ~ID_AA64MMFR3_EL1_S1PIE;
 		break;
 	case SYS_ID_MMFR4_EL1:
 		val &= ~ID_MMFR4_EL1_CCIDX;
