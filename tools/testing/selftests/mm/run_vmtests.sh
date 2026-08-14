@@ -327,6 +327,7 @@ CATEGORY="mmap" run_test ./mglru_ppps
 CATEGORY="mmap" run_test ./test_mmu_notifier_ppps.sh
 CATEGORY="mmap" run_test ./anon_pageout_ppps
 CATEGORY="mmap" run_test ./madvise_free_ppps
+CATEGORY="mmap" run_test ./madvise_guard_ppps
 CATEGORY="mmap" run_test ./thp_mmap_offset_ppps
 CATEGORY="mmap" run_test ./shmem_mmap_offset_ppps
 CATEGORY="mmap" run_test ./secretmem_eof_ppps
@@ -384,9 +385,12 @@ CATEGORY="gup_test" run_test ./test_gup_retry_ppps.sh
 CATEGORY="gup_test" run_test ./test_iov_iter_ppps.sh
 CATEGORY="gup_test" run_test ./test_fault_in_ppps.sh
 CATEGORY="mmap" run_test ./futex_shared_ppps
+CATEGORY="mmap" run_test ./xdp_umem_ppps
 
 CATEGORY="userfaultfd" run_test ./uffd-unit-tests
 CATEGORY="userfaultfd" run_test ./userfaultfd_eof_ppps
+CATEGORY="userfaultfd" run_test ./userfaultfd_mixed_ppps
+CATEGORY="userfaultfd" run_test ./userfaultfd_remap_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_retry_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_shmem_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_zeropage_ppps
@@ -524,6 +528,8 @@ CATEGORY="process_madv" run_test ./process_madv
 CATEGORY="vma_merge" run_test ./merge
 CATEGORY="process_madv" run_test ./process_madvise_ppps
 CATEGORY="process_madv" run_test ./process_vm_access_ppps
+CATEGORY="process_madv" run_test ./mixed_context_switch_ppps
+CATEGORY="process_madv" run_test ./mixed_mm_access_ppps
 
 if [ -x ./memfd_secret ]
 then
