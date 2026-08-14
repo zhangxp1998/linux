@@ -69,7 +69,7 @@ static int zram_process_walker(pmd_t *pmd, unsigned long start,
 	unsigned long index;
 	u64 nr_pages = zram->disksize >> PAGE_SHIFT;
 
-	for (addr = start; addr < end; addr += PAGE_SIZE) {
+	for (addr = start; addr < end; addr += MM_PAGE_SIZE(vma->vm_mm)) {
 		if (private->nr_remaining_pages == 0) {
 			private->next_addr = addr;
 			return 1;
@@ -180,6 +180,8 @@ static int zram_ioctl_process_scan(struct zram *zram, unsigned int cmd,
 		goto release_task;
 	}
 
+	mmap_read_lock(mm);
+	start_addr = untagged_addr_remote(mm, start_addr);
 	if (cmd == ZRAM_ANDROID_IOC_PROCESS_RANGE_WRITEBACK) {
 		start_addr = (unsigned long)prwb->start_addr;
 		nr_remaining_pages = DIV_ROUND_UP_POW2(prwb->size, MM_PAGE_SIZE(mm));
@@ -192,17 +194,16 @@ static int zram_ioctl_process_scan(struct zram *zram, unsigned int cmd,
 
 	if (start_addr >= mm->task_size) {
 		ret = -EINVAL;
-		goto release_mm;
+		goto release_mmap_lock;
 	}
 
-	if (!IS_ALIGNED(start_addr, PAGE_SIZE)) {
+	if (!MM_PAGE_ALIGNED(mm, start_addr)) {
 		ret = -EINVAL;
-		goto release_mm;
+		goto release_mmap_lock;
 	}
 
 	VMA_ITERATOR(vmi, mm, start_addr);
 	/* Iterates through all the VMAs of the process */
-	mmap_read_lock(mm);
 	for_each_vma(vmi, vma) {
 		unsigned long start = max(vma->vm_start, start_addr);
 
@@ -225,8 +226,8 @@ static int zram_ioctl_process_scan(struct zram *zram, unsigned int cmd,
 		}
 	}
 
+release_mmap_lock:
 	mmap_read_unlock(mm);
-release_mm:
 	mmput(mm);
 release_task:
 	put_task_struct(task);
