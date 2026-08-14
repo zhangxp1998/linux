@@ -753,7 +753,7 @@ void mremap_userfaultfd_complete(struct vm_userfaultfd_ctx *vm_ctx,
 	if (!ctx)
 		return;
 
-	if (to & ~PAGE_MASK) {
+	if (to & ~MM_PAGE_MASK(ctx->mm)) {
 		userfaultfd_ctx_put(ctx);
 		return;
 	}
@@ -1338,9 +1338,6 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
 		/* check not compatible vmas */
 		ret = -EINVAL;
 		if (!vma_can_userfault(cur, vm_flags, wp_async))
-			goto out_unlock;
-
-		if (!ppps_vma_validate_uffd_alignment(cur, start, end))
 			goto out_unlock;
 
 		/*
