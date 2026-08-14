@@ -22,3 +22,4 @@ ifneq ($(CONFIG_VIDEOBUF2_DMA_SG),)
 obj-m += vb2_userptr_ppps_module.o
 endif
 endif
+obj-m += sg_page_slices_ppps_module.o
