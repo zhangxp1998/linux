@@ -1343,9 +1343,6 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
 		if (!vma_can_userfault(cur, vm_flags, wp_async))
 			goto out_unlock;
 
-		if (!ppps_vma_validate_uffd_alignment(cur, start, end))
-			goto out_unlock;
-
 		/*
 		 * UFFDIO_COPY will fill file holes even without
 		 * PROT_WRITE. This check enforces that if this is a
