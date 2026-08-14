@@ -63,6 +63,7 @@ static bool read_smaps_rss(pid_t pid, unsigned long address,
 	size_t capacity = 0;
 	bool found = false;
 	bool in_target = false;
+	bool target_seen = false;
 	FILE *smaps;
 
 	snprintf(path, sizeof(path), "/proc/%d/smaps", pid);
@@ -74,6 +75,7 @@ static bool read_smaps_rss(pid_t pid, unsigned long address,
 			if (in_target)
 				break;
 			in_target = address >= start && address < end;
+			target_seen |= in_target;
 			continue;
 		}
 		if (in_target && sscanf(line, "Rss: %lu kB", &value_kb) == 1) {
@@ -81,6 +83,10 @@ static bool read_smaps_rss(pid_t pid, unsigned long address,
 			found = true;
 			break;
 		}
+	}
+	if (!target_seen) {
+		*rss_bytes = 0;
+		found = true;
 	}
 	free(line);
 	fclose(smaps);

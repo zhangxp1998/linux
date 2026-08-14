@@ -314,6 +314,7 @@ CATEGORY="mmap" run_test ./mglru_ppps
 CATEGORY="mmap" run_test ./mmu_notifier_ppps.sh
 CATEGORY="mmap" run_test ./anon_pageout_ppps
 CATEGORY="mmap" run_test ./madvise_free_ppps
+CATEGORY="mmap" run_test ./madvise_guard_ppps
 CATEGORY="mmap" run_test ./thp_mmap_offset_ppps
 CATEGORY="mmap" run_test ./shmem_mmap_offset_ppps
 CATEGORY="mmap" run_test ./memfd_eof_ppps secretmem
@@ -369,9 +370,13 @@ CATEGORY="gup_test" run_ppps_module_test gup_retry ./gup_retry_ppps
 CATEGORY="gup_test" run_ppps_module_test iov_iter ./iov_iter_ppps
 CATEGORY="gup_test" run_ppps_module_test fault_in ./fault_in_ppps
 CATEGORY="mmap" run_test ./futex_shared_ppps
+CATEGORY="mmap" run_test ./xdp_umem_ppps
+CATEGORY="mmap" run_test ./tcp_zerocopy_align_ppps
 
 CATEGORY="userfaultfd" run_test ./uffd-unit-tests
 CATEGORY="userfaultfd" run_test ./userfaultfd_eof_ppps
+CATEGORY="userfaultfd" run_test ./userfaultfd_mixed_ppps
+CATEGORY="userfaultfd" run_test ./userfaultfd_remap_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_retry_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_shmem_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_zeropage_ppps
@@ -477,6 +482,8 @@ CATEGORY="madv_populate" run_test ./madvise_willneed_ppps "$TMPDIR/madvise-willn
 
 CATEGORY="process_madv" run_test ./process_madvise_ppps
 CATEGORY="process_madv" run_test ./process_vm_access_ppps
+CATEGORY="process_madv" run_test ./mixed_context_switch_ppps
+CATEGORY="process_madv" run_test ./mixed_mm_access_ppps
 
 if [ -x ./memfd_secret ]
 then

@@ -13,8 +13,6 @@
 
 #include "kselftest_ppps.h"
 
-#define PROCESS_PAGE_SIZE 4096UL
-#define PPPS_NATIVE_PAGE_SIZE 16384UL
 #define TEST_LENGTH (2 * PROCESS_PAGE_SIZE)
 #define USER_DATA 0x6669786564627566ULL
 
@@ -176,55 +174,7 @@ static int make_file(char *path, size_t size)
 	return fd;
 }
 
-static long read_status_kb(const char *name)
-{
-	char line[256];
-	FILE *file;
-	long value = -1;
-
-	file = fopen("/proc/self/status", "re");
-	if (!file)
-		return -1;
-	while (fgets(line, sizeof(line), file)) {
-		if (!strncmp(line, name, strlen(name)) &&
-		    sscanf(line, "%*[^:]: %ld kB", &value) == 1)
-			break;
-		value = -1;
-	}
-	fclose(file);
-	return value;
-}
-
-static unsigned long mapping_kernel_page_size(uintptr_t address)
-{
-	char *line = NULL;
-	size_t line_size = 0;
-	unsigned long page_size = 0;
-	bool in_mapping = false;
-	FILE *file;
-
-	file = fopen("/proc/self/smaps", "re");
-	if (!file)
-		return 0;
-	while (getline(&line, &line_size, file) >= 0) {
-		unsigned long start, end, size_kb;
-
-		if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
-			in_mapping = address >= start && address < end;
-			continue;
-		}
-		if (in_mapping &&
-		    sscanf(line, "KernelPageSize: %lu kB", &size_kb) == 1) {
-			page_size = size_kb * 1024;
-			break;
-		}
-	}
-	free(line);
-	fclose(file);
-	return page_size;
-}
-
-int main(void)
+static int run_test(void)
 {
 	unsigned char input_data[TEST_LENGTH];
 	struct io_uring_params params = {};
@@ -329,3 +279,5 @@ int main(void)
 	close(backing_fd);
 	ksft_finished();
 }
+
+PPPS_COMPAT_MAIN(run_test)
