@@ -353,18 +353,34 @@ asmlinkage void post_ttbr_update_workaround(void)
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 void mm_switch_tcr(struct mm_struct *mm)
 {
-	unsigned long tcr;
+	unsigned long geometry, old_tcr, tcr;
+	const unsigned long geometry_mask = TCR_TG0_MASK | TCR_T0SZ_MASK;
 
-	if (mm == &init_mm)
+	if (!mm || mm == &init_mm)
 		return;
 
-	tcr = read_sysreg(tcr_el1);
-	tcr &= ~(TCR_TG0_MASK | TCR_T0SZ_MASK);
-	if (mm->page_shift == PAGE_SHIFT_COMPAT)
-		tcr |= TCR_TG0_4K | TCR_T0SZ(VA_BITS_COMPAT);
+	if (ppps_mm_is_compat(mm))
+		geometry = TCR_TG0_4K | TCR_T0SZ(VA_BITS_COMPAT);
 	else
-		tcr |= TCR_TG0_16K | TCR_T0SZ(vabits_actual);
+		geometry = TCR_TG0_NATIVE | TCR_T0SZ(vabits_actual);
+
+	old_tcr = read_sysreg(tcr_el1);
+	if ((old_tcr & geometry_mask) == geometry)
+		return;
+
+	/*
+	 * TCR_EL1.TG0 changes how TTBR0_EL1 is interpreted.  Stop walks and
+	 * discard translations using the old geometry before synchronising the
+	 * new value.  With SW TTBR0 PAN the hardware TTBR0 is already reserved;
+	 * overwriting it here would lose the deferred user page table.
+	 */
+	if (!system_uses_ttbr0_pan())
+		cpu_set_reserved_ttbr0();
+	local_flush_tlb_all();
+
+	tcr = (old_tcr & ~geometry_mask) | geometry;
 	write_sysreg(tcr, tcr_el1);
+	isb();
 }
 #endif
 
