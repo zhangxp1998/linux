@@ -753,7 +753,7 @@ void mremap_userfaultfd_complete(struct vm_userfaultfd_ctx *vm_ctx,
 	if (!ctx)
 		return;
 
-	if (to & ~PAGE_MASK) {
+	if (to & ~MM_PAGE_MASK(ctx->mm)) {
 		userfaultfd_ctx_put(ctx);
 		return;
 	}
