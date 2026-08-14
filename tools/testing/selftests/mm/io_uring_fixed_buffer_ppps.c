@@ -10,11 +10,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
 #include "../kselftest.h"
+
+#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
+#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
+#endif
 
 #define PROCESS_PAGE_SIZE 4096UL
 #define PPPS_NATIVE_PAGE_SIZE 16384UL
@@ -227,7 +232,7 @@ static unsigned long mapping_kernel_page_size(uintptr_t address)
 	return page_size;
 }
 
-int main(void)
+static int run_test(void)
 {
 	unsigned char input_data[TEST_LENGTH];
 	struct io_uring_params params = {};
@@ -332,4 +337,20 @@ int main(void)
 	close(input_fd);
 	close(backing_fd);
 	ksft_finished();
+}
+
+int main(int argc, char **argv)
+{
+	int persona;
+
+	if (argc == 2 && !strcmp(argv[1], "--run"))
+		return run_test();
+	if (argc != 1)
+		return EXIT_FAILURE;
+	persona = personality(0xffffffffUL);
+	if (persona < 0 ||
+	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
+		ksft_exit_fail_msg("personality failed: %s\n", strerror(errno));
+	execl("/proc/self/exe", "io_uring_fixed_buffer_ppps", "--run", NULL);
+	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
 }
