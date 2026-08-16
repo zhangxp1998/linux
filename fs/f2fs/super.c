@@ -2858,6 +2858,9 @@ static int __f2fs_remount(struct fs_context *fc, struct super_block *sb)
 	int i, j;
 #endif
 
+	if (f2fs_has_subpage_blocks(sbi) && !(flags & SB_RDONLY))
+		return -EROFS;
+
 	/*
 	 * Save the old mount options in case we
 	 * need to restore them.
@@ -3236,12 +3239,6 @@ repeat:
 			f2fs_folio_put(folio, true);
 			goto repeat;
 		}
-
-		/*
-		 * should never happen, just leave f2fs_bug_on() here to catch
-		 * any potential bug.
-		 */
-		f2fs_bug_on(F2FS_SB(sb), !folio_test_uptodate(folio));
 
 		memcpy_from_folio(data, folio, offset, tocopy);
 		f2fs_folio_put(folio, true);
@@ -3935,8 +3932,8 @@ static int __f2fs_commit_super(struct f2fs_sb_info *sbi, struct folio *folio,
 	folio_lock(folio);
 	folio_wait_writeback(folio);
 	if (update)
-		memcpy(F2FS_SUPER_BLOCK(folio, index), F2FS_RAW_SUPER(sbi),
-					sizeof(struct f2fs_super_block));
+		memcpy(F2FS_SUPER_BLOCK(sbi, folio, index), F2FS_RAW_SUPER(sbi),
+		       sizeof(struct f2fs_super_block));
 	folio_mark_dirty(folio);
 	folio_clear_dirty_for_io(folio);
 	folio_start_writeback(folio);
@@ -3945,9 +3942,10 @@ static int __f2fs_commit_super(struct f2fs_sb_info *sbi, struct folio *folio,
 	bio = bio_alloc(sbi->sb->s_bdev, 1, opf, GFP_NOFS);
 
 	/* it doesn't need to set crypto context for superblock update */
-	bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(sbi, folio->index);
+	bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(sbi, index);
 
-	if (!bio_add_folio(bio, folio, folio_size(folio), 0))
+	if (!bio_add_folio(bio, folio, sbi->blocksize,
+			   f2fs_lblk_offset_in_folio(sbi, index)))
 		f2fs_bug_on(sbi, 1);
 
 	ret = submit_bio_wait(bio);
@@ -3960,7 +3958,8 @@ static int __f2fs_commit_super(struct f2fs_sb_info *sbi, struct folio *folio,
 static inline bool sanity_check_area_boundary(struct f2fs_sb_info *sbi,
 					struct folio *folio, pgoff_t index)
 {
-	struct f2fs_super_block *raw_super = F2FS_SUPER_BLOCK(folio, index);
+	struct f2fs_super_block *raw_super =
+		F2FS_SUPER_BLOCK(sbi, folio, index);
 	struct super_block *sb = sbi->sb;
 	u32 segment0_blkaddr = le32_to_cpu(raw_super->segment0_blkaddr);
 	u32 cp_blkaddr = le32_to_cpu(raw_super->cp_blkaddr);
@@ -4052,7 +4051,8 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 {
 	block_t segment_count, segs_per_sec, secs_per_zone, segment_count_main;
 	block_t total_sections, blocks_per_seg;
-	struct f2fs_super_block *raw_super = F2FS_SUPER_BLOCK(folio, index);
+	struct f2fs_super_block *raw_super =
+		F2FS_SUPER_BLOCK(sbi, folio, index);
 	size_t crc_offset = 0;
 	__u32 crc = 0;
 
@@ -4078,11 +4078,13 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 		}
 	}
 
-	/* only support block_size equals to PAGE_SIZE */
-	if (le32_to_cpu(raw_super->log_blocksize) != PAGE_SHIFT) {
-		f2fs_info(sbi, "Invalid log_blocksize (%u), supports only %u",
+	/* Keep one or more filesystem blocks in each base-page folio. */
+	if (le32_to_cpu(raw_super->log_blocksize) <
+			F2FS_MIN_LOG_BLOCKSIZE ||
+			le32_to_cpu(raw_super->log_blocksize) > PAGE_SHIFT) {
+		f2fs_info(sbi, "Invalid log_blocksize (%u), supports %u..%u",
 			  le32_to_cpu(raw_super->log_blocksize),
-			  PAGE_SHIFT);
+			  F2FS_MIN_LOG_BLOCKSIZE, PAGE_SHIFT);
 		return -EFSCORRUPTED;
 	}
 
@@ -4104,7 +4106,7 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 	}
 	if (le32_to_cpu(raw_super->log_sectors_per_block) +
 		le32_to_cpu(raw_super->log_sectorsize) !=
-			F2FS_MAX_LOG_SECTOR_SIZE) {
+			le32_to_cpu(raw_super->log_blocksize)) {
 		f2fs_info(sbi, "Invalid log sectors per block(%u) log sectorsize(%u)",
 			  le32_to_cpu(raw_super->log_sectors_per_block),
 			  le32_to_cpu(raw_super->log_sectorsize));
@@ -4611,7 +4613,8 @@ static int read_raw_super_block(struct f2fs_sb_info *sbi,
 		return -ENOMEM;
 
 	for (block = 0; block < 2; block++) {
-		folio = read_mapping_folio(sb->s_bdev->bd_mapping, block, NULL);
+		folio = read_mapping_folio(sb->s_bdev->bd_mapping,
+				f2fs_lblk_to_folio_index(sbi, block), NULL);
 		if (IS_ERR(folio)) {
 			f2fs_err(sbi, "Unable to read %dth superblock",
 				 block + 1);
@@ -4631,10 +4634,19 @@ static int read_raw_super_block(struct f2fs_sb_info *sbi,
 		}
 
 		if (!*raw_super) {
-			memcpy(super, F2FS_SUPER_BLOCK(folio, block),
-							sizeof(*super));
+			memcpy(super, F2FS_SUPER_BLOCK(sbi, folio, block),
+			       sizeof(*super));
 			*valid_super_block = block;
 			*raw_super = super;
+			sbi->log_blocksize =
+				le32_to_cpu(super->log_blocksize);
+			sbi->blocksize = BIT(sbi->log_blocksize);
+			if (!sb_set_blocksize(sb, sbi->blocksize)) {
+				f2fs_err(sbi, "unable to set blocksize %u",
+						sbi->blocksize);
+				folio_put(folio);
+				return -EINVAL;
+			}
 		}
 		folio_put(folio);
 	}
@@ -4670,7 +4682,8 @@ int f2fs_commit_super(struct f2fs_sb_info *sbi, bool recover)
 
 	/* write back-up superblock first */
 	index = sbi->valid_super_block ? 0 : 1;
-	folio = read_mapping_folio(sbi->sb->s_bdev->bd_mapping, index, NULL);
+	folio = read_mapping_folio(sbi->sb->s_bdev->bd_mapping,
+			f2fs_lblk_to_folio_index(sbi, index), NULL);
 	if (IS_ERR(folio))
 		return PTR_ERR(folio);
 	err = __f2fs_commit_super(sbi, folio, index, true);
@@ -4682,7 +4695,8 @@ int f2fs_commit_super(struct f2fs_sb_info *sbi, bool recover)
 
 	/* write current valid superblock */
 	index = sbi->valid_super_block;
-	folio = read_mapping_folio(sbi->sb->s_bdev->bd_mapping, index, NULL);
+	folio = read_mapping_folio(sbi->sb->s_bdev->bd_mapping,
+			f2fs_lblk_to_folio_index(sbi, index), NULL);
 	if (IS_ERR(folio))
 		return PTR_ERR(folio);
 	err = __f2fs_commit_super(sbi, folio, index, true);
@@ -4775,6 +4789,8 @@ void f2fs_handle_error(struct f2fs_sb_info *sbi, unsigned char error)
 		return;
 	if (!test_bit(error, (unsigned long *)sbi->errors))
 		return;
+	if (f2fs_has_subpage_blocks(sbi) && f2fs_readonly(sbi->sb))
+		return;
 	schedule_work(&sbi->s_error_work);
 
 	f2fs_report_fserror(sbi, error);
@@ -4796,7 +4812,8 @@ static void f2fs_handle_critical_error(struct f2fs_sb_info *sbi,
 
 	set_ckpt_flags(sbi, CP_ERROR_FLAG);
 
-	if (!f2fs_hw_is_readonly(sbi)) {
+	if (!f2fs_hw_is_readonly(sbi) &&
+	    !(f2fs_has_subpage_blocks(sbi) && f2fs_readonly(sb))) {
 		save_stop_reason(sbi, reason);
 
 		/*
@@ -5156,6 +5173,14 @@ try_onemore:
 	}
 	mutex_init(&sbi->flush_lock);
 
+	/* Read the first superblock with the minimum supported block size. */
+	sbi->log_blocksize = F2FS_MIN_LOG_BLOCKSIZE;
+	sbi->blocksize = F2FS_MIN_BLKSIZE;
+	if (unlikely(!sb_set_blocksize(sb, sbi->blocksize))) {
+		f2fs_err(sbi, "unable to set blocksize");
+		goto free_sbi;
+	}
+
 	err = read_raw_super_block(sbi, &raw_super, &valid_super_block,
 								&recovery);
 	if (err)
@@ -5164,14 +5189,13 @@ try_onemore:
 	sb->s_fs_info = sbi;
 	sbi->raw_super = raw_super;
 	init_sb_info(sbi);
-
-	/* set a block size */
-	if (!sb_set_blocksize(sb, sbi->blocksize)) {
-		f2fs_err(sbi, "unable to set blocksize %u", sbi->blocksize);
-		err = -EINVAL;
+	sbi->max_atc_write_bio_size = UINT_MAX;
+	if (f2fs_has_subpage_blocks(sbi) &&
+	    (!f2fs_readonly(sb) || recovery)) {
+		f2fs_err(sbi, "subpage block filesystems require a clean read-only mount");
+		err = -EROFS;
 		goto free_sb_buf;
 	}
-	sbi->max_atc_write_bio_size = UINT_MAX;
 
 	INIT_WORK(&sbi->s_error_work, f2fs_record_error_work);
 	memcpy(sbi->errors, raw_super->s_errors, MAX_F2FS_ERRORS);
@@ -5193,6 +5217,13 @@ try_onemore:
 	err = f2fs_sanity_check_options(sbi, false);
 	if (err)
 		goto free_options;
+	if (f2fs_has_subpage_blocks(sbi) &&
+	    (test_opt(sbi, DISABLE_CHECKPOINT) ||
+	     test_opt(sbi, NORECOVERY))) {
+		f2fs_err(sbi, "subpage read-only mounts do not support checkpoint=disable or norecovery");
+		err = -EROFS;
+		goto free_options;
+	}
 
 	sb->s_maxbytes = max_file_blocks(sbi, NULL) <<
 				le32_to_cpu(raw_super->log_blocksize);
@@ -5273,6 +5304,20 @@ try_onemore:
 	err = f2fs_get_valid_checkpoint(sbi);
 	if (err) {
 		f2fs_err(sbi, "Failed to get valid F2FS checkpoint");
+		goto free_meta_inode;
+	}
+
+	if (f2fs_has_subpage_blocks(sbi) &&
+	    (!is_set_ckpt_flags(sbi, CP_UMOUNT_FLAG) ||
+	     is_set_ckpt_flags(sbi, CP_ORPHAN_PRESENT_FLAG) ||
+	     is_set_ckpt_flags(sbi, CP_DISABLED_FLAG) ||
+	     is_set_ckpt_flags(sbi, CP_DISABLED_QUICK_FLAG) ||
+	     is_set_ckpt_flags(sbi, CP_QUOTA_NEED_FSCK_FLAG) ||
+	     is_set_ckpt_flags(sbi, CP_FSCK_FLAG) ||
+	     is_set_ckpt_flags(sbi, CP_ERROR_FLAG) ||
+	     is_set_ckpt_flags(sbi, CP_RESIZEFS_FLAG))) {
+		f2fs_err(sbi, "subpage read-only mount requires a clean checkpoint");
+		err = -EROFS;
 		goto free_meta_inode;
 	}
 
@@ -5408,6 +5453,8 @@ try_onemore:
 		goto free_compress_inode;
 
 	sbi->umount_lock_holder = current;
+	if (f2fs_has_subpage_blocks(sbi))
+		goto reset_checkpoint;
 #ifdef CONFIG_QUOTA
 	/* Enable quota usage during mount */
 	if (f2fs_sb_has_quota_ino(sbi) && !f2fs_readonly(sb)) {
@@ -5503,7 +5550,9 @@ reset_checkpoint:
 	if (err)
 		goto sync_free_meta;
 
-	if (test_opt(sbi, DISABLE_CHECKPOINT))
+	if (f2fs_has_subpage_blocks(sbi))
+		err = 0;
+	else if (test_opt(sbi, DISABLE_CHECKPOINT))
 		err = f2fs_disable_checkpoint(sbi);
 	else if (is_set_ckpt_flags(sbi, CP_DISABLED_FLAG))
 		err = f2fs_enable_checkpoint(sbi);
@@ -5687,8 +5736,9 @@ static void kill_f2fs_super(struct super_block *sb)
 			truncate_inode_pages_final(COMPRESS_MAPPING(sbi));
 #endif
 
-		if (is_sbi_flag_set(sbi, SBI_IS_DIRTY) ||
-				!is_set_ckpt_flags(sbi, CP_UMOUNT_FLAG)) {
+		if (!f2fs_has_subpage_blocks(sbi) &&
+		    (is_sbi_flag_set(sbi, SBI_IS_DIRTY) ||
+		     !is_set_ckpt_flags(sbi, CP_UMOUNT_FLAG))) {
 			struct cp_control cpc = {
 				.reason = CP_UMOUNT,
 			};
