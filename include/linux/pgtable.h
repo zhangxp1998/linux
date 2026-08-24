@@ -24,6 +24,29 @@
 #endif
 
 /*
+ * PPPS packed-anon swap PTE bit. Architectures with
+ * CONFIG_ARM64_PER_PROCESS_PAGE_SIZE define the real accessors in their
+ * <asm/pgtable.h>; everywhere else the bit does not exist, so callers can
+ * use these fallbacks without #ifdef guards.
+ */
+#ifndef pte_swp_ppps_packed
+static inline bool pte_swp_ppps_packed(pte_t pte)
+{
+	return false;
+}
+
+static inline pte_t pte_swp_mk_ppps_packed(pte_t pte)
+{
+	return pte;
+}
+
+static inline pte_t pte_swp_clear_ppps_packed(pte_t pte)
+{
+	return pte;
+}
+#endif
+
+/*
  * On almost all architectures and configurations, 0 can be used as the
  * upper ceiling to free_pgtables(): on many architectures it has the same
  * effect as using TASK_SIZE.  However, there is one configuration which
@@ -1360,7 +1383,8 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 }
 #endif
 
-#ifndef __HAVE_ARCH_SWAP_RESTORE_PPPS
+#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && \
+	!defined(__HAVE_ARCH_SWAP_RESTORE_PPPS)
 static inline void
 arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
 		       unsigned int slice)

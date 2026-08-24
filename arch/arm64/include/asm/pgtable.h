@@ -591,6 +591,7 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 	return clear_pte_bit(pte, __pgprot(PTE_SWP_EXCLUSIVE));
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 /*
  * Bit 1 is ignored by pte_present() for an invalid PTE and is not part of
  * arm64's swap type or offset encoding.  PPPS uses it to say that the swap
@@ -616,6 +617,7 @@ static inline pte_t pte_swp_clear_ppps_packed(pte_t pte)
 {
 	return clear_pte_bit(pte, __pgprot(PTE_SWP_PPPS_PACKED));
 }
+#endif
 
 #ifdef CONFIG_HAVE_ARCH_USERFAULTFD_WP
 static inline pte_t pte_swp_mkuffd_wp(pte_t pte)
@@ -1912,11 +1914,13 @@ static __always_inline void set_ptes(struct mm_struct *mm, unsigned long addr,
 {
 	pte = pte_mknoncont(pte);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	/* Contiguous PTE geometry is defined in native-page units. */
 	if (unlikely(ppps_mm_is_compat(mm))) {
 		__set_ptes(mm, addr, ptep, pte, nr);
 		return;
 	}
+#endif
 
 	if (likely(nr == 1)) {
 		contpte_try_unfold(mm, addr, ptep, __ptep_get(ptep));

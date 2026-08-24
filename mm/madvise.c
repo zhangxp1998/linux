@@ -532,7 +532,8 @@ restart:
 		 * when a PPPS range covers only some of its slices.
 		 */
 		folio_nr_ptes = madvise_folio_nr_ptes(mm, folio);
-		if (ppps_anon_pte_is_packed(vma, folio, addr, pte))
+		if (ppps_mm_is_compat(mm) &&
+		    ppps_anon_pte_is_packed(vma, folio, addr, pte))
 			folio_nr_ptes = PPPS_SLICES_PER_PAGE;
 		if (folio_nr_ptes > 1) {
 			nr = madvise_folio_pte_batch(vma, addr, end, folio, pte,
@@ -571,7 +572,8 @@ restart:
 		}
 
 		/* Packed tuples remain resident until packed swap is made safe. */
-		if (pageout && folio_test_ppps_packed_anon(folio))
+		if (ppps_mm_is_compat(mm) && pageout &&
+		    folio_test_ppps_packed_anon(folio))
 			continue;
 
 		/*
@@ -766,13 +768,14 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 */
 		if (!pte_present(ptent)) {
 			swp_entry_t entry;
-			int packed_nr;
+			int packed_nr = 0;
 
 			entry = pte_to_swp_entry(ptent);
 			if (!non_swap_entry(entry)) {
 				max_nr = (end - addr) / MM_PAGE_SIZE(mm);
-				packed_nr = ppps_swap_pte_batch(pte, max_nr, ptent,
-								addr);
+				if (ppps_mm_is_compat(mm))
+					packed_nr = ppps_swap_pte_batch(pte, max_nr, ptent,
+									addr);
 				if (packed_nr) {
 					int i;
 
@@ -781,7 +784,8 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 						nr_swap--;
 					for (i = 0; i < nr; i++)
 						free_swap_and_cache(entry);
-				} else {
+				}
+				if (!packed_nr) {
 					nr = swap_pte_batch(pte, max_nr, ptent);
 					nr_swap -= nr;
 					free_swap_and_cache_nr(entry, nr);
@@ -805,7 +809,8 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 * when a PPPS range covers only some of its slices.
 		 */
 		folio_nr_ptes = madvise_folio_nr_ptes(mm, folio);
-		if (ppps_anon_pte_is_packed(vma, folio, addr, pte)) {
+		if (ppps_mm_is_compat(mm) &&
+		    ppps_anon_pte_is_packed(vma, folio, addr, pte)) {
 			folio_nr_ptes = PPPS_SLICES_PER_PAGE;
 			ppps_packed = true;
 		}

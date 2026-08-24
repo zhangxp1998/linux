@@ -553,7 +553,7 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	} else {
 		new->vm_start = addr;
 		new->vm_pgoff = vma_pgoff_offset(vma, addr);
-		vma_set_slice_off(new, vma_slice_offset(vma, addr));
+		vma_set_slice_off(new, vma_address_to_slice(vma, addr));
 	}
 
 	err = -ENOMEM;
@@ -601,7 +601,7 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	if (new_below) {
 		vma->vm_start = addr;
 		vma->vm_pgoff = vma_pgoff_offset(new, addr);
-		vma_set_slice_off(vma, vma_slice_offset(new, addr));
+		vma_set_slice_off(vma, vma_address_to_slice(new, addr));
 	} else {
 		vma->vm_end = addr;
 	}
@@ -753,11 +753,11 @@ static void vmg_adjust_set_range(struct vma_merge_struct *vmg)
 	if (vmg->__adjust_middle_start) {
 		adjust = vmg->middle;
 		pgoff = vma_pgoff_offset(adjust, vmg->end);
-		slice_off = vma_slice_offset(adjust, vmg->end);
+		slice_off = vma_address_to_slice(adjust, vmg->end);
 	} else if (vmg->__adjust_next_start) {
 		adjust = vmg->next;
 		pgoff = vma_pgoff_offset(vmg->middle, vmg->end);
-		slice_off = vma_slice_offset(vmg->middle, vmg->end);
+		slice_off = vma_address_to_slice(vmg->middle, vmg->end);
 	} else {
 		return;
 	}

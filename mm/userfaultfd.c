@@ -805,12 +805,6 @@ retry:
 	if ((flags & MFILL_ATOMIC_WP) && !(dst_vma->vm_flags & VM_UFFD_WP))
 		goto out_unlock;
 
-	if (!ppps_vma_validate_uffd_alignment(dst_vma, dst_start,
-					      dst_start + len)) {
-		err = -EINVAL;
-		goto out_unlock;
-	}
-
 	/*
 	 * If this is a HUGETLB vma, pass off to appropriate routine
 	 */
@@ -1105,7 +1099,11 @@ static struct folio *check_ptes_for_batched_move(struct vm_area_struct *src_vma,
 	folio = vm_normal_folio(src_vma, src_addr, orig_src_pte);
 	if (!folio || !folio_trylock(folio))
 		return NULL;
-	if (!PageAnonExclusive(&folio->page) || folio_test_large(folio) ||
+	if (!PageAnonExclusive(&folio->page) || folio_test_large(folio)) {
+		folio_unlock(folio);
+		return NULL;
+	}
+	if (ppps_mm_is_compat(src_vma->vm_mm) &&
 	    folio_test_ppps_packed_anon(folio)) {
 		folio_unlock(folio);
 		return NULL;
@@ -1143,7 +1141,8 @@ static long move_present_ptes(struct mm_struct *mm,
 		err = -EAGAIN;
 		goto out;
 	}
-	if (folio_test_ppps_packed_anon(src_folio)) {
+	if (ppps_mm_is_compat(mm) &&
+	    folio_test_ppps_packed_anon(src_folio)) {
 		*ppps_depack = true;
 		err = -EAGAIN;
 		goto out;
@@ -1216,7 +1215,7 @@ static int move_swap_pte(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 			 struct swap_info_struct *si, swp_entry_t entry)
 {
 	/* The packed slice identity is tied to src_addr until it is faulted in. */
-	if (pte_swp_ppps_packed(orig_src_pte))
+	if (ppps_mm_is_compat(mm) && pte_swp_ppps_packed(orig_src_pte))
 		return -EBUSY;
 
 	/*
@@ -1432,7 +1431,8 @@ retry:
 				ret = -EBUSY;
 				goto out;
 			}
-			if (folio_test_ppps_packed_anon(folio)) {
+			if (ppps_mm_is_compat(mm) &&
+			    folio_test_ppps_packed_anon(folio)) {
 				spin_unlock(src_ptl);
 				*ppps_depack = true;
 				ret = -EAGAIN;
@@ -1497,7 +1497,8 @@ retry:
 	} else {
 		struct folio *folio = NULL;
 
-		if (pte_swp_ppps_packed(orig_src_pte)) {
+		if (ppps_mm_is_compat(mm) &&
+		    pte_swp_ppps_packed(orig_src_pte)) {
 			*ppps_depack = true;
 			ret = -EAGAIN;
 			goto out;
@@ -1983,7 +1984,7 @@ retry_lock:
 					      dst_vma, src_vma, dst_addr,
 					      src_addr, src_end - src_addr, mode,
 					      &ppps_depack);
-			if (ppps_depack) {
+			if (ppps_mm_is_compat(mm) && ppps_depack) {
 				err = -EAGAIN;
 				break;
 			}
@@ -2017,7 +2018,7 @@ retry_lock:
 out_unlock:
 	up_read(&ctx->map_changing_lock);
 	uffd_move_unlock(dst_vma, src_vma);
-	if (ppps_depack) {
+	if (ppps_mm_is_compat(mm) && ppps_depack) {
 		ppps_depack = false;
 		mmap_write_lock(mm);
 		err = ppps_depack_anon_range(mm, src_addr,

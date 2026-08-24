@@ -1056,26 +1056,6 @@ static struct page *first_bvec_segment(const struct iov_iter *i,
 	return page;
 }
 
-static size_t iov_iter_compat_page_offset(struct vm_area_struct *vma,
-					  unsigned long addr,
-					  struct page *page)
-{
-	struct mm_struct *mm = vma->vm_mm;
-	unsigned int slice = vma_address_to_slice(vma, addr);
-
-	/*
-	 * Anonymous PPPS mappings traditionally use only slice 0, so their VMA
-	 * does not carry a slice offset.  A packed anonymous mapping instead
-	 * maps a native-page-aligned tuple to every slice of one native folio.
-	 * Derive that offset only when the pinned backing has the packed shape.
-	 */
-	if (folio_test_ppps_packed_anon(page_folio(page)))
-		slice = offset_in_page(addr) >> MM_PAGE_SHIFT(mm);
-
-	return ((size_t)slice << MM_PAGE_SHIFT(mm)) +
-		mm_offset_in_page(mm, addr);
-}
-
 static ssize_t __iov_iter_get_pages_alloc(struct iov_iter *i,
 		   struct page ***pages, size_t maxsize,
 		   unsigned int maxpages, size_t *start)
@@ -1122,10 +1102,12 @@ static ssize_t __iov_iter_get_pages_alloc(struct iov_iter *i,
 				res = -EFAULT;
 				goto unlock;
 			}
+			*start = ((size_t)vma_address_to_slice(vma, addr) <<
+				  MM_PAGE_SHIFT(mm)) + offset;
 			res = get_user_pages(addr, 1, gup_flags, *pages);
-			if (res > 0)
-				*start = iov_iter_compat_page_offset(vma, addr,
-								     (*pages)[0]);
+			if (res > 0 && ppps_mm_is_compat(mm) &&
+			    folio_test_ppps_packed_anon(page_folio((*pages)[0])))
+				*start = offset_in_page(addr);
 unlock:
 			mmap_read_unlock(mm);
 			if (unlikely(res <= 0))
@@ -1845,10 +1827,12 @@ static ssize_t iov_iter_extract_user_pages(struct iov_iter *i,
 			res = -EFAULT;
 			goto unlock;
 		}
+		*offset0 = ((size_t)vma_address_to_slice(vma, addr) <<
+			    MM_PAGE_SHIFT(mm)) + offset;
 		res = pin_user_pages(addr, 1, gup_flags, *pages);
-		if (res > 0)
-			*offset0 = iov_iter_compat_page_offset(vma, addr,
-							       (*pages)[0]);
+		if (res > 0 && ppps_mm_is_compat(mm) &&
+		    folio_test_ppps_packed_anon(page_folio((*pages)[0])))
+			*offset0 = offset_in_page(addr);
 unlock:
 		mmap_read_unlock(mm);
 		if (unlikely(res <= 0))

@@ -191,7 +191,7 @@ static inline pgoff_t vma_pgoff_offset(struct vm_area_struct *vma,
 		.end = end_,					\
 		.vm_flags = vma_->vm_flags,			\
 		.pgoff = vma_pgoff_offset(vma_, start_),	\
-		.slice_off = vma_slice_offset(vma_, start_),	\
+		.slice_off = vma_address_to_slice(vma_, start_),	\
 		.file = vma_->vm_file,				\
 		.anon_vma = vma_->anon_vma,			\
 		.policy = vma_policy(vma_),			\
@@ -264,8 +264,17 @@ int do_vmi_munmap(struct vma_iterator *vmi, struct mm_struct *mm,
 		  unsigned long start, size_t len, struct list_head *uf,
 		  bool unlock);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 int ppps_depack_anon_range(struct mm_struct *mm, unsigned long start,
 			   unsigned long end, bool all);
+#else
+static inline int ppps_depack_anon_range(struct mm_struct *mm,
+					 unsigned long start,
+					 unsigned long end, bool all)
+{
+	return 0;
+}
+#endif
 
 void remove_vma(struct vm_area_struct *vma);
 

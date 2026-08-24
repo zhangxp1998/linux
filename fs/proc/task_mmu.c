@@ -43,7 +43,9 @@ void task_mem(struct seq_file *m, struct mm_struct *mm)
 	unsigned long text, lib, swap, anon, file, shmem;
 	unsigned long hiwater_vm, total_vm, hiwater_rss, total_rss;
 
-	anon = get_mm_counter_sum(mm, MM_ANONPAGES);
+	/* Anonymous RSS is tracked per native folio; report process pages. */
+	anon = mm_native_to_process_pages(mm,
+					  get_mm_counter_sum(mm, MM_ANONPAGES));
 	file = get_mm_counter_sum(mm, MM_FILEPAGES);
 	shmem = get_mm_counter_sum(mm, MM_SHMEMPAGES);
 
@@ -66,7 +68,8 @@ void task_mem(struct seq_file *m, struct mm_struct *mm)
 	text = min(text, mm->exec_vm << MM_PAGE_SHIFT(mm));
 	lib = (mm->exec_vm << MM_PAGE_SHIFT(mm)) - text;
 
-	swap = get_mm_counter_sum(mm, MM_SWAPENTS);
+	swap = mm_native_to_process_pages(mm,
+					  get_mm_counter_sum(mm, MM_SWAPENTS));
 	SEQ_PUT_DEC("VmPeak:\t", hiwater_vm);
 	SEQ_PUT_DEC(" kB\nVmSize:\t", total_vm);
 	SEQ_PUT_DEC(" kB\nVmLck:\t", mm->locked_vm);
@@ -99,25 +102,19 @@ unsigned long task_vsize(struct mm_struct *mm)
 	return MM_PAGE_SIZE(mm) * mm->total_vm;
 }
 
-static inline unsigned long mm_page_size_count(struct mm_struct *mm, unsigned long val)
-{
-	return val << (PAGE_SHIFT - MM_PAGE_SHIFT(mm));
-}
-
 unsigned long task_statm(struct mm_struct *mm,
 			 unsigned long *shared, unsigned long *text,
 			 unsigned long *data, unsigned long *resident)
 {
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	unsigned long native_shared = get_mm_counter_sum(mm, MM_FILEPAGES) +
+	/* File and shmem RSS are already in process pages; anon is native. */
+	*shared = get_mm_counter_sum(mm, MM_FILEPAGES) +
 			get_mm_counter_sum(mm, MM_SHMEMPAGES);
-
-	*shared = mm_page_size_count(mm, native_shared);
 	*text = (MM_PAGE_ALIGN(mm, mm->end_code) -
 		 (mm->start_code & MM_PAGE_MASK(mm))) >> MM_PAGE_SHIFT(mm);
 	*data = mm->data_vm + mm->stack_vm;
-	*resident = mm_page_size_count(mm, native_shared +
-				      get_mm_counter_sum(mm, MM_ANONPAGES));
+	*resident = *shared + mm_native_to_process_pages(mm,
+				get_mm_counter_sum(mm, MM_ANONPAGES));
 	return mm->total_vm;
 #else
 	*shared = __page_size_count(get_mm_counter_sum(mm, MM_FILEPAGES) +
@@ -982,6 +979,7 @@ static void smaps_page_accumulate(struct mem_size_stats *mss,
 	}
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 /*
  * A packed anonymous mapping has one PTE for every process-page slice of the
  * same native order-0 folio.  folio_mapcount() counts those PTEs separately,
@@ -1008,6 +1006,7 @@ static int smaps_ppps_packed_swap_mapcount(pte_t pte, int mapcount)
 	mapcount = max(mapcount, 1);
 	return DIV_ROUND_UP(mapcount, (int)PPPS_SLICES_PER_PAGE);
 }
+#endif
 
 static void smaps_account(struct mem_size_stats *mss, unsigned long page_size,
 		struct page *page, bool compound, bool young, bool dirty,
@@ -1126,6 +1125,7 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 	bool present = false, young = false, dirty = false;
 	pte_t ptent = ptep_get(pte);
 	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
+	int precise_mapcount = -1;
 
 	if (pte_present(ptent)) {
 		page = vm_normal_page(vma, addr, ptent);
@@ -1140,7 +1140,10 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 
 			mss->swap += page_size;
 			mapcount = swp_swapcount(swpent);
-			mapcount = smaps_ppps_packed_swap_mapcount(ptent, mapcount);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			if (ppps_mm_is_compat(vma->vm_mm))
+				mapcount = smaps_ppps_packed_swap_mapcount(ptent, mapcount);
+#endif
 			if (mapcount >= 2) {
 				u64 pss_delta = (u64)page_size << PSS_SHIFT;
 
@@ -1165,9 +1168,13 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 	if (!page)
 		return;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm))
+		precise_mapcount =
+			smaps_ppps_packed_anon_mapcount(page_folio(page));
+#endif
 	smaps_account(mss, MM_PAGE_SIZE(vma->vm_mm), page, false, young, dirty, locked,
-		      present,
-		      smaps_ppps_packed_anon_mapcount(page_folio(page)));
+		      present, precise_mapcount);
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE

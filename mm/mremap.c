@@ -1237,7 +1237,7 @@ static int copy_vma_and_data(struct vma_remap_struct *vrm,
 			     struct vm_area_struct **new_vma_ptr)
 {
 	pgoff_t new_pgoff = vma_pgoff_offset(vrm->vma, vrm->addr);
-	unsigned int new_slice_off = vma_slice_offset(vrm->vma, vrm->addr);
+	unsigned int new_slice_off = vma_address_to_slice(vrm->vma, vrm->addr);
 	unsigned long moved_len;
 	struct vm_area_struct *vma = vrm->vma;
 	struct vm_area_struct *new_vma;

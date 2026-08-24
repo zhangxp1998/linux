@@ -2173,6 +2173,7 @@ static inline int pte_same_as_swp(pte_t pte, pte_t swp_pte)
 	return pte_same(pte_swp_clear_flags(pte), swp_pte);
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 static struct folio *
 copy_unuse_ppps(struct vm_area_struct *vma, struct folio *src,
 		unsigned long addr)
@@ -2201,6 +2202,7 @@ copy_unuse_ppps(struct vm_area_struct *vma, struct folio *src,
 	__folio_mark_uptodate(dst);
 	return dst;
 }
+#endif
 
 /*
  * No need to decide whether this PTE shares the swap entry with others,
@@ -2213,10 +2215,12 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	struct page *page;
 	struct folio *swapcache;
 	spinlock_t *ptl;
-	pte_t *pte = NULL, new_pte, old_pte;
+	pte_t *pte, new_pte, old_pte;
 	bool hwpoisoned = false;
-	bool packed;
+	bool packed = false;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	unsigned int packed_slice;
+#endif
 	int ret = 1;
 
 	/*
@@ -2227,13 +2231,16 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 		return 0;
 
 	swapcache = folio;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	pte = NULL;
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (unlikely(!pte ||
 		     !pte_same_as_swp(ptep_get(pte), swp_entry_to_pte(entry)))) {
 		ret = 0;
 		goto out;
 	}
-	packed = pte_swp_ppps_packed(ptep_get(pte));
+	packed = ppps_mm_is_compat(vma->vm_mm) &&
+		pte_swp_ppps_packed(ptep_get(pte));
 	packed_slice = offset_in_page(addr) >> PAGE_SHIFT_COMPAT;
 	pte_unmap_unlock(pte, ptl);
 	pte = NULL;
@@ -2255,26 +2262,33 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 			if (unlikely(!folio))
 				return -ENOMEM;
 		}
-	} else {
-		folio = ksm_might_need_to_copy(folio, vma, addr);
-		if (unlikely(!folio)) {
-			return -ENOMEM;
-		} else if (unlikely(folio == ERR_PTR(-EHWPOISON))) {
-			hwpoisoned = true;
-			folio = swapcache;
-		}
+		goto folio_prepared;
 	}
+#endif
+	folio = ksm_might_need_to_copy(folio, vma, addr);
+	if (unlikely(!folio)) {
+		return -ENOMEM;
+	} else if (unlikely(folio == ERR_PTR(-EHWPOISON))) {
+		hwpoisoned = true;
+		folio = swapcache;
+	}
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+folio_prepared:
 	if (packed && folio != swapcache)
 		page = &folio->page;
 	else
+#endif
 		page = folio_file_page(folio, swp_offset(entry));
 	if (PageHWPoison(page))
 		hwpoisoned = true;
 
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (unlikely(!pte || !pte_same_as_swp(ptep_get(pte),
-					swp_entry_to_pte(entry)) ||
-		     pte_swp_ppps_packed(ptep_get(pte)) != packed)) {
+					swp_entry_to_pte(entry)))) {
+		ret = 0;
+		goto out;
+	}
+	if (unlikely(pte_swp_ppps_packed(ptep_get(pte)) != packed)) {
 		ret = 0;
 		goto out;
 	}
@@ -2301,10 +2315,12 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	 * when reading from swap. This metadata may be indexed by swap entry
 	 * so this must be called before swap_free().
 	 */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (packed)
 		arch_swap_restore_ppps(folio_swap(entry, folio), folio,
 				       packed_slice);
 	else
+#endif
 		arch_swap_restore(folio_swap(entry, folio), folio);
 
 	if (!packed || IS_ALIGNED(addr, PAGE_SIZE))

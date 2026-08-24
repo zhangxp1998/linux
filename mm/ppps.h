@@ -7,110 +7,64 @@
 
 #include "vma.h"
 
+enum ppps_anon_wp_type {
+	PPPS_ANON_WP_NONE,
+	PPPS_ANON_WP_PACKED,
+	PPPS_ANON_WP_ZERO,
+};
+
+struct ppps_anon_swapin {
+	struct folio *folio;
+	unsigned int slice;
+	bool active;
+	bool mapped;
+	pte_t ptes[PPPS_SLICES_PER_PAGE];
+};
+
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 
-/*
- * A packed anonymous mapping uses one native folio as four consecutive
- * process-page PTEs.  The invariant is deliberately strict: a mapping
- * instance is either this complete tuple, or a singleton mapping of slice 0.
- * Keeping tuple recognition in one helper avoids subtly different tests in
- * fault, fork, COW and rmap paths.
- */
-static inline bool ppps_anon_pte_is_packed(struct vm_area_struct *vma,
-					   struct folio *folio,
-					   unsigned long address, pte_t *ptep)
-{
-	unsigned long base;
-	unsigned int i, slice;
-	pte_t *base_ptep;
-
-	if (!ppps_mm_is_compat(vma->vm_mm) || !vma_is_anonymous(vma) ||
-	    !folio_test_anon(folio) || folio_test_large(folio) ||
-	    !folio_test_ppps_packed_anon(folio))
-		return false;
-
-	base = ALIGN_DOWN(address, PAGE_SIZE);
-	if (base < vma->vm_start || base + PAGE_SIZE > vma->vm_end)
-		return false;
-
-	slice = (address - base) >> PAGE_SHIFT_COMPAT;
-	base_ptep = ptep - slice;
-	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-		pte_t pte = ptep_get(base_ptep + i);
-
-		if (!pte_present(pte) || pte_special(pte) ||
-		    pte_page(pte) != &folio->page ||
-		    pte_page_offset(pte) != i * PAGE_SIZE_COMPAT)
-			return false;
-	}
-
-	return true;
-}
-
-/*
- * A zero tuple maps the four slices of the native global zero page.  Unlike
- * a packed anonymous folio, it owns no rmap or page-table references and can
- * be split freely.  Recognizing the complete shape lets a write fault replace
- * it atomically with one private packed folio.
- */
-static inline bool ppps_anon_pte_is_zero_tuple(struct vm_area_struct *vma,
-					       unsigned long address, pte_t *ptep)
-{
-	unsigned long base;
-	unsigned int i, slice;
-	pte_t *base_ptep;
-
-	if (!ppps_mm_is_compat(vma->vm_mm) || !vma_is_anonymous(vma))
-		return false;
-
-	base = ALIGN_DOWN(address, PAGE_SIZE);
-	if (base < vma->vm_start || base + PAGE_SIZE > vma->vm_end)
-		return false;
-
-	slice = (address - base) >> PAGE_SHIFT_COMPAT;
-	base_ptep = ptep - slice;
-	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-		pte_t pte = ptep_get(base_ptep + i);
-
-		if (!pte_present(pte) || !pte_special(pte) || pte_write(pte) ||
-		    !is_zero_pfn(pte_pfn(pte)) ||
-		    pte_page_offset(pte) != i * PAGE_SIZE_COMPAT)
-			return false;
-	}
-
-	return true;
-}
-
-/*
- * A packed swap tuple stores the same swap offset in all four process PTEs,
- * unlike the consecutive offsets handled by swap_pte_batch().  Batch the
- * identical entries so callers release every swap reference while accounting
- * the tuple only once at its native-page-aligned first PTE.
- */
-static inline int ppps_swap_pte_batch(pte_t *ptep, int max_nr, pte_t first,
-				      unsigned long address)
-{
-	swp_entry_t entry;
-	unsigned int slice;
-	int nr = 1;
-
-	if (!pte_swp_ppps_packed(first))
-		return 0;
-
-	entry = pte_to_swp_entry(first);
-	slice = (address & ~PAGE_MASK) >> PAGE_SHIFT_COMPAT;
-	max_nr = min_t(int, max_nr, PPPS_SLICES_PER_PAGE - slice);
-	while (nr < max_nr) {
-		pte_t pte = ptep_get(ptep + nr);
-
-		if (!is_swap_pte(pte) || !pte_swp_ppps_packed(pte) ||
-		    pte_to_swp_entry(pte).val != entry.val)
-			break;
-		nr++;
-	}
-
-	return nr;
-}
+bool ppps_anon_pte_is_packed(struct vm_area_struct *vma,
+			     struct folio *folio, unsigned long address,
+			     pte_t *ptep);
+int ppps_swap_pte_batch(pte_t *ptep, int max_nr, pte_t first,
+			unsigned long address);
+int ppps_anon_copy_present_ptes(struct vm_area_struct *dst_vma,
+				struct vm_area_struct *src_vma,
+				pte_t *dst_pte, pte_t *src_pte,
+				unsigned long addr, int max_nr, int *rss,
+				struct folio *folio, struct folio **prealloc);
+enum ppps_anon_wp_type ppps_anon_wp_type(struct vm_area_struct *vma,
+					 struct folio *folio,
+					 unsigned long address, pte_t *ptep);
+bool ppps_anon_wp_can_reuse(struct folio *folio,
+			    struct vm_area_struct *vma);
+vm_fault_t ppps_anon_wp_copy(struct vm_fault *vmf, struct folio *folio,
+			     enum ppps_anon_wp_type type);
+bool ppps_anon_fault_can_pack(struct vm_fault *vmf);
+void ppps_anon_add_new_rmap(struct folio *folio,
+			    struct vm_area_struct *vma,
+			    unsigned long address, int nr_ptes);
+void ppps_anon_remove_rmap(struct folio *folio,
+			   struct vm_area_struct *vma);
+int ppps_anon_try_to_unmap(struct folio *folio,
+			   struct vm_area_struct *vma,
+			   unsigned long address, pte_t *ptep);
+unsigned long ppps_anon_folio_nr_pages(struct folio *folio);
+void ppps_anon_swapin_init(struct ppps_anon_swapin *swapin,
+			   struct vm_fault *vmf);
+bool ppps_anon_swapin_active(const struct ppps_anon_swapin *swapin);
+vm_fault_t ppps_anon_swapin_prepare(struct ppps_anon_swapin *swapin,
+				    struct vm_fault *vmf,
+				    struct folio *swapcache);
+bool ppps_anon_swapin_revalidate(struct ppps_anon_swapin *swapin,
+				 struct vm_fault *vmf, swp_entry_t entry,
+				 struct folio **folio, struct page **page);
+bool ppps_anon_swapin_map(struct ppps_anon_swapin *swapin,
+			  struct vm_fault *vmf, struct folio *swapcache,
+			  struct folio *folio, swp_entry_t entry,
+			  unsigned long *address, pte_t **ptep,
+			  int *nr_pages);
+void ppps_anon_swapin_cleanup(struct ppps_anon_swapin *swapin);
 
 static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
 {
@@ -132,23 +86,6 @@ static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
 	 * needed to cover the range (including starting slice offset alignment).
 	 */
 	return (vma_slice_off(vma) + nr_slices) >> PPPS_SLICE_SHIFT;
-}
-
-static inline unsigned int vma_slice_offset(struct vm_area_struct *vma,
-					   unsigned long addr)
-{
-	unsigned long total_slices;
-
-	if (!ppps_mm_is_compat(vma->vm_mm))
-		return 0;
-
-	if (vma_is_anonymous(vma))
-		return 0;
-
-	total_slices = ((addr - vma->vm_start) >> PAGE_SHIFT_COMPAT) +
-				vma_slice_off(vma);
-
-	return total_slices & PPPS_SLICE_MASK;
 }
 
 static inline unsigned long vmg_pages(const struct vma_merge_struct *vmg)
@@ -245,15 +182,14 @@ static inline unsigned int mmap_slice_offset(struct mm_struct *mm,
 
 #else /* !CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
 
+/*
+ * No-op fallbacks so callers don't need #ifdef guards: every call site is
+ * predicated (directly or transitively) on ppps_mm_is_compat(), which is
+ * constant false here, so the compiler discards these entirely.
+ */
 static inline bool ppps_anon_pte_is_packed(struct vm_area_struct *vma,
 					   struct folio *folio,
 					   unsigned long address, pte_t *ptep)
-{
-	return false;
-}
-
-static inline bool ppps_anon_pte_is_zero_tuple(struct vm_area_struct *vma,
-					       unsigned long address, pte_t *ptep)
 {
 	return false;
 }
@@ -264,15 +200,107 @@ static inline int ppps_swap_pte_batch(pte_t *ptep, int max_nr, pte_t first,
 	return 0;
 }
 
+static inline int ppps_anon_copy_present_ptes(struct vm_area_struct *dst_vma,
+					      struct vm_area_struct *src_vma,
+					      pte_t *dst_pte, pte_t *src_pte,
+					      unsigned long addr, int max_nr,
+					      int *rss, struct folio *folio,
+					      struct folio **prealloc)
+{
+	return 0;
+}
+
+static inline enum ppps_anon_wp_type
+ppps_anon_wp_type(struct vm_area_struct *vma, struct folio *folio,
+		  unsigned long address, pte_t *ptep)
+{
+	return PPPS_ANON_WP_NONE;
+}
+
+static inline bool ppps_anon_wp_can_reuse(struct folio *folio,
+					  struct vm_area_struct *vma)
+{
+	return false;
+}
+
+static inline vm_fault_t ppps_anon_wp_copy(struct vm_fault *vmf,
+					   struct folio *folio,
+					   enum ppps_anon_wp_type type)
+{
+	return 0;
+}
+
+static inline bool ppps_anon_fault_can_pack(struct vm_fault *vmf)
+{
+	return false;
+}
+
+static inline void ppps_anon_add_new_rmap(struct folio *folio,
+					  struct vm_area_struct *vma,
+					  unsigned long address, int nr_ptes)
+{
+}
+
+static inline void ppps_anon_remove_rmap(struct folio *folio,
+					 struct vm_area_struct *vma)
+{
+}
+
+static inline int ppps_anon_try_to_unmap(struct folio *folio,
+					 struct vm_area_struct *vma,
+					 unsigned long address, pte_t *ptep)
+{
+	return 0;
+}
+
+static inline unsigned long ppps_anon_folio_nr_pages(struct folio *folio)
+{
+	return 0;
+}
+
+static inline void ppps_anon_swapin_init(struct ppps_anon_swapin *swapin,
+					 struct vm_fault *vmf)
+{
+}
+
+static inline bool ppps_anon_swapin_active(const struct ppps_anon_swapin *swapin)
+{
+	return false;
+}
+
+static inline vm_fault_t ppps_anon_swapin_prepare(struct ppps_anon_swapin *swapin,
+						  struct vm_fault *vmf,
+						  struct folio *swapcache)
+{
+	return 0;
+}
+
+static inline bool ppps_anon_swapin_revalidate(struct ppps_anon_swapin *swapin,
+					       struct vm_fault *vmf,
+					       swp_entry_t entry,
+					       struct folio **folio,
+					       struct page **page)
+{
+	return true;
+}
+
+static inline bool ppps_anon_swapin_map(struct ppps_anon_swapin *swapin,
+					struct vm_fault *vmf,
+					struct folio *swapcache,
+					struct folio *folio, swp_entry_t entry,
+					unsigned long *address, pte_t **ptep,
+					int *nr_pages)
+{
+	return false;
+}
+
+static inline void ppps_anon_swapin_cleanup(struct ppps_anon_swapin *swapin)
+{
+}
+
 static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
 {
 	return (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
-}
-
-static inline unsigned int vma_slice_offset(struct vm_area_struct *vma,
-					   unsigned long addr)
-{
-	return 0;
 }
 
 static inline unsigned long vmg_pages(const struct vma_merge_struct *vmg)
