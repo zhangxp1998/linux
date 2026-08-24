@@ -1075,11 +1075,17 @@ static struct folio *check_ptes_for_batched_move(struct vm_area_struct *src_vma,
 	folio = vm_normal_folio(src_vma, src_addr, orig_src_pte);
 	if (!folio || !folio_trylock(folio))
 		return NULL;
-	if (!PageAnonExclusive(&folio->page) || folio_test_large(folio) ||
+	if (!PageAnonExclusive(&folio->page) || folio_test_large(folio)) {
+		folio_unlock(folio);
+		return NULL;
+	}
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(src_vma->vm_mm) &&
 	    folio_test_ppps_packed_anon(folio)) {
 		folio_unlock(folio);
 		return NULL;
 	}
+#endif
 	return folio;
 }
 
@@ -1113,11 +1119,14 @@ static long move_present_ptes(struct mm_struct *mm,
 		err = -EAGAIN;
 		goto out;
 	}
-	if (folio_test_ppps_packed_anon(src_folio)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(mm) &&
+	    folio_test_ppps_packed_anon(src_folio)) {
 		*ppps_depack = true;
 		err = -EAGAIN;
 		goto out;
 	}
+#endif
 	if (folio_test_large(src_folio) ||
 	    folio_maybe_dma_pinned(src_folio) ||
 	    !PageAnonExclusive(&src_folio->page)) {
@@ -1185,9 +1194,11 @@ static int move_swap_pte(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 			 struct folio *src_folio,
 			 struct swap_info_struct *si, swp_entry_t entry)
 {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	/* The packed slice identity is tied to src_addr until it is faulted in. */
-	if (pte_swp_ppps_packed(orig_src_pte))
+	if (ppps_mm_is_compat(mm) && pte_swp_ppps_packed(orig_src_pte))
 		return -EBUSY;
+#endif
 
 	/*
 	 * Check if the folio still belongs to the target swap entry after
@@ -1402,12 +1413,15 @@ retry:
 				ret = -EBUSY;
 				goto out;
 			}
-			if (folio_test_ppps_packed_anon(folio)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			if (ppps_mm_is_compat(mm) &&
+			    folio_test_ppps_packed_anon(folio)) {
 				spin_unlock(src_ptl);
 				*ppps_depack = true;
 				ret = -EAGAIN;
 				goto out;
 			}
+#endif
 
 			locked = folio_trylock(folio);
 			/*
@@ -1468,11 +1482,14 @@ retry:
 	} else {
 		struct folio *folio = NULL;
 
-		if (pte_swp_ppps_packed(orig_src_pte)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		if (ppps_mm_is_compat(mm) &&
+		    pte_swp_ppps_packed(orig_src_pte)) {
 			*ppps_depack = true;
 			ret = -EAGAIN;
 			goto out;
 		}
+#endif
 
 		entry = pte_to_swp_entry(orig_src_pte);
 		if (non_swap_entry(entry)) {
@@ -1838,7 +1855,9 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	dst_addr = dst_start;
 	src_end = src_start + len;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 retry_lock:
+#endif
 	err = uffd_move_lock(mm, dst_addr, src_addr, &dst_vma, &src_vma);
 	if (err)
 		goto out;
@@ -1964,10 +1983,12 @@ retry_lock:
 					      dst_vma, src_vma, dst_addr,
 					      src_addr, src_end - src_addr, mode,
 					      &ppps_depack);
-			if (ppps_depack) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			if (ppps_mm_is_compat(mm) && ppps_depack) {
 				err = -EAGAIN;
 				break;
 			}
+#endif
 			if (ret < 0)
 				err = ret;
 			else
@@ -1998,7 +2019,8 @@ retry_lock:
 out_unlock:
 	up_read(&ctx->map_changing_lock);
 	uffd_move_unlock(dst_vma, src_vma);
-	if (ppps_depack) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(mm) && ppps_depack) {
 		ppps_depack = false;
 		mmap_write_lock(mm);
 		err = ppps_depack_anon_range(mm, src_addr,
@@ -2007,6 +2029,7 @@ out_unlock:
 		if (!err)
 			goto retry_lock;
 	}
+#endif
 out:
 	VM_WARN_ON(moved < 0);
 	VM_WARN_ON(err > 0);

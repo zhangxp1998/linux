@@ -287,8 +287,10 @@ extern bool __tlb_remove_page_size(struct mmu_gather *tlb, struct page *page,
 		bool delay_rmap, int page_size);
 bool __tlb_remove_folio_pages(struct mmu_gather *tlb, struct page *page,
 		unsigned int nr_pages, bool delay_rmap);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 bool __tlb_remove_folio_refs(struct mmu_gather *tlb, struct folio *folio,
 			     unsigned int nr_refs, bool delay_rmap);
+#endif
 
 #ifdef CONFIG_SMP
 /*

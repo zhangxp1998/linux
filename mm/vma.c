@@ -392,11 +392,13 @@ static int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	 * Callers normally do this before reaching __split_vma(), but keeping
 	 * the invariant here also covers direct split users.
 	 */
-	if (!IS_ALIGNED(addr, PAGE_SIZE)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm) && !IS_ALIGNED(addr, PAGE_SIZE)) {
 		err = ppps_depack_anon_range(vma->vm_mm, addr, addr + 1, false);
 		if (err)
 			return err;
 	}
+#endif
 
 	new = vm_area_dup(vma);
 	if (!new)
@@ -1403,9 +1405,13 @@ int do_vmi_align_munmap(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	struct vma_munmap_struct vms;
 	int error;
 
-	error = ppps_depack_anon_range(mm, start, end, false);
-	if (error)
-		goto gather_failed;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(mm)) {
+		error = ppps_depack_anon_range(mm, start, end, false);
+		if (error)
+			goto gather_failed;
+	}
+#endif
 
 	init_vma_munmap(&vms, vmi, vma, start, end, uf, unlock);
 	error = vms_gather_munmap_vmas(&vms, &mas_detach);
@@ -1487,8 +1493,10 @@ static struct vm_area_struct *vma_modify(struct vma_merge_struct *vmg)
 	unsigned long start = vmg->start;
 	unsigned long end = vmg->end;
 	struct vm_area_struct *merged;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	bool depack_all;
 	int err;
+#endif
 
 	/*
 	 * A packed anonymous tuple must never straddle VMAs.  Depack tuples at
@@ -1496,11 +1504,15 @@ static struct vm_area_struct *vma_modify(struct vma_merge_struct *vmg)
 	 * Facilities with per-process-page state need singleton folios across
 	 * the complete modified range.
 	 */
-	depack_all = vmg->flags &
-		(VM_LOCKED | VM_MERGEABLE | VM_MTE | __VM_UFFD_FLAGS);
-	err = ppps_depack_anon_range(vma->vm_mm, start, end, depack_all);
-	if (err)
-		return ERR_PTR(err);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm)) {
+		depack_all = vmg->flags &
+			(VM_LOCKED | VM_MERGEABLE | VM_MTE | __VM_UFFD_FLAGS);
+		err = ppps_depack_anon_range(vma->vm_mm, start, end, depack_all);
+		if (err)
+			return ERR_PTR(err);
+	}
+#endif
 
 	/* First, try to merge. */
 	merged = vma_merge_existing_range(vmg);

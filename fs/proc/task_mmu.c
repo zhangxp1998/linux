@@ -901,6 +901,7 @@ static void smaps_page_accumulate(struct mem_size_stats *mss,
 	}
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 /*
  * A packed anonymous mapping has one PTE for every process-page slice of the
  * same native order-0 folio.  folio_mapcount() counts those PTEs separately,
@@ -927,6 +928,7 @@ static int smaps_ppps_packed_swap_mapcount(pte_t pte, int mapcount)
 	mapcount = max(mapcount, 1);
 	return DIV_ROUND_UP(mapcount, (int)PPPS_SLICES_PER_PAGE);
 }
+#endif
 
 static void smaps_account(struct mem_size_stats *mss, struct mm_struct *mm,
 		struct page *page, bool compound, bool young, bool dirty,
@@ -1031,6 +1033,7 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 	bool present = false, young = false, dirty = false;
 	pte_t ptent = ptep_get(pte);
 	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
+	int precise_mapcount = -1;
 
 	if (pte_present(ptent)) {
 		page = vm_normal_page(vma, addr, ptent);
@@ -1045,7 +1048,10 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 
 			mss->swap += page_size;
 			mapcount = swp_swapcount(swpent);
-			mapcount = smaps_ppps_packed_swap_mapcount(ptent, mapcount);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+			if (ppps_mm_is_compat(vma->vm_mm))
+				mapcount = smaps_ppps_packed_swap_mapcount(ptent, mapcount);
+#endif
 			if (mapcount >= 2) {
 				u64 pss_delta = (u64)page_size << PSS_SHIFT;
 
@@ -1070,9 +1076,13 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 	if (!page)
 		return;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm))
+		precise_mapcount =
+			smaps_ppps_packed_anon_mapcount(page_folio(page));
+#endif
 	smaps_account(mss, vma->vm_mm, page, false, young, dirty, locked,
-		      present,
-		      smaps_ppps_packed_anon_mapcount(page_folio(page)));
+		      present, precise_mapcount);
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE

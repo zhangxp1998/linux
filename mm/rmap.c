@@ -90,7 +90,9 @@
 #include <trace/hooks/mm.h>
 
 #include "internal.h"
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 #include "ppps.h"
+#endif
 
 static struct kmem_cache *anon_vma_cachep;
 static struct kmem_cache *anon_vma_chain_cachep;
@@ -823,10 +825,12 @@ folio_rmap_nr_ptes(struct folio *folio, struct vm_area_struct *vma)
 	 * Ordinary compat anonymous folios remain singleton mappings.  Only a
 	 * folio explicitly marked packed spans all process-sized slices.
 	 */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (ppps_mm_is_compat(vma->vm_mm) &&
 	    (!folio_test_anon(folio) ||
 	     folio_test_ppps_packed_anon(folio)))
 		return folio_size(folio) >> MM_PAGE_SHIFT(vma->vm_mm);
+#endif
 
 	return folio_nr_pages(folio);
 }
@@ -1271,11 +1275,14 @@ static void __page_check_anon_rmap(struct folio *folio, struct page *page,
 	 */
 	VM_BUG_ON_FOLIO(folio_anon_vma(folio)->root != vma->anon_vma->root,
 			folio);
-	if (folio_test_ppps_packed_anon(folio))
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm) &&
+	    folio_test_ppps_packed_anon(folio))
 		VM_WARN_ON_ONCE(address_index < folio_index ||
 				address_index >=
 				folio_index + PPPS_SLICES_PER_PAGE);
 	else
+#endif
 		VM_WARN_ON_ONCE(folio_index != address_index);
 }
 
@@ -1396,7 +1403,7 @@ void folio_add_anon_rmap_pmd(struct folio *folio, struct page *page,
 }
 
 /**
- * folio_add_new_anon_rmap_ptes - Add PTE mappings to a new anonymous folio.
+ * folio_add_new_anon_rmap - Add mapping to a new anonymous folio.
  * @folio:	The folio to add the mapping to.
  * @vma:	the vm area in which the mapping is added
  * @address:	the user virtual address mapped
@@ -1410,27 +1417,24 @@ void folio_add_anon_rmap_pmd(struct folio *folio, struct page *page,
  *
  * If the folio is pmd-mappable, it is accounted as a THP.
  */
-void folio_add_new_anon_rmap_ptes(struct folio *folio,
-				  struct vm_area_struct *vma,
-				  unsigned long address, int nr_ptes,
-				  rmap_t flags)
+void
+folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
+			unsigned long address, rmap_t flags)
 {
 	const int nr = folio_nr_pages(folio);
 	const bool exclusive = flags & RMAP_EXCLUSIVE;
-	const bool ppps_packed = ppps_mm_is_compat(vma->vm_mm) &&
-		vma_is_anonymous(vma) && !folio_test_large(folio) &&
-		nr_ptes == PPPS_SLICES_PER_PAGE;
+	int nr_mappings = nr;
 	int nr_pmdmapped = 0;
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(vma->vm_mm))
+		nr_mappings = ppps_anon_folio_nr_pages(folio);
+#endif
 
 	VM_WARN_ON_FOLIO(folio_test_hugetlb(folio), folio);
 	VM_WARN_ON_FOLIO(!exclusive && !folio_test_locked(folio), folio);
-	VM_WARN_ON_ONCE(nr_ptes <= 0);
-	VM_WARN_ON_FOLIO(nr_ptes != nr &&
-			 (!ppps_mm_is_compat(vma->vm_mm) ||
-			  !vma_is_anonymous(vma) || folio_test_large(folio) ||
-			  nr_ptes != PPPS_SLICES_PER_PAGE), folio);
 	VM_BUG_ON_VMA(address < vma->vm_start ||
-			address + (nr_ptes << MM_PAGE_SHIFT(vma->vm_mm)) >
+			address + (nr_mappings << MM_PAGE_SHIFT(vma->vm_mm)) >
 			vma->vm_end, vma);
 
 	/*
@@ -1440,12 +1444,10 @@ void folio_add_new_anon_rmap_ptes(struct folio *folio,
 	if (!folio_test_swapbacked(folio) && !(vma->vm_flags & VM_DROPPABLE))
 		__folio_set_swapbacked(folio);
 	__folio_set_anon(folio, vma, address, exclusive);
-	if (ppps_packed)
-		folio_set_ppps_packed_anon(folio);
 
 	if (likely(!folio_test_large(folio))) {
-		/* One mapcount for every PTE; the counter starts at -1. */
-		atomic_set(&folio->_mapcount, nr_ptes - 1);
+		/* increment count (starts at -1) */
+		atomic_set(&folio->_mapcount, nr_mappings - 1);
 		if (exclusive)
 			SetPageAnonExclusive(&folio->page);
 	} else if (!folio_test_pmd_mappable(folio)) {
@@ -1474,63 +1476,14 @@ void folio_add_new_anon_rmap_ptes(struct folio *folio,
 		nr_pmdmapped = nr;
 	}
 
+	VM_WARN_ON_ONCE(address < vma->vm_start ||
+			address +
+			(nr_mappings << MM_PAGE_SHIFT(vma->vm_mm)) > vma->vm_end);
+
 	__folio_mod_stat(folio, nr, nr_pmdmapped);
 	mod_mthp_stat(folio_order(folio), MTHP_STAT_NR_ANON, 1);
 	trace_android_vh_page_add_new_anon_rmap(&folio->page, vma, address);
 }
-
-void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
-			     unsigned long address, rmap_t flags)
-{
-	int nr_ptes = folio_nr_pages(folio);
-
-	folio_add_new_anon_rmap_ptes(folio, vma, address, nr_ptes, flags);
-}
-
-void folio_remove_rmap_ptes_same_page(struct folio *folio, int nr_ptes,
-				      struct vm_area_struct *vma)
-{
-	bool last;
-
-	VM_WARN_ON_FOLIO(!folio_test_anon(folio) || folio_test_large(folio),
-			 folio);
-	VM_WARN_ON_FOLIO(!ppps_mm_is_compat(vma->vm_mm) ||
-			 nr_ptes != PPPS_SLICES_PER_PAGE, folio);
-
-	last = atomic_add_negative(-nr_ptes, &folio->_mapcount);
-	if (last) {
-		folio_clear_ppps_packed_anon(folio);
-		__folio_mod_stat(folio, -1, 0);
-	}
-	trace_android_vh_folio_remove_rmap(folio, &folio->page, 1,
-					   RMAP_LEVEL_PTE);
-	trace_android_vh_folio_remove_rmap_ptes(folio);
-	munlock_vma_folio(folio, vma);
-}
-
-/*
- * Duplicate several process PTEs which all refer to different slices of the
- * same native order-0 folio.  Generic rmap helpers interpret nr_pages as
- * struct-page count and therefore cannot represent this PPPS mapping shape.
- */
-int folio_try_dup_anon_rmap_ptes_same_page(struct folio *folio, int nr_ptes,
-					   struct vm_area_struct *src_vma)
-{
-	VM_WARN_ON_FOLIO(!folio_test_anon(folio) || folio_test_large(folio),
-			 folio);
-	VM_WARN_ON_FOLIO(!ppps_mm_is_compat(src_vma->vm_mm) ||
-			 nr_ptes != PPPS_SLICES_PER_PAGE, folio);
-	VM_WARN_ON_FOLIO(!folio_test_ppps_packed_anon(folio), folio);
-
-	if (PageAnonExclusive(&folio->page)) {
-		if (unlikely(folio_needs_cow_for_dma(src_vma, folio)))
-			return -EBUSY;
-		ClearPageAnonExclusive(&folio->page);
-	}
-	atomic_add(nr_ptes, &folio->_mapcount);
-	return 0;
-}
-
 static __always_inline void __folio_add_file_rmap(struct folio *folio,
 		struct page *page, int nr_pages, struct vm_area_struct *vma,
 		enum rmap_level level)
@@ -1745,184 +1698,6 @@ void folio_remove_rmap_pmd(struct folio *folio, struct page *page,
 #endif
 }
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-/*
- * Discard a complete lazy-free packed tuple as one physical unit.  If a PTE
- * was redirtied or an extra reference appeared after MADV_FREE, restore the
- * entire tuple and make it swap-backed again, matching the generic lazy-free
- * failure semantics without ever exposing a partial packed mapping.
- */
-static int
-try_to_unmap_ppps_packed_lazyfree(struct folio *folio,
-				  struct vm_area_struct *vma,
-				  unsigned long address, pte_t *ptep)
-{
-	struct mm_struct *mm = vma->vm_mm;
-	unsigned long base = ALIGN_DOWN(address, PAGE_SIZE);
-	unsigned int slice = (address - base) >> PAGE_SHIFT_COMPAT;
-	pte_t old_ptes[PPPS_SLICES_PER_PAGE];
-	pte_t *base_ptep = ptep - slice;
-	int ref_count, map_count;
-	unsigned int i;
-
-	if (userfaultfd_armed(vma) || folio_test_swapbacked(folio) ||
-	    !ppps_anon_pte_is_packed(vma, folio, address, ptep))
-		return -EBUSY;
-
-	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-		unsigned long addr = base + i * PAGE_SIZE_COMPAT;
-
-		old_ptes[i] = ptep_get(base_ptep + i);
-		flush_cache_page(vma, addr, pte_pfn(old_ptes[i]));
-		old_ptes[i] = ptep_clear_flush(vma, addr, base_ptep + i);
-		if (pte_dirty(old_ptes[i]))
-			folio_mark_dirty(folio);
-	}
-
-	/* Pairs with the lockless GUP PTE recheck, as in the generic path. */
-	smp_mb();
-	ref_count = folio_ref_count(folio);
-	map_count = folio_mapcount(folio);
-	/* Order the refcount read before testing whether the folio is dirty. */
-	smp_rmb();
-
-	if (map_count == PPPS_SLICES_PER_PAGE &&
-	    ref_count == 1 + map_count && !folio_test_dirty(folio)) {
-		update_hiwater_rss(mm);
-		add_mm_counter(mm, MM_ANONPAGES, -folio_nr_pages(folio));
-		folio_remove_rmap_ptes_same_page(folio,
-						 PPPS_SLICES_PER_PAGE, vma);
-		folio_ref_sub(folio, PPPS_SLICES_PER_PAGE);
-		return 0;
-	}
-
-	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
-		set_pte_at(mm, base + i * PAGE_SIZE_COMPAT,
-			   base_ptep + i, old_ptes[i]);
-	folio_set_swapbacked(folio);
-	return -EBUSY;
-}
-
-/*
- * Replace a complete packed tuple with four references to one native swap
- * slot. Each PTE carries only the packed marker; its slice is implicit in
- * the virtual address. The invalidations must be immediate: deferring any
- * one of them allows a stale writable TLB entry to modify the folio after it
- * has become visible to swap writeback.
- */
-static int
-try_to_unmap_ppps_packed_anon(struct folio *folio,
-			      struct vm_area_struct *vma,
-			      unsigned long address, pte_t *ptep)
-{
-	struct mm_struct *mm = vma->vm_mm;
-	unsigned long base = ALIGN_DOWN(address, PAGE_SIZE);
-	unsigned int slice = (address - base) >> PAGE_SHIFT_COMPAT;
-	pte_t old_ptes[PPPS_SLICES_PER_PAGE];
-	swp_entry_t entry;
-	bool anon_exclusive = PageAnonExclusive(&folio->page);
-	pte_t *base_ptep = ptep - slice;
-	int duplicates = 0;
-	unsigned int i;
-
-	/*
-	 * A packed folio may return to one complete tuple after the other fork
-	 * owners COW or unmap it, while still carrying shared anon-rmap state.
-	 * Do not infer exclusive ownership from mapcount == four: reclaim and
-	 * swap need an explicitly exclusive tuple until that transition has a
-	 * fully validated ownership handoff.
-	 */
-	if (!anon_exclusive)
-		return -EBUSY;
-
-	if (!folio_test_swapbacked(folio))
-		return try_to_unmap_ppps_packed_lazyfree(folio, vma,
-							 address, ptep);
-	if (userfaultfd_armed(vma) || PageHWPoison(&folio->page) ||
-	    unlikely(folio_test_swapbacked(folio) !=
-		     folio_test_swapcache(folio)) ||
-	    !ppps_anon_pte_is_packed(vma, folio, address, ptep))
-		return -EBUSY;
-	entry = page_swap_entry(&folio->page);
-
-	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-		old_ptes[i] = ptep_get(base_ptep + i);
-		if (pte_unused(old_ptes[i]))
-			return -EBUSY;
-	}
-
-	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-		unsigned long addr = base + i * PAGE_SIZE_COMPAT;
-
-		flush_cache_page(vma, addr, pte_pfn(old_ptes[i]));
-		old_ptes[i] = ptep_clear_flush(vma, addr, base_ptep + i);
-		if (pte_dirty(old_ptes[i]))
-			folio_mark_dirty(folio);
-	}
-
-	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-		unsigned long addr = base + i * PAGE_SIZE_COMPAT;
-
-		if (swap_duplicate(entry) < 0)
-			goto restore;
-		duplicates++;
-		if (arch_unmap_one(mm, vma, addr, old_ptes[i]) < 0)
-			goto restore;
-	}
-
-	/* See folio_try_share_anon_rmap_pte(): clear all aliases first. */
-	if (anon_exclusive &&
-	    folio_try_share_anon_rmap_pte(folio, &folio->page))
-		goto restore;
-
-	if (list_empty(&mm->mmlist)) {
-		spin_lock(&mmlist_lock);
-		if (list_empty(&mm->mmlist))
-			list_add(&mm->mmlist, &init_mm.mmlist);
-		spin_unlock(&mmlist_lock);
-	}
-
-	update_hiwater_rss(mm);
-	add_mm_counter(mm, MM_ANONPAGES, -folio_nr_pages(folio));
-	add_mm_counter(mm, MM_SWAPENTS, folio_nr_pages(folio));
-	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-		unsigned long addr = base + i * PAGE_SIZE_COMPAT;
-		pte_t swp_pte = swp_entry_to_pte(entry);
-
-		swp_pte = pte_swp_mk_ppps_packed(swp_pte);
-		if (anon_exclusive)
-			swp_pte = pte_swp_mkexclusive(swp_pte);
-		if (pte_soft_dirty(old_ptes[i]))
-			swp_pte = pte_swp_mksoft_dirty(swp_pte);
-		if (pte_uffd_wp(old_ptes[i]))
-			swp_pte = pte_swp_mkuffd_wp(swp_pte);
-		set_pte_at(mm, addr, base_ptep + i, swp_pte);
-	}
-
-	folio_remove_rmap_ptes_same_page(folio, PPPS_SLICES_PER_PAGE, vma);
-	folio_ref_sub(folio, PPPS_SLICES_PER_PAGE);
-	return 0;
-
-restore:
-	while (duplicates--)
-		swap_free(entry);
-	if (anon_exclusive)
-		SetPageAnonExclusive(&folio->page);
-	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
-		set_pte_at(mm, base + i * PAGE_SIZE_COMPAT,
-			   base_ptep + i, old_ptes[i]);
-	flush_tlb_range(vma, base, base + PAGE_SIZE);
-	return -EBUSY;
-}
-#else
-static int
-try_to_unmap_ppps_packed_anon(struct folio *folio,
-			      struct vm_area_struct *vma,
-			      unsigned long address, pte_t *ptep)
-{
-	return -EBUSY;
-}
-#endif
 
 /*
  * @arg: enum ttu_flags will be passed to this argument
@@ -1960,10 +1735,12 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 	 * try_to_unmap() must hold a reference on the folio.
 	 */
 	range.end = vma_address_end(&pvmw);
-	if (folio_test_ppps_packed_anon(folio)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(mm) && folio_test_ppps_packed_anon(folio)) {
 		address = ALIGN_DOWN(address, PAGE_SIZE);
 		range.end = address + PAGE_SIZE;
 	}
+#endif
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma->vm_mm,
 				address, range.end);
 	if (folio_test_hugetlb(folio)) {
@@ -2041,12 +1818,15 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 		address = pvmw.address;
 		anon_exclusive = folio_test_anon(folio) &&
 				 PageAnonExclusive(subpage);
-		if (folio_test_ppps_packed_anon(folio)) {
-			ret = !try_to_unmap_ppps_packed_anon(folio, vma,
-							     address, pvmw.pte);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		if (ppps_mm_is_compat(mm) &&
+		    folio_test_ppps_packed_anon(folio)) {
+			ret = !ppps_anon_try_to_unmap(folio, vma, address,
+						       pvmw.pte);
 			page_vma_mapped_walk_done(&pvmw);
 			break;
 		}
+#endif
 
 		if (folio_test_hugetlb(folio)) {
 			bool anon = folio_test_anon(folio);
@@ -2402,12 +2182,15 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 		/* Unexpected PMD-mapped THP? */
 		VM_BUG_ON_FOLIO(!pvmw.pte, folio);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		/* See the packed-anon swap guard in try_to_unmap_one(). */
-		if (folio_test_ppps_packed_anon(folio)) {
+		if (ppps_mm_is_compat(vma->vm_mm) &&
+		    folio_test_ppps_packed_anon(folio)) {
 			ret = false;
 			page_vma_mapped_walk_done(&pvmw);
 			break;
 		}
+#endif
 
 		pfn = pte_pfn(ptep_get(pvmw.pte));
 
@@ -2969,8 +2752,12 @@ static void rmap_walk_anon(struct folio *folio,
 	 * the anon-vma interval-tree lookup; otherwise a VMA which contains
 	 * only a later slice can be skipped after a split.
 	 */
-	nr_pages = folio_test_ppps_packed_anon(folio) ?
-		PPPS_SLICES_PER_PAGE : folio_nr_pages(folio);
+	nr_pages = folio_nr_pages(folio);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	/* The VMA is not known until after this logical range is chosen. */
+	if (folio_test_ppps_packed_anon(folio))
+		nr_pages = ppps_anon_folio_nr_pages(folio);
+#endif
 	pgoff_end = pgoff_start + nr_pages - 1;
 	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,
 			pgoff_start, pgoff_end) {

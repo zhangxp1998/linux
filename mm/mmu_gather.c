@@ -211,12 +211,14 @@ bool __tlb_remove_folio_pages(struct mmu_gather *tlb, struct page *page,
 					     PAGE_SIZE, false);
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 bool __tlb_remove_folio_refs(struct mmu_gather *tlb, struct folio *folio,
 			     unsigned int nr_refs, bool delay_rmap)
 {
 	return __tlb_remove_folio_pages_size(tlb, &folio->page, nr_refs,
 					     delay_rmap, PAGE_SIZE, true);
 }
+#endif
 
 bool __tlb_remove_page_size(struct mmu_gather *tlb, struct page *page,
 		bool delay_rmap, int page_size)

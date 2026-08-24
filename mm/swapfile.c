@@ -34,7 +34,9 @@
 #include <linux/capability.h>
 #include <linux/syscalls.h>
 #include <linux/memcontrol.h>
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 #include <linux/kmsan.h>
+#endif
 #include <linux/poll.h>
 #include <linux/oom.h>
 #include <linux/swapfile.h>
@@ -50,7 +52,9 @@
 #include <linux/swapops.h>
 #include <linux/swap_cgroup.h>
 #include "internal.h"
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 #include "ppps.h"
+#endif
 #include "swap.h"
 #include <trace/hooks/bl_hib.h>
 #include <trace/hooks/mm.h>
@@ -2084,6 +2088,7 @@ static inline int pte_same_as_swp(pte_t pte, pte_t swp_pte)
 	return pte_same(pte_swp_clear_flags(pte), swp_pte);
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 static struct folio *
 copy_unuse_ppps(struct vm_area_struct *vma, struct folio *src,
 		unsigned long addr)
@@ -2112,6 +2117,7 @@ copy_unuse_ppps(struct vm_area_struct *vma, struct folio *src,
 	__folio_mark_uptodate(dst);
 	return dst;
 }
+#endif
 
 /*
  * No need to decide whether this PTE shares the swap entry with others,
@@ -2124,20 +2130,25 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	struct page *page;
 	struct folio *swapcache;
 	spinlock_t *ptl;
-	pte_t *pte = NULL, new_pte, old_pte;
+	pte_t *pte, new_pte, old_pte;
 	bool hwpoisoned = false;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	bool packed;
 	unsigned int packed_slice;
+#endif
 	int ret = 1;
 
 	swapcache = folio;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	pte = NULL;
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (unlikely(!pte ||
 		     !pte_same_as_swp(ptep_get(pte), swp_entry_to_pte(entry)))) {
 		ret = 0;
 		goto out;
 	}
-	packed = pte_swp_ppps_packed(ptep_get(pte));
+	packed = ppps_mm_is_compat(vma->vm_mm) &&
+		pte_swp_ppps_packed(ptep_get(pte));
 	packed_slice = offset_in_page(addr) >> PAGE_SHIFT_COMPAT;
 	pte_unmap_unlock(pte, ptl);
 	pte = NULL;
@@ -2159,37 +2170,50 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 			if (unlikely(!folio))
 				return -ENOMEM;
 		}
-	} else {
-		folio = ksm_might_need_to_copy(folio, vma, addr);
-		if (unlikely(!folio)) {
-			return -ENOMEM;
-		} else if (unlikely(folio == ERR_PTR(-EHWPOISON))) {
-			hwpoisoned = true;
-			folio = swapcache;
-		}
+		goto folio_prepared;
 	}
+#endif
+	folio = ksm_might_need_to_copy(folio, vma, addr);
+	if (unlikely(!folio)) {
+		return -ENOMEM;
+	} else if (unlikely(folio == ERR_PTR(-EHWPOISON))) {
+		hwpoisoned = true;
+		folio = swapcache;
+	}
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+folio_prepared:
 	if (packed && folio != swapcache)
 		page = &folio->page;
 	else
+#endif
 		page = folio_file_page(folio, swp_offset(entry));
 	if (PageHWPoison(page))
 		hwpoisoned = true;
 
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (unlikely(!pte || !pte_same_as_swp(ptep_get(pte),
-					swp_entry_to_pte(entry)) ||
-		     pte_swp_ppps_packed(ptep_get(pte)) != packed)) {
+					swp_entry_to_pte(entry)))) {
 		ret = 0;
 		goto out;
 	}
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (unlikely(pte_swp_ppps_packed(ptep_get(pte)) != packed)) {
+		ret = 0;
+		goto out;
+	}
+#endif
 
 	old_pte = ptep_get(pte);
 
 	if (unlikely(hwpoisoned || !folio_test_uptodate(folio))) {
 		swp_entry_t swp_entry;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		if (!packed || IS_ALIGNED(addr, PAGE_SIZE))
 			dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
+#else
+		dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
+#endif
 		if (hwpoisoned) {
 			swp_entry = make_hwpoison_entry(page);
 		} else {
@@ -2205,14 +2229,20 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	 * when reading from swap. This metadata may be indexed by swap entry
 	 * so this must be called before swap_free().
 	 */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (packed)
 		arch_swap_restore_ppps(folio_swap(entry, folio), folio,
 				       packed_slice);
 	else
+#endif
 		arch_swap_restore(folio_swap(entry, folio), folio);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (!packed || IS_ALIGNED(addr, PAGE_SIZE))
 		dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
+#else
+		dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
+#endif
 	inc_mm_counter(vma->vm_mm, MM_ANONPAGES);
 	folio_get(folio);
 	if (folio == swapcache) {

@@ -40,7 +40,9 @@
 #include <asm/tlb.h>
 
 #include "internal.h"
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 #include "ppps.h"
+#endif
 #include "swap.h"
 
 /*
@@ -517,8 +519,11 @@ restart:
 		 * when a PPPS range covers only some of its slices.
 		 */
 		folio_nr_ptes = madvise_folio_nr_ptes(mm, folio);
-		if (ppps_anon_pte_is_packed(vma, folio, addr, pte))
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		if (ppps_mm_is_compat(mm) &&
+		    ppps_anon_pte_is_packed(vma, folio, addr, pte))
 			folio_nr_ptes = PPPS_SLICES_PER_PAGE;
+#endif
 		if (folio_nr_ptes > 1) {
 			bool any_young;
 
@@ -560,9 +565,12 @@ restart:
 			}
 		}
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		/* Packed tuples remain resident until packed swap is made safe. */
-		if (pageout && folio_test_ppps_packed_anon(folio))
+		if (ppps_mm_is_compat(mm) && pageout &&
+		    folio_test_ppps_packed_anon(folio))
 			continue;
+#endif
 
 		/*
 		 * Do not interfere with other mappings of this folio and
@@ -729,7 +737,6 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 	struct folio *folio;
 	int folio_nr_ptes;
 	int nr_swap = 0;
-	bool drain_lazyfree = false;
 	unsigned long next;
 	int nr, max_nr;
 
@@ -745,7 +752,9 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
 	for (; addr != end; pte += nr, addr += MM_PAGE_SIZE(mm) * nr) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		bool ppps_packed = false;
+#endif
 
 		nr = 1;
 		ptent = ptep_get(pte);
@@ -759,13 +768,15 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 */
 		if (!pte_present(ptent)) {
 			swp_entry_t entry;
-			int packed_nr;
+			int packed_nr = 0;
 
 			entry = pte_to_swp_entry(ptent);
 			if (!non_swap_entry(entry)) {
 				max_nr = (end - addr) / MM_PAGE_SIZE(mm);
-				packed_nr = ppps_swap_pte_batch(pte, max_nr, ptent,
-								addr);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+				if (ppps_mm_is_compat(mm))
+					packed_nr = ppps_swap_pte_batch(pte, max_nr, ptent,
+									addr);
 				if (packed_nr) {
 					int i;
 
@@ -774,7 +785,9 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 						nr_swap--;
 					for (i = 0; i < nr; i++)
 						free_swap_and_cache(entry);
-				} else {
+				}
+#endif
+				if (!packed_nr) {
 					nr = swap_pte_batch(pte, max_nr, ptent);
 					nr_swap -= nr;
 					free_swap_and_cache_nr(entry, nr);
@@ -798,10 +811,13 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 * when a PPPS range covers only some of its slices.
 		 */
 		folio_nr_ptes = madvise_folio_nr_ptes(mm, folio);
-		if (ppps_anon_pte_is_packed(vma, folio, addr, pte)) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		if (ppps_mm_is_compat(mm) &&
+		    ppps_anon_pte_is_packed(vma, folio, addr, pte)) {
 			folio_nr_ptes = PPPS_SLICES_PER_PAGE;
 			ppps_packed = true;
 		}
+#endif
 		if (folio_nr_ptes > 1) {
 			bool any_young, any_dirty;
 
@@ -867,11 +883,12 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 			clear_young_dirty_ptes(vma, addr, pte, nr, cydp_flags);
 			tlb_remove_tlb_entries(tlb, pte, nr, addr);
 		}
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		/* Do not create an unreclaimable lazy-free packed tuple. */
 		if (ppps_packed)
 			continue;
+#endif
 		folio_mark_lazyfree(folio);
-		drain_lazyfree |= ppps_packed;
 	}
 
 	if (nr_swap)
@@ -880,9 +897,6 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		arch_leave_lazy_mmu_mode();
 		pte_unmap_unlock(start_pte, ptl);
 	}
-	/* Make a packed folio's single batched LRU move visible immediately. */
-	if (drain_lazyfree)
-		lru_add_drain();
 	cond_resched();
 
 	return 0;
@@ -1955,6 +1969,7 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	 * The page-table walkers skip any partial tuple created by a concurrent
 	 * fault after this pre-pass.
 	 */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (ppps_mm_is_compat(mm) &&
 	    (behavior == MADV_FREE || behavior == MADV_DONTNEED ||
 	     behavior == MADV_DONTNEED_LOCKED ||
@@ -1969,6 +1984,7 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 		if (error)
 			return error;
 	}
+#endif
 
 	error = madvise_lock(mm, &madv_behavior);
 	if (error)

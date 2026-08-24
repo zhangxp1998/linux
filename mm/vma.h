@@ -277,8 +277,10 @@ int do_vmi_munmap(struct vma_iterator *vmi, struct mm_struct *mm,
 		  unsigned long start, size_t len, struct list_head *uf,
 		  bool unlock);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 int ppps_depack_anon_range(struct mm_struct *mm, unsigned long start,
 			   unsigned long end, bool all);
+#endif
 
 void remove_vma(struct vm_area_struct *vma);
 

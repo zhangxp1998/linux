@@ -185,8 +185,10 @@ bool add_to_swap(struct folio *folio)
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 	VM_BUG_ON_FOLIO(!folio_test_uptodate(folio), folio);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (folio_test_ppps_packed_anon(folio))
 		return false;
+#endif
 
 	entry = folio_alloc_swap(folio);
 	if (!entry.val)

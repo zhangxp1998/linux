@@ -1171,6 +1171,7 @@ retry:
 		/* Account the number of base pages */
 		sc->nr_scanned += nr_pages;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		/*
 		 * Packed PPPS swap/reclaim is not yet safe under the combined fork,
 		 * pageout and dumpstate workload.  Keep the tuple resident while
@@ -1178,6 +1179,7 @@ retry:
 		 */
 		if (folio_test_ppps_packed_anon(folio))
 			goto activate_locked;
+#endif
 
 		if (unlikely(!folio_evictable(folio)))
 			goto activate_locked;

@@ -45,9 +45,12 @@ static int process_vm_rw_pages(struct page **pages,
 		size_t copy = page_size - offset;
 		size_t copied;
 
+		/* Packed anonymous folios only exist when PPPS is enabled. */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		if (folio_test_ppps_packed_anon(page_folio(page)))
 			page_offset = offset_in_page(addr) + offset;
 		else
+#endif
 			page_offset = slice_idx * page_size + offset;
 
 		if (copy > len)
@@ -62,7 +65,9 @@ static int process_vm_rw_pages(struct page **pages,
 		if (copied < copy && iov_iter_count(iter))
 			return -EFAULT;
 		offset = 0;
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		addr += page_size;
+#endif
 		if (advance_slice)
 			slice_idx = (slice_idx + 1) & PPPS_SLICE_MASK;
 	}

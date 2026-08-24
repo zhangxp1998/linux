@@ -1168,7 +1168,8 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 		ret = -EFAULT;
 		goto out;
 	}
-	{
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (ppps_mm_is_compat(mm)) {
 		bool depack_all =
 			(flags & MREMAP_FIXED) ||
 			((flags & MREMAP_DONTUNMAP) && new_addr);
@@ -1177,9 +1178,10 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			     offset_in_page(addr) != offset_in_page(new_addr);
 		ret = ppps_depack_anon_range(mm, addr, addr + old_len,
 					     depack_all);
+		if (ret)
+			goto out;
 	}
-	if (ret)
-		goto out;
+#endif
 
 	if (is_vm_hugetlb_page(vma)) {
 		struct hstate *h __maybe_unused = hstate_vma(vma);

@@ -1288,7 +1288,8 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 }
 #endif
 
-#ifndef __HAVE_ARCH_SWAP_RESTORE_PPPS
+#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && \
+	!defined(__HAVE_ARCH_SWAP_RESTORE_PPPS)
 static inline void
 arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
 		       unsigned int slice)

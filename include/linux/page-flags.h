@@ -552,8 +552,6 @@ FOLIO_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 	__FOLIO_SET_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 FOLIO_FLAG(ppps_packed_anon, FOLIO_HEAD_PAGE)
-#else
-FOLIO_FLAG_FALSE(ppps_packed_anon)
 #endif
 
 /*
