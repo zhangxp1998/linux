@@ -301,6 +301,7 @@ TEST_GEN_FILES += write_to_hugetlbfs
 endif
 
 TEST_PROGS := run_vmtests.sh
+TEST_GEN_PROGS += uffd_copy_tuple_ppps
 
 TEST_FILES := test_vmalloc.sh
 TEST_FILES += test_hmm.sh
