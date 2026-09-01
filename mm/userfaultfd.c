@@ -1329,6 +1329,119 @@ static struct folio *check_ptes_for_batched_move(struct vm_area_struct *src_vma,
 	return folio;
 }
 
+static __always_inline bool
+move_packed_tuple_ok(struct vm_area_struct *dst_vma,
+		     struct vm_area_struct *src_vma,
+		     unsigned long dst_addr, unsigned long src_addr,
+		     unsigned long len)
+{
+	vm_flags_t excluded = VM_MTE | VM_DROPPABLE | VM_LOCKED |
+			      VM_MERGEABLE;
+
+	if (!ppps_mm_is_compat(src_vma->vm_mm))
+		return false;
+	if (!IS_ALIGNED(src_addr, PAGE_SIZE) ||
+	    !IS_ALIGNED(dst_addr, PAGE_SIZE) || len < PAGE_SIZE)
+		return false;
+	if (src_addr < src_vma->vm_start ||
+	    src_addr + PAGE_SIZE > src_vma->vm_end ||
+	    dst_addr < dst_vma->vm_start ||
+	    dst_addr + PAGE_SIZE > dst_vma->vm_end)
+		return false;
+	if ((src_vma->vm_flags | dst_vma->vm_flags) & excluded)
+		return false;
+
+	return true;
+}
+
+/*
+ * Relocate one complete PPPS tuple without splitting its native folio.
+ * The caller holds a reference and the folio lock. Both page-table locks
+ * cover every PTE because native-page-aligned tuples cannot cross a PTE page.
+ */
+static long
+move_packed_ppps_tuple(struct mm_struct *mm,
+		       struct vm_area_struct *dst_vma,
+		       struct vm_area_struct *src_vma,
+		       unsigned long dst_addr, unsigned long src_addr,
+		       pte_t *dst_pte, pte_t *src_pte,
+		       pte_t orig_dst_pte, pte_t orig_src_pte,
+		       pmd_t *dst_pmd, pmd_t dst_pmdval,
+		       spinlock_t *dst_ptl, spinlock_t *src_ptl,
+		       struct folio **src_foliop, bool *ppps_depack)
+{
+	struct folio *folio = *src_foliop;
+	pte_t src_ptes[PPPS_SLICES_PER_PAGE];
+	long ret = -EAGAIN;
+	unsigned int i;
+
+	flush_cache_range(src_vma, src_addr, src_addr + PAGE_SIZE);
+	double_pt_lock(dst_ptl, src_ptl);
+	if (!is_pte_pages_stable(dst_pte, src_pte, orig_dst_pte,
+				 orig_src_pte, dst_pmd, dst_pmdval))
+		goto out;
+
+	if (!ppps_anon_pte_is_packed(src_vma, folio, src_addr, src_pte)) {
+		*ppps_depack = true;
+		goto out;
+	}
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		if (!pte_none(ptep_get(dst_pte + i))) {
+			/* Preserve ordinary MOVE's byte-accurate partial result. */
+			*ppps_depack = true;
+			goto out;
+		}
+		src_ptes[i] = ptep_get(src_pte + i);
+	}
+	if (folio_maybe_dma_pinned(folio) ||
+	    !PageAnonExclusive(&folio->page)) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	/* The four page-table mappings keep the folio alive from here. */
+	folio_put(*src_foliop);
+	*src_foliop = NULL;
+	arch_enter_lazy_mmu_mode();
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
+		ptep_get_and_clear(mm, src_addr + i * PAGE_SIZE_COMPAT,
+				   src_pte + i);
+
+	/* Fast GUP can acquire a pin while the present PTEs are being cleared. */
+	if (folio_maybe_dma_pinned(folio)) {
+		for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
+			set_pte_at(mm, src_addr + i * PAGE_SIZE_COMPAT,
+				   src_pte + i, src_ptes[i]);
+		ret = -EBUSY;
+		goto out_lazy;
+	}
+
+	folio_move_anon_rmap(folio, dst_vma);
+	folio->index = linear_page_index(dst_vma, dst_addr);
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		pte_t dst = pte_modify(src_ptes[i], dst_vma->vm_page_prot);
+
+#ifdef CONFIG_MEM_SOFT_DIRTY
+		dst = pte_mksoft_dirty(dst);
+#endif
+		if (pte_dirty(src_ptes[i]))
+			dst = pte_mkdirty(dst);
+		dst = pte_mkwrite(dst, dst_vma);
+		set_pte_at(mm, dst_addr + i * PAGE_SIZE_COMPAT,
+			   dst_pte + i, dst);
+	}
+	ret = PAGE_SIZE;
+
+out_lazy:
+	arch_leave_lazy_mmu_mode();
+	if (ret == PAGE_SIZE)
+		flush_tlb_range(src_vma, src_addr, src_addr + PAGE_SIZE);
+	folio_unlock(folio);
+out:
+	double_pt_unlock(dst_ptl, src_ptl);
+	return ret;
+}
+
 /*
  * Moves src folios to dst in a batch as long as they are not large, and can
  * successfully take the lock via folio_trylock().
@@ -1650,7 +1763,9 @@ retry:
 				goto out;
 			}
 			if (ppps_mm_is_compat(mm) &&
-			    folio_test_ppps_packed_anon(folio)) {
+			    folio_test_ppps_packed_anon(folio) &&
+			    !move_packed_tuple_ok(dst_vma, src_vma, dst_addr,
+						  src_addr, len)) {
 				spin_unlock(src_ptl);
 				*ppps_depack = true;
 				ret = -EAGAIN;
@@ -1707,11 +1822,21 @@ retry:
 			goto retry;
 		}
 
-		ret = move_present_ptes(mm, dst_vma, src_vma,
-					dst_addr, src_addr, dst_pte, src_pte,
-					orig_dst_pte, orig_src_pte, dst_pmd,
-					dst_pmdval, dst_ptl, src_ptl, &src_folio,
-					len, ppps_depack);
+		if (ppps_mm_is_compat(mm) &&
+		    folio_test_ppps_packed_anon(src_folio))
+			ret = move_packed_ppps_tuple(mm, dst_vma, src_vma,
+						     dst_addr, src_addr,
+						     dst_pte, src_pte,
+						     orig_dst_pte, orig_src_pte,
+						     dst_pmd, dst_pmdval,
+						     dst_ptl, src_ptl,
+						     &src_folio, ppps_depack);
+		else
+			ret = move_present_ptes(mm, dst_vma, src_vma,
+						dst_addr, src_addr, dst_pte, src_pte,
+						orig_dst_pte, orig_src_pte, dst_pmd,
+						dst_pmdval, dst_ptl, src_ptl,
+						&src_folio, len, ppps_depack);
 	} else {
 		struct folio *folio = NULL;
 

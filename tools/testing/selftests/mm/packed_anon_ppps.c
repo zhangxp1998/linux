@@ -33,6 +33,9 @@
 #define PAGEMAP_PFN_MASK ((1ULL << 55) - 1)
 #define DISCARD_GROUPS	8
 #define DEPACK_RACE_ATTEMPTS 1000
+#define MOVE_RACE_ITERATIONS 128
+#define MOVE_BENCH_TUPLES 256
+#define MOVE_BENCH_LENGTH (MOVE_BENCH_TUPLES * NATIVE_PAGE)
 
 static unsigned char *map_aligned(size_t size, unsigned char **reservation)
 {
@@ -49,22 +52,52 @@ static unsigned char *map_aligned(size_t size, unsigned char **reservation)
 	return (unsigned char *)aligned;
 }
 
-static void populate(unsigned char *base)
+static unsigned char *map_guarded_range(size_t size,
+					unsigned char **reservation)
+{
+	unsigned char *mapping;
+	unsigned char *base;
+
+	mapping = mmap(NULL, size + 2 * NATIVE_PAGE, PROT_NONE,
+		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (mapping == MAP_FAILED)
+		return MAP_FAILED;
+	base = (unsigned char *)(((uintptr_t)mapping + 2 * NATIVE_PAGE - 1) &
+				 ~(NATIVE_PAGE - 1));
+	if (mprotect(base, size, PROT_READ | PROT_WRITE)) {
+		munmap(mapping, size + 2 * NATIVE_PAGE);
+		return MAP_FAILED;
+	}
+	*reservation = mapping;
+	return base;
+}
+
+static void populate_pattern(unsigned char *base, unsigned char first)
 {
 	unsigned int i;
 
 	for (i = 0; i < SLICES; i++)
-		memset(base + i * PROCESS_PAGE, 0x31 + i, PROCESS_PAGE);
+		memset(base + i * PROCESS_PAGE, first + i, PROCESS_PAGE);
 }
 
-static bool verify(const unsigned char *base)
+static void populate(unsigned char *base)
+{
+	populate_pattern(base, 0x31);
+}
+
+static bool verify_pattern(const unsigned char *base, unsigned char first)
 {
 	unsigned long offset;
 
 	for (offset = 0; offset < NATIVE_PAGE; offset++)
-		if (base[offset] != 0x31 + offset / PROCESS_PAGE)
+		if (base[offset] != first + offset / PROCESS_PAGE)
 			return false;
 	return true;
+}
+
+static bool verify(const unsigned char *base)
+{
+	return verify_pattern(base, 0x31);
 }
 
 static bool verify_groups(const unsigned char *base, unsigned int groups)
@@ -109,6 +142,28 @@ static bool range_stat_bytes(const void *address, unsigned long length,
 	free(line);
 	fclose(smaps);
 	return found;
+}
+
+/* Sample process RssAnon without growing stdio or allocator state. */
+static long rss_anon_bytes(void)
+{
+	static char buffer[8192];
+	const char *value;
+	ssize_t length;
+	int fd;
+
+	fd = open("/proc/self/status", O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	length = read(fd, buffer, sizeof(buffer) - 1);
+	close(fd);
+	if (length <= 0)
+		return -1;
+	buffer[length] = '\0';
+	value = strstr(buffer, "RssAnon:");
+	if (!value)
+		return -1;
+	return strtol(value + strlen("RssAnon:"), NULL, 10) * 1024;
 }
 
 static bool packed_smaps_matches(const unsigned char *base,
@@ -299,9 +354,14 @@ static bool mremap_handles_packed_tuple(bool same_slice)
 	unsigned char *dst_base;
 	unsigned char *src;
 	unsigned char *dst;
-	uint64_t pfn[SLICES];
+	uint64_t pfn[SLICES] = {};
+	size_t mismatch = NATIVE_PAGE;
+	bool contents_ok;
+	bool pfns_ok;
 	void *moved;
 	bool passed = false;
+	unsigned int i;
+	int saved_errno;
 
 	src = map_aligned(2 * NATIVE_PAGE, &src_reservation);
 	dst_base = map_aligned(3 * NATIVE_PAGE, &dst_reservation);
@@ -312,10 +372,35 @@ static bool mremap_handles_packed_tuple(bool same_slice)
 	if (!read_pfns(src, pfn) || !same_pfn(pfn))
 		goto out;
 
+	errno = 0;
 	moved = mremap(src, NATIVE_PAGE, NATIVE_PAGE,
 		       MREMAP_MAYMOVE | MREMAP_FIXED, dst);
-	passed = moved == dst && verify(dst) && read_pfns(dst, pfn) &&
+	saved_errno = errno;
+	contents_ok = moved == dst && verify(dst);
+	if (!contents_ok && moved == dst) {
+		for (mismatch = 0; mismatch < NATIVE_PAGE; mismatch++)
+			if (dst[mismatch] !=
+			    0x31 + mismatch / PROCESS_PAGE)
+				break;
+	}
+	pfns_ok = contents_ok && read_pfns(dst, pfn);
+	passed = pfns_ok &&
 		 (same_slice ? same_pfn(pfn) : distinct_pfns(pfn));
+	if (!passed) {
+		ksft_print_msg("mremap diagnostic: same_slice=%d src=%p dst=%p\n",
+			       same_slice, src, dst);
+		ksft_print_msg("mremap diagnostic: moved=%p errno=%d contents=%d\n",
+			       moved, saved_errno, contents_ok);
+		ksft_print_msg("mremap diagnostic: mismatch=%zu actual=0x%02x\n",
+			       mismatch,
+			       mismatch < NATIVE_PAGE ? dst[mismatch] : 0);
+		ksft_print_msg("mremap diagnostic: expected=0x%02zx pfns=%d",
+			       0x31 + mismatch / PROCESS_PAGE, pfns_ok);
+		for (i = 0; i < SLICES; i++)
+			ksft_print_msg(" pfn[%u]=0x%llx", i,
+				       (unsigned long long)pfn[i]);
+		ksft_print_msg("\n");
+	}
 out:
 	if (src_reservation)
 		munmap(src_reservation, 3 * NATIVE_PAGE);
@@ -458,12 +543,278 @@ static bool concurrent_partial_madvise(void)
 	return true;
 }
 
+struct move_thread_args {
+	struct uffdio_move move;
+	pthread_barrier_t *barrier;
+	int result;
+	int error;
+	int uffd;
+};
+
+static void *move_tuple_thread(void *data)
+{
+	struct move_thread_args *args = data;
+
+	pthread_barrier_wait(args->barrier);
+	args->result = ioctl(args->uffd, UFFDIO_MOVE, &args->move);
+	args->error = errno;
+	return NULL;
+}
+
+static bool userfaultfd_tuple_move_races(int uffd)
+{
+	struct uffdio_register reg = {
+		.mode = UFFDIO_REGISTER_MODE_MISSING,
+	};
+	const size_t length = MOVE_RACE_ITERATIONS * NATIVE_PAGE;
+	unsigned char *src_a_reservation = NULL;
+	unsigned char *src_b_reservation = NULL;
+	unsigned char *dst_reservation = NULL;
+	unsigned char *src_a = MAP_FAILED;
+	unsigned char *src_b = MAP_FAILED;
+	unsigned char *dst = MAP_FAILED;
+	uint64_t pfn[SLICES];
+	bool passed = true;
+
+	src_a = map_aligned(length, &src_a_reservation);
+	src_b = map_aligned(length, &src_b_reservation);
+	dst = map_aligned(length, &dst_reservation);
+	if (src_a == MAP_FAILED || src_b == MAP_FAILED || dst == MAP_FAILED) {
+		passed = false;
+		goto out;
+	}
+	for (unsigned int i = 0; i < MOVE_RACE_ITERATIONS; i++) {
+		populate_pattern(src_a + i * NATIVE_PAGE, 0x31);
+		populate_pattern(src_b + i * NATIVE_PAGE, 0x71);
+	}
+	reg.range.start = (uintptr_t)dst;
+	reg.range.len = length;
+	if (ioctl(uffd, UFFDIO_REGISTER, &reg)) {
+		passed = false;
+		goto out;
+	}
+
+	for (unsigned int i = 0; i < MOVE_RACE_ITERATIONS; i++) {
+		unsigned char *cur_a = src_a + i * NATIVE_PAGE;
+		unsigned char *cur_b = src_b + i * NATIVE_PAGE;
+		unsigned char *cur_dst = dst + i * NATIVE_PAGE;
+		struct move_thread_args args[2] = {
+			{
+				.move = {
+					.dst = (uintptr_t)cur_dst,
+					.src = (uintptr_t)cur_a,
+					.len = NATIVE_PAGE,
+				},
+				.uffd = uffd,
+			},
+			{
+				.move = {
+					.dst = (uintptr_t)cur_dst,
+					.src = (uintptr_t)cur_b,
+					.len = NATIVE_PAGE,
+				},
+				.uffd = uffd,
+			},
+		};
+		pthread_barrier_t barrier;
+		pthread_t threads[2];
+		unsigned char *loser;
+		unsigned char first;
+		bool a_won, b_won;
+
+		if (!read_pfns(cur_a, pfn) || !same_pfn(pfn) ||
+		    !read_pfns(cur_b, pfn) || !same_pfn(pfn) ||
+		    pthread_barrier_init(&barrier, NULL, 3)) {
+			passed = false;
+			break;
+		}
+		args[0].barrier = &barrier;
+		args[1].barrier = &barrier;
+		if (pthread_create(&threads[0], NULL, move_tuple_thread, &args[0]) ||
+		    pthread_create(&threads[1], NULL, move_tuple_thread, &args[1]))
+			ksft_exit_fail_msg("UFFDIO_MOVE race thread creation failed\n");
+		pthread_barrier_wait(&barrier);
+		pthread_join(threads[0], NULL);
+		pthread_join(threads[1], NULL);
+		pthread_barrier_destroy(&barrier);
+
+		a_won = !args[0].result && args[0].move.move == NATIVE_PAGE &&
+			 args[1].result == -1 && args[1].error == EEXIST &&
+			 args[1].move.move == -EEXIST;
+		b_won = !args[1].result && args[1].move.move == NATIVE_PAGE &&
+			 args[0].result == -1 && args[0].error == EEXIST &&
+			 args[0].move.move == -EEXIST;
+		loser = a_won ? cur_b : cur_a;
+		first = a_won ? 0x31 : 0x71;
+		if ((!a_won && !b_won) || !verify_pattern(cur_dst, first) ||
+		    !read_pfns(cur_dst, pfn) || !same_pfn(pfn) ||
+		    !verify_pattern(loser, a_won ? 0x71 : 0x31) ||
+		    !read_pfns(loser, pfn) || !same_pfn(pfn)) {
+			ksft_print_msg("MOVE race %u: ret %d/%d moved %lld/%lld errno %d/%d\n",
+				       i, args[0].result, args[1].result,
+				       (long long)args[0].move.move,
+				       (long long)args[1].move.move,
+				       args[0].error, args[1].error);
+			passed = false;
+			break;
+		}
+	}
+
+out:
+	if (src_a_reservation && src_a != MAP_FAILED)
+		munmap(src_a_reservation, length + NATIVE_PAGE);
+	if (src_b_reservation && src_b != MAP_FAILED)
+		munmap(src_b_reservation, length + NATIVE_PAGE);
+	if (dst_reservation && dst != MAP_FAILED)
+		munmap(dst_reservation, length + NATIVE_PAGE);
+	return passed;
+}
+
 struct uffd_move_result {
 	bool supported;
 	bool register_depacked;
 	bool move_preserved;
 	bool unregistered_source_preserved;
+	bool tuple_move_preserved;
+	bool tuple_move_rss_preserved;
+	bool tuple_move_partial_preserved;
+	bool tuple_move_race_preserved;
+	unsigned long tuple_rss_before;
+	unsigned long tuple_rss_after;
 };
+
+static void unregister_range(int uffd, unsigned char *base, size_t length)
+{
+	struct uffdio_range range = {
+		.start = (uintptr_t)base,
+		.len = length,
+	};
+
+	ioctl(uffd, UFFDIO_UNREGISTER, &range);
+}
+
+static bool userfaultfd_full_tuple_move(int uffd, bool *rss_preserved,
+					unsigned long *rss_before,
+					unsigned long *rss_after)
+{
+	struct uffdio_register reg = {
+		.mode = UFFDIO_REGISTER_MODE_MISSING,
+	};
+	struct uffdio_move move = {};
+	unsigned char *src_reservation = NULL;
+	unsigned char *dst_reservation = NULL;
+	unsigned char *src = MAP_FAILED;
+	unsigned char *dst = MAP_FAILED;
+	uint64_t (*before)[SLICES] = NULL;
+	uint64_t after[SLICES];
+	long process_rss_before;
+	long process_rss_after;
+	bool passed = false;
+	unsigned int i;
+
+	*rss_preserved = false;
+	*rss_before = 0;
+	*rss_after = 0;
+	before = calloc(MOVE_BENCH_TUPLES, sizeof(*before));
+	if (!before)
+		goto out;
+	src = map_guarded_range(MOVE_BENCH_LENGTH, &src_reservation);
+	dst = map_guarded_range(MOVE_BENCH_LENGTH, &dst_reservation);
+	if (src == MAP_FAILED || dst == MAP_FAILED)
+		goto out;
+	for (i = 0; i < MOVE_BENCH_TUPLES; i++) {
+		populate(src + i * NATIVE_PAGE);
+		if (!read_pfns(src + i * NATIVE_PAGE, before[i]) ||
+		    !same_pfn(before[i]))
+			goto out;
+	}
+	process_rss_before = rss_anon_bytes();
+	if (process_rss_before < 0)
+		goto out;
+
+	reg.range.start = (uintptr_t)dst;
+	reg.range.len = MOVE_BENCH_LENGTH;
+	if (ioctl(uffd, UFFDIO_REGISTER, &reg))
+		goto out;
+	move.dst = (uintptr_t)dst;
+	move.src = (uintptr_t)src;
+	move.len = MOVE_BENCH_LENGTH;
+	passed = !ioctl(uffd, UFFDIO_MOVE, &move) &&
+		 move.move == MOVE_BENCH_LENGTH;
+	process_rss_after = rss_anon_bytes();
+	for (i = 0; passed && i < MOVE_BENCH_TUPLES; i++)
+		passed = verify(dst + i * NATIVE_PAGE) &&
+			 read_pfns(dst + i * NATIVE_PAGE, after) &&
+			 same_pfn(after) && after[0] == before[i][0];
+	if (process_rss_after >= 0) {
+		*rss_before = process_rss_before;
+		*rss_after = process_rss_after;
+		*rss_preserved = *rss_before == *rss_after;
+	}
+	unregister_range(uffd, dst, MOVE_BENCH_LENGTH);
+out:
+	if (src_reservation && src != MAP_FAILED)
+		munmap(src_reservation, MOVE_BENCH_LENGTH + 2 * NATIVE_PAGE);
+	if (dst_reservation && dst != MAP_FAILED)
+		munmap(dst_reservation, MOVE_BENCH_LENGTH + 2 * NATIVE_PAGE);
+	free(before);
+	return passed;
+}
+
+static bool userfaultfd_partial_tuple_move(int uffd)
+{
+	struct uffdio_register reg = {
+		.mode = UFFDIO_REGISTER_MODE_MISSING,
+	};
+	struct uffdio_copy copy = {};
+	struct uffdio_move move = {};
+	unsigned char conflict[PROCESS_PAGE];
+	unsigned char *src_reservation = NULL;
+	unsigned char *dst_reservation = NULL;
+	unsigned char *src = MAP_FAILED;
+	unsigned char *dst = MAP_FAILED;
+	uint64_t pfn[SLICES];
+	bool passed = false;
+	int ret;
+
+	src = map_aligned(2 * NATIVE_PAGE, &src_reservation);
+	dst = map_aligned(2 * NATIVE_PAGE, &dst_reservation);
+	if (src == MAP_FAILED || dst == MAP_FAILED)
+		goto out;
+	populate(src);
+	if (!read_pfns(src, pfn) || !same_pfn(pfn))
+		goto out;
+	reg.range.start = (uintptr_t)dst;
+	reg.range.len = NATIVE_PAGE;
+	if (ioctl(uffd, UFFDIO_REGISTER, &reg))
+		goto out;
+
+	memset(conflict, 0x91, sizeof(conflict));
+	copy.dst = (uintptr_t)(dst + PROCESS_PAGE);
+	copy.src = (uintptr_t)conflict;
+	copy.len = PROCESS_PAGE;
+	if (ioctl(uffd, UFFDIO_COPY, &copy) || copy.copy != PROCESS_PAGE)
+		goto unregister;
+	move.dst = (uintptr_t)dst;
+	move.src = (uintptr_t)src;
+	move.len = NATIVE_PAGE;
+	errno = 0;
+	ret = ioctl(uffd, UFFDIO_MOVE, &move);
+	passed = ret == -1 && errno == EAGAIN && move.move == PROCESS_PAGE &&
+		 dst[0] == 0x31 && dst[PROCESS_PAGE] == 0x91 &&
+		 src[PROCESS_PAGE] == 0x32 &&
+		 src[2 * PROCESS_PAGE] == 0x33 &&
+		 src[3 * PROCESS_PAGE] == 0x34 &&
+		 read_moved_pfns(dst, src, pfn) && distinct_pfns(pfn);
+unregister:
+	unregister_range(uffd, dst, NATIVE_PAGE);
+out:
+	if (src_reservation && src != MAP_FAILED)
+		munmap(src_reservation, 3 * NATIVE_PAGE);
+	if (dst_reservation && dst != MAP_FAILED)
+		munmap(dst_reservation, 3 * NATIVE_PAGE);
+	return passed;
+}
 
 static struct uffd_move_result userfaultfd_move_depacks(void)
 {
@@ -564,6 +915,16 @@ static struct uffd_move_result userfaultfd_move_depacks(void)
 	    src_unregistered[0])
 		result.unregistered_source_preserved = false;
 
+	result.tuple_move_preserved =
+		userfaultfd_full_tuple_move(uffd,
+					    &result.tuple_move_rss_preserved,
+					    &result.tuple_rss_before,
+					    &result.tuple_rss_after);
+	result.tuple_move_partial_preserved =
+		userfaultfd_partial_tuple_move(uffd);
+	result.tuple_move_race_preserved =
+		userfaultfd_tuple_move_races(uffd);
+
 out:
 	if (uffd >= 0)
 		close(uffd);
@@ -593,7 +954,7 @@ static int run_test(void)
 	unsigned char value = 1;
 
 	ksft_print_header();
-	ksft_set_plan(26);
+	ksft_set_plan(30);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE,
 			 "process uses 4K pages\n");
 
@@ -689,6 +1050,10 @@ static int run_test(void)
 		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
 		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
 		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
+		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
+		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
+		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
+		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
 	} else {
 		ksft_test_result(uffd_move.register_depacked,
 				 "userfaultfd registration depacks anonymous tuples\n");
@@ -696,6 +1061,16 @@ static int run_test(void)
 				 "single-slice UFFDIO_MOVE preserves tuple data\n");
 		ksft_test_result(uffd_move.unregistered_source_preserved,
 				 "UFFDIO_MOVE depacks an unregistered source tuple\n");
+		ksft_test_result(uffd_move.tuple_move_preserved,
+				 "full UFFDIO_MOVE preserves one packed tuple\n");
+		ksft_test_result(uffd_move.tuple_move_rss_preserved,
+				 "4MiB UFFDIO_MOVE RssAnon %lu -> %lu bytes\n",
+				 uffd_move.tuple_rss_before,
+				 uffd_move.tuple_rss_after);
+		ksft_test_result(uffd_move.tuple_move_partial_preserved,
+				 "busy destination preserves MOVE partial progress\n");
+		ksft_test_result(uffd_move.tuple_move_race_preserved,
+				 "concurrent full-tuple MOVEs publish one winner\n");
 	}
 
 	base = map_aligned(2 * NATIVE_PAGE, &reservation);

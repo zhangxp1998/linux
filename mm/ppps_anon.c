@@ -296,6 +296,20 @@ static void ppps_put_depack_folios(struct folio **folios)
 			folio_put(folios[i]);
 }
 
+/* Hardware may update access/dirty state while the PTL is dropped. */
+static bool ppps_pte_same_mapping(pte_t a, pte_t b)
+{
+	return pte_same(pte_mkold(pte_mkclean(a)),
+			pte_mkold(pte_mkclean(b)));
+}
+
+static pte_t ppps_pte_merge_ad(pte_t pte, pte_t ad)
+{
+	pte = pte_young(ad) ? pte_mkyoung(pte) : pte_mkold(pte);
+	pte = pte_dirty(ad) ? pte_mkdirty(pte) : pte_mkclean(pte);
+	return pte;
+}
+
 /*
  * Replace one packed anonymous mapping with four ordinary singleton folios.
  * The caller holds mmap_lock for writing and has write-locked the VMA, which
@@ -426,11 +440,14 @@ static int ppps_depack_anon_folio(struct vm_area_struct *vma,
 		goto restore_mapping;
 	}
 	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
-		if (!pte_same(ptep_get(ptep + i), frozen_ptes[i])) {
+		pte_t cur_pte = ptep_get(ptep + i);
+
+		if (!ppps_pte_same_mapping(cur_pte, frozen_ptes[i])) {
 			pte_unmap_unlock(ptep, ptl);
 			ret = -EAGAIN;
-			goto out_notifier;
+			goto restore_mapping;
 		}
+		old_ptes[i] = ppps_pte_merge_ad(old_ptes[i], cur_pte);
 	}
 
 	flush_cache_range(vma, base, base + PAGE_SIZE);
@@ -467,15 +484,22 @@ restore_mapping:
 		ptep = pte_offset_map_lock(mm, pmd, base, &ptl);
 		if (ptep) {
 			bool unchanged = true;
+			pte_t restore_ptes[PPPS_SLICES_PER_PAGE];
 
-			for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
-				if (!pte_same(ptep_get(ptep + i), frozen_ptes[i]))
+			for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+				pte_t cur_pte = ptep_get(ptep + i);
+
+				if (!ppps_pte_same_mapping(cur_pte,
+							   frozen_ptes[i]))
 					unchanged = false;
+				restore_ptes[i] =
+					ppps_pte_merge_ad(old_ptes[i], cur_pte);
+			}
 			if (unchanged) {
 				for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
 					set_pte_at(mm,
 						   base + i * PAGE_SIZE_COMPAT,
-						   ptep + i, old_ptes[i]);
+						   ptep + i, restore_ptes[i]);
 				if (was_exclusive)
 					SetPageAnonExclusive(&old_folio->page);
 				flush_tlb_range(vma, base, base + PAGE_SIZE);
@@ -534,13 +558,22 @@ static int ppps_swapin_anon_folio(struct vm_area_struct *vma,
 static int ppps_depack_anon_at(struct vm_area_struct *vma,
 			       unsigned long base)
 {
+	int retries = 0;
 	int ret;
 
-	vma_start_write(vma);
-	ret = ppps_swapin_anon_folio(vma, base);
-	if (ret)
-		return ret;
-	return ppps_depack_anon_folio(vma, base);
+	do {
+		vma_start_write(vma);
+		ret = ppps_swapin_anon_folio(vma, base);
+		if (!ret)
+			ret = ppps_depack_anon_folio(vma, base);
+		if (ret != -EAGAIN)
+			return ret;
+		if (fatal_signal_pending(current))
+			return -EINTR;
+		cond_resched();
+	} while (++retries < 16);
+
+	return -EAGAIN;
 }
 
 int ppps_depack_anon_range(struct mm_struct *mm, unsigned long start,

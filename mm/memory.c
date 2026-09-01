@@ -1869,7 +1869,6 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
 		pr_alert("unrecognized swap entry 0x%lx\n", entry.val);
 		WARN_ON_ONCE(1);
 	}
-skip:
 	clear_not_present_full_ptes(vma->vm_mm, addr, pte, nr, tlb->fullmm);
 	*any_skipped = zap_install_uffd_wp_if_needed(vma, addr, pte, nr, details, ptent);
 
@@ -2562,8 +2561,8 @@ int vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
 			int error;
 
 			error = insert_page(vma, addr, pages[page_index],
-					    vma->vm_page_prot, false,
-					    total_slice & PPPS_SLICE_MASK);
+						    vma->vm_page_prot, false,
+						    total_slice & PPPS_SLICE_MASK);
 			if (error) {
 				*num = nr_pages - page_index;
 				return error;

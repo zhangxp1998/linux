@@ -2200,6 +2200,7 @@ int dma_buf_mmap_offset(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 
 	return ret;
 }
+
 /**
  * dma_buf_mmap - Set up a userspace mmap at a native-page offset
  * @dmabuf: buffer that should back the VMA
