@@ -77,6 +77,7 @@
 #include <linux/userfaultfd_k.h>
 #include <linux/mm_inline.h>
 #include <linux/oom.h>
+#include <linux/vmstat.h>
 
 #include <asm/tlb.h>
 
@@ -1268,6 +1269,17 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 	} else {
 		folio->index = linear_page_index(vma, address);
 	}
+	/*
+	 * A file tuple which crosses a compat PTE-table boundary cannot share
+	 * one native folio.  Count the singleton fallback where the new anon
+	 * folio is established so both do_wp_page() and missing-PTE COW faults
+	 * are covered exactly once.
+	 */
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (!ppps_compat && !vma_is_anonymous(vma) &&
+	    ppps_vma_shares_tuple(vma))
+		count_vm_event(PPPS_FILE_COW_MULTI_FOLIO);
+#endif
 }
 
 /**
@@ -1296,11 +1308,16 @@ static void __page_check_anon_rmap(struct folio *folio, struct page *page,
 	 */
 	VM_BUG_ON_FOLIO(folio_anon_vma(folio)->root != vma->anon_vma->root,
 			folio);
-	if (folio_test_ppps_compat_anon(folio))
-		VM_WARN_ON_ONCE(address_index != folio_index +
-				vma_address_to_slice(vma, address));
-	else
+	if (ppps_mm_is_compat(vma->vm_mm) &&
+	    folio_test_ppps_compat_anon(folio)) {
+		if (vma_is_anonymous(vma))
+			VM_WARN_ON_ONCE(address_index != folio_index +
+					vma_address_to_slice(vma, address));
+		else
+			VM_WARN_ON_ONCE(address_index != folio_index);
+	} else {
 		VM_WARN_ON_ONCE(folio_index != address_index);
+	}
 }
 
 static void __folio_mod_stat(struct folio *folio, int nr, int nr_pmdmapped)

@@ -2573,6 +2573,8 @@ struct zap_details {
 #define  ZAP_FLAG_DROP_MARKER        ((__force zap_flags_t) BIT(0))
 /* Set in unmap_vmas() to indicate a final unmap call.  Only used by hugetlb */
 #define  ZAP_FLAG_UNMAP              ((__force zap_flags_t) BIT(1))
+/* Keep anonymous PPPS file-COW slices while invalidating their file mapping. */
+#define  ZAP_FLAG_PRESERVE_PPPS_COW  ((__force zap_flags_t) BIT(2))
 #define  ZAP_FLAG_RECLAIM_PT         ((__force zap_flags_t) BIT(31))
 
 #ifdef CONFIG_SCHED_MM_CID

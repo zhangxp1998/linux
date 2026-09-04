@@ -18,6 +18,7 @@
 #include <linux/swapops.h>
 #include <linux/swap_cgroup.h>
 #include <linux/tracepoint-defs.h>
+#include <linux/userfaultfd_k.h>
 
 #include "ppps.h"
 
@@ -1605,6 +1606,22 @@ static inline bool reclaim_pt_is_enabled(unsigned long start, unsigned long end,
 	return false;
 }
 #endif /* CONFIG_PT_RECLAIM */
+
+#ifdef CONFIG_MMU
+/*
+ * Return true if the original pte was a uffd-wp pte marker (so the pte was
+ * wr-protected).
+ */
+static __always_inline bool vmf_orig_pte_uffd_wp(struct vm_fault *vmf)
+{
+	if (!userfaultfd_wp(vmf->vma))
+		return false;
+	if (!(vmf->flags & FAULT_FLAG_ORIG_PTE_VALID))
+		return false;
+
+	return pte_marker_uffd_wp(vmf->orig_pte);
+}
+#endif /* CONFIG_MMU */
 
 #ifdef CONFIG_USERFAULTFD
 /* Revalidate a UFFD move after reacquiring both PTE locks. */

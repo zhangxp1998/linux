@@ -36,6 +36,7 @@ enum ppps_anon_wp_type {
 	PPPS_ANON_WP_NONE,
 	PPPS_ANON_WP_COMPAT,	/* Copy the whole packed tuple. */
 	PPPS_ANON_WP_ZERO,	/* Zero page inside a compat tuple. */
+	PPPS_ANON_WP_FILE_COW,	/* Private file page joining a tuple. */
 };
 
 /*
@@ -98,11 +99,15 @@ bool ppps_anon_try_reuse_folio(struct folio *folio, struct vm_area_struct *vma);
 /* Hole filling: reuse an exclusive tuple folio for a missing slice. */
 bool ppps_anon_tuple_has_folio_hint(struct vm_fault *vmf);
 struct folio *ppps_anon_hole_fill_folio(struct vm_area_struct *vma,
-					pte_t *ptep, unsigned long address);
+					pte_t *ptep, unsigned long address,
+					bool *multi_folio);
 void ppps_anon_clear_slice(struct vm_area_struct *vma, struct folio *folio,
 			   unsigned long address);
 void ppps_anon_copy_slice(struct folio *dst, unsigned int dst_slice,
 			  struct folio *src, unsigned int src_slice);
+void ppps_anon_fill_slice_from(struct folio *dst,
+		struct vm_area_struct *vma, unsigned long address,
+		struct page *src);
 
 /* Fault and rmap operation contracts are documented in ppps_anon.c. */
 void ppps_anon_unmap_begin(struct ppps_anon_unmap_ctx *ctx,
@@ -130,6 +135,9 @@ void ppps_anon_swapin_install(const struct ppps_anon_swapin_ctx *ctx,
 		unsigned long address, pte_t pte);
 bool ppps_anon_fault_anon_prepare(struct vm_fault *vmf, struct folio **foliop,
 		int *nr_pages, unsigned long *addr);
+bool ppps_anon_file_cow_no_prealloc(struct vm_fault *vmf);
+bool ppps_anon_fault_file_cow(struct vm_fault *vmf, struct folio **foliop,
+		vm_fault_t *ret);
 
 /* Generic MM hooks. */
 struct ppps_mremap_folios *ppps_anon_mremap_prepare(struct vm_area_struct *vma,
@@ -143,7 +151,8 @@ int ppps_anon_copy_present_ptes(struct vm_area_struct *dst_vma,
 				unsigned long addr, int *rss,
 				struct folio *folio, struct folio **prealloc);
 enum ppps_anon_wp_type ppps_anon_wp_type(struct vm_area_struct *vma,
-					 struct folio *folio, pte_t pte);
+					 struct folio *folio,
+					 unsigned long address, pte_t pte);
 vm_fault_t ppps_anon_wp_copy(struct vm_fault *vmf, struct folio *folio,
 			     enum ppps_anon_wp_type type);
 int ppps_vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
@@ -224,6 +233,17 @@ static inline void ppps_anon_swapin_install(const struct ppps_anon_swapin_ctx *c
 
 static inline bool ppps_anon_fault_anon_prepare(struct vm_fault *vmf, struct folio **foliop,
 		int *nr_pages, unsigned long *addr)
+{
+	return false;
+}
+
+static inline bool ppps_anon_file_cow_no_prealloc(struct vm_fault *vmf)
+{
+	return false;
+}
+
+static inline bool ppps_anon_fault_file_cow(struct vm_fault *vmf, struct folio **foliop,
+		vm_fault_t *ret)
 {
 	return false;
 }
@@ -309,8 +329,10 @@ static inline bool ppps_anon_tuple_has_folio_hint(struct vm_fault *vmf)
 
 static inline struct folio *
 ppps_anon_hole_fill_folio(struct vm_area_struct *vma, pte_t *ptep,
-			  unsigned long address)
+			  unsigned long address, bool *multi_folio)
 {
+	if (multi_folio)
+		*multi_folio = false;
 	return NULL;
 }
 
@@ -322,6 +344,12 @@ static inline void ppps_anon_clear_slice(struct vm_area_struct *vma,
 static inline void ppps_anon_copy_slice(struct folio *dst,
 		unsigned int dst_slice, struct folio *src,
 		unsigned int src_slice)
+{
+}
+
+static inline void ppps_anon_fill_slice_from(struct folio *dst,
+		struct vm_area_struct *vma, unsigned long address,
+		struct page *src)
 {
 }
 
@@ -354,7 +382,8 @@ static inline int ppps_anon_copy_present_ptes(struct vm_area_struct *dst_vma,
 }
 
 static inline enum ppps_anon_wp_type
-ppps_anon_wp_type(struct vm_area_struct *vma, struct folio *folio, pte_t pte)
+ppps_anon_wp_type(struct vm_area_struct *vma, struct folio *folio,
+		  unsigned long address, pte_t pte)
 {
 	return PPPS_ANON_WP_NONE;
 }

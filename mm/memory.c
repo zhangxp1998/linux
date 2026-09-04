@@ -114,20 +114,6 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf);
 static bool vmf_pte_changed(struct vm_fault *vmf);
 
 /*
- * Return true if the original pte was a uffd-wp pte marker (so the pte was
- * wr-protected).
- */
-static __always_inline bool vmf_orig_pte_uffd_wp(struct vm_fault *vmf)
-{
-	if (!userfaultfd_wp(vmf->vma))
-		return false;
-	if (!(vmf->flags & FAULT_FLAG_ORIG_PTE_VALID))
-		return false;
-
-	return pte_marker_uffd_wp(vmf->orig_pte);
-}
-
-/*
  * A number of key systems in x86 including ioremap() rely on the assumption
  * that high_memory defines the upper bound on direct map memory, then end
  * of ZONE_NORMAL.
@@ -1467,9 +1453,22 @@ static inline bool should_zap_cows(struct zap_details *details)
 }
 
 /* Decides whether we should zap this folio with the folio pointer specified */
-static inline bool should_zap_folio(struct zap_details *details,
+static inline bool should_zap_folio(struct vm_area_struct *vma,
+				    struct zap_details *details,
 				    struct folio *folio)
 {
+	/*
+	 * File invalidation must remove page-cache slices, but a private COW
+	 * slice is anonymous data and remains valid independently of the file.
+	 * This mirrors an ordinary private COW mapping while allowing P and F
+	 * slices to coexist in one native-page range.
+	 */
+	if (details &&
+	    (details->zap_flags & ZAP_FLAG_PRESERVE_PPPS_COW) &&
+	    !vma_is_anonymous(vma) && folio_test_anon(folio) &&
+	    folio_test_ppps_compat_anon(folio))
+		return false;
+
 	/* If we can make a decision without *folio.. */
 	if (should_zap_cows(details))
 		return true;
@@ -1625,7 +1624,7 @@ static inline int zap_present_ptes(struct mmu_gather *tlb,
 	}
 
 	folio = page_folio(page);
-	if (unlikely(!should_zap_folio(details, folio))) {
+	if (unlikely(!should_zap_folio(vma, details, folio))) {
 		*any_skipped = true;
 		return 1;
 	}
@@ -1669,7 +1668,7 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
 		struct page *page = pfn_swap_entry_to_page(entry);
 		struct folio *folio = page_folio(page);
 
-		if (unlikely(!should_zap_folio(details, folio)))
+		if (unlikely(!should_zap_folio(vma, details, folio)))
 			return 1;
 		/*
 		 * Both device private/exclusive mappings should only
@@ -1696,7 +1695,7 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
 	} else if (is_migration_entry(entry)) {
 		struct folio *folio = pfn_swap_entry_folio(entry);
 
-		if (!should_zap_folio(details, folio))
+		if (!should_zap_folio(vma, details, folio))
 			return 1;
 		/* Drop a packed tuple's preserved RSS charge on its last entry. */
 		if (!folio_test_ppps_compat_anon(folio) ||
@@ -4117,7 +4116,7 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 	if (folio && folio_test_ksm(folio))
 		count_vm_event(COW_KSM);
 #endif
-	ppps_type = ppps_anon_wp_type(vma, folio, vmf->orig_pte);
+	ppps_type = ppps_anon_wp_type(vma, folio, vmf->address, vmf->orig_pte);
 	if (ppps_type != PPPS_ANON_WP_NONE)
 		return ppps_anon_wp_copy(vmf, folio, ppps_type);
 	return wp_page_copy(vmf);
@@ -4215,6 +4214,8 @@ void unmap_mapping_pages(struct address_space *mapping, pgoff_t start,
 	pgoff_t	last_index = start + nr - 1;
 
 	details.even_cows = even_cows;
+	if (!even_cows)
+		details.zap_flags |= ZAP_FLAG_PRESERVE_PPPS_COW;
 	if (last_index < first_index)
 		last_index = ULONG_MAX;
 
@@ -5534,7 +5535,7 @@ fallback:
 	addr = vmf->address;
 
 	/* Did we COW the page? */
-	if (is_cow)
+	if (is_cow && !ppps_anon_file_cow_no_prealloc(vmf))
 		page = vmf->cow_page;
 	else
 		page = vmf->page;
@@ -5625,6 +5626,9 @@ fallback:
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 		goto fallback;
 	}
+
+	if (ppps_anon_fault_file_cow(vmf, &folio, &ret))
+		goto unlock;
 
 	folio_ref_add(folio, nr_pages - 1);
 	set_pte_range(vmf, folio, page, nr_pages, addr);
@@ -5803,7 +5807,8 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
 static vm_fault_t do_cow_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
-	struct folio *folio;
+	struct folio *folio = NULL;
+	bool ppps_cow_reuse;
 	vm_fault_t ret;
 
 	ret = vmf_can_call_fault(vmf);
@@ -5812,11 +5817,17 @@ static vm_fault_t do_cow_fault(struct vm_fault *vmf)
 	if (ret)
 		return ret;
 
-	folio = folio_prealloc(vma->vm_mm, vma, vmf->address, false);
-	if (!folio)
-		return VM_FAULT_OOM;
-
-	vmf->cow_page = &folio->page;
+	ppps_cow_reuse = !vma_is_anonymous(vma) &&
+		ppps_vma_address_shares_tuple(vma, vmf->address) &&
+		ppps_anon_tuple_has_folio_hint(vmf);
+	if (ppps_cow_reuse) {
+		vmf->cow_page = NULL;
+	} else {
+		folio = folio_prealloc(vma->vm_mm, vma, vmf->address, false);
+		if (!folio)
+			return VM_FAULT_OOM;
+		vmf->cow_page = &folio->page;
+	}
 
 	ret = __do_fault(vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
@@ -5824,11 +5835,14 @@ static vm_fault_t do_cow_fault(struct vm_fault *vmf)
 	if (ret & VM_FAULT_DONE_COW)
 		return ret;
 
-	if (copy_mc_user_highpage(vmf->cow_page, vmf->page, vmf->address, vma)) {
+	if (vmf->cow_page &&
+	    copy_mc_user_highpage(vmf->cow_page, vmf->page,
+				  vmf->address, vma)) {
 		ret = VM_FAULT_HWPOISON;
 		goto unlock;
 	}
-	__folio_mark_uptodate(folio);
+	if (folio)
+		__folio_mark_uptodate(folio);
 
 	ret |= finish_fault(vmf);
 unlock:
@@ -5838,7 +5852,8 @@ unlock:
 		goto uncharge_out;
 	return ret;
 uncharge_out:
-	folio_put(folio);
+	if (folio)
+		folio_put(folio);
 	return ret;
 }
 

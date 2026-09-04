@@ -149,8 +149,8 @@ static int run_test(void)
 	}
 
 	memset(tags, 0xff, sizeof(tags));
-	peek_ok = !ptrace((enum __ptrace_request)PTRACE_PEEKMTETAGS, child,
-			  (void *)TEST_BASE, &iov) && iov.iov_len == TOTAL_TAGS;
+	peek_ok = !ptrace(PTRACE_PEEKMTETAGS, child, (void *)TEST_BASE, &iov) &&
+		iov.iov_len == TOTAL_TAGS;
 	ksft_test_result(peek_ok, "read allocation tags with ptrace\n");
 	if (peek_ok) {
 		for (index = 0; index < TOTAL_TAGS; index++) {
@@ -172,14 +172,14 @@ static int run_test(void)
 	for (index = 0; index < TOTAL_TAGS; index++)
 		tags[index] = index / TAGS_PER_PAGE + 8;
 	iov.iov_len = sizeof(tags);
-	poke_ok = !ptrace((enum __ptrace_request)PTRACE_POKEMTETAGS, child,
-			  (void *)TEST_BASE, &iov) && iov.iov_len == TOTAL_TAGS;
+	poke_ok = !ptrace(PTRACE_POKEMTETAGS, child, (void *)TEST_BASE, &iov) &&
+		iov.iov_len == TOTAL_TAGS;
 	ksft_test_result(poke_ok, "write allocation tags with ptrace\n");
 
 	memset(tags, 0xff, TAGS_PER_PAGE);
 	iov.iov_len = TAGS_PER_PAGE;
-	file_peek_ok = !ptrace((enum __ptrace_request)PTRACE_PEEKMTETAGS,
-			       child, (void *)FILE_TEST_BASE, &iov) &&
+	file_peek_ok = !ptrace(PTRACE_PEEKMTETAGS, child,
+			       (void *)FILE_TEST_BASE, &iov) &&
 			iov.iov_len == TAGS_PER_PAGE;
 	ksft_test_result(file_peek_ok,
 			 "read tags from a file-backed 4K slice\n");
@@ -200,8 +200,8 @@ static int run_test(void)
 
 	memset(tags, FILE_REPLACEMENT_TAG, TAGS_PER_PAGE);
 	iov.iov_len = TAGS_PER_PAGE;
-	file_poke_ok = !ptrace((enum __ptrace_request)PTRACE_POKEMTETAGS,
-			       child, (void *)FILE_TEST_BASE, &iov) &&
+	file_poke_ok = !ptrace(PTRACE_POKEMTETAGS, child,
+			       (void *)FILE_TEST_BASE, &iov) &&
 			iov.iov_len == TAGS_PER_PAGE;
 	ksft_test_result(file_poke_ok,
 			 "write tags to a file-backed 4K slice\n");

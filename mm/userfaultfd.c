@@ -214,7 +214,8 @@ static int __mfill_atomic_install_pte(pmd_t *dst_pmd,
 	}
 	if (!page_in_cache) {
 		struct folio *tuple_folio =
-			ppps_anon_hole_fill_folio(dst_vma, dst_pte, dst_addr);
+			ppps_anon_hole_fill_folio(dst_vma, dst_pte, dst_addr,
+						  NULL);
 
 		if (tuple_folio) {
 			ppps_anon_copy_slice(tuple_folio, slice_idx, folio,

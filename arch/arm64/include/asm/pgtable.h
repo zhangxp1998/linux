@@ -417,7 +417,8 @@ static inline void __check_safe_pte_update(struct mm_struct *mm, pte_t *ptep,
 		     __func__, pte_val(old_pte), pte_val(pte));
 }
 
-static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages)
+static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages,
+					 unsigned long page_size)
 {
 	if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte))
 		__sync_icache_dcache(pte);
@@ -431,7 +432,7 @@ static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages)
 	 */
 	if (system_supports_mte() && pte_access_permitted_no_overlay(pte, false) &&
 	    !pte_special(pte) && pte_tagged(pte))
-		mte_sync_tags(pte, nr_pages);
+		mte_sync_tags(pte, nr_pages, page_size);
 }
 
 /*
@@ -483,7 +484,7 @@ static inline void __set_ptes(struct mm_struct *mm,
 			      pte_t *ptep, pte_t pte, unsigned int nr)
 {
 	page_table_check_ptes_set(mm, ptep, pte, nr);
-	__sync_cache_and_tags(pte, nr);
+	__sync_cache_and_tags(pte, nr, MM_PAGE_SIZE(mm));
 
 	for (;;) {
 		__check_safe_pte_update(mm, ptep, pte);
@@ -696,7 +697,7 @@ static inline void __set_pte_at(struct mm_struct *mm,
 				unsigned long __always_unused addr,
 				pte_t *ptep, pte_t pte, unsigned int nr)
 {
-	__sync_cache_and_tags(pte, nr);
+	__sync_cache_and_tags(pte, nr, PAGE_SIZE);
 	__check_safe_pte_update(mm, ptep, pte);
 	__set_pte(ptep, pte);
 }

@@ -24,8 +24,11 @@
 #include <linux/swap.h>
 #include <linux/swapops.h>
 #include <linux/userfaultfd_k.h>
+#include <linux/vmstat.h>
 
 #include <asm/cacheflush.h>
+#include <asm/cpufeature.h>
+#include <asm/mte.h>
 #include <asm/tlbflush.h>
 
 #include "internal.h"
@@ -56,7 +59,8 @@ static struct folio *ppps_folio_prealloc(struct mm_struct *mm,
 /*
  * Tuple geometry
  *
- * vma_address_to_slice() selects a compat anonymous slice by virtual address.
+ * vma_address_to_slice() selects a slice by virtual address for anonymous
+ * VMAs and by file offset for private file VMAs.
  */
 
 static inline unsigned long ppps_tuple_base(struct vm_area_struct *vma,
@@ -77,8 +81,11 @@ static inline pte_t *ppps_tuple_base_ptep(struct vm_area_struct *vma,
 
 pgoff_t ppps_tuple_index(struct vm_area_struct *vma, unsigned long address)
 {
-	return linear_page_index(vma, address) -
-		vma_address_to_slice(vma, address);
+	pgoff_t index = linear_page_index(vma, address);
+
+	if (!ppps_vma_has_slices(vma))
+		index -= vma_address_to_slice(vma, address);
+	return index;
 }
 
 /**
@@ -112,9 +119,14 @@ EXPORT_SYMBOL_GPL(ppps_pvmw_walk_end);
 bool ppps_vma_shares_tuple(struct vm_area_struct *vma)
 {
 	if (!ppps_mm_is_compat(vma->vm_mm) ||
-	    (vma->vm_flags & (VM_MTE | VM_DROPPABLE | VM_MERGEABLE)))
+	    (vma->vm_flags & (VM_DROPPABLE | VM_MERGEABLE)))
 		return false;
-	return vma_is_anonymous(vma);
+	if (vma_is_anonymous(vma))
+		return true;
+	return vma->vm_file && vma->vm_ops &&
+		is_cow_mapping(vma->vm_flags) &&
+		!(vma->vm_flags & (VM_PFNMAP | VM_MIXEDMAP)) &&
+		!vma_is_dax(vma);
 }
 
 /* A tuple straddling two PTE tables cannot share one lock, rmap or ref. */
@@ -323,8 +335,8 @@ static struct folio *ppps_anon_tuple_folio(struct vm_area_struct *vma,
 		/*
 		 * The four PTE slots may straddle VMA boundaries.  Ignore a folio
 		 * belonging to the adjacent VMA: each VMA may still pack its own
-		 * subset of the tuple.  A candidate must match the physical
-		 * slice, tuple index and this VMA's anon_vma chain.
+		 * subset of the file page.  A candidate must match the physical
+		 * slice, file index and this VMA's anon_vma chain.
 		 */
 		if (pte_page_offset(pte) != i * PAGE_SIZE_COMPAT ||
 		    cur->index != tuple_index ||
@@ -335,6 +347,20 @@ static struct folio *ppps_anon_tuple_folio(struct vm_area_struct *vma,
 		folio = cur;
 	}
 	return folio;
+}
+
+static bool ppps_anon_tuple_has_any_folio(struct vm_area_struct *vma,
+					  pte_t *ptep, unsigned long address)
+{
+	pte_t *base_ptep = ppps_tuple_base_ptep(vma, ptep, address);
+	unsigned int i;
+
+	if (!base_ptep)
+		return false;
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
+		if (ppps_anon_pte_folio(ptep_get(base_ptep + i)))
+			return true;
+	return false;
 }
 
 /*
@@ -387,7 +413,9 @@ int ppps_anon_installable_run(struct vm_area_struct *vma, pte_t *ptep,
 	pte_t *last = ptep + 1;
 
 	*base = address;
-	if (!ppps_vma_shares_tuple(vma) || !pte_none(ptep_get(ptep)))
+	if (!vma_is_anonymous(vma) ||
+	    !ppps_vma_address_shares_tuple(vma, address) ||
+	    !pte_none(ptep_get(ptep)))
 		return 1;
 	while (start > lower && pte_none(ptep_get(first - 1))) {
 		start -= PAGE_SIZE_COMPAT;
@@ -458,13 +486,19 @@ bool ppps_anon_tuple_has_folio_hint(struct vm_fault *vmf)
 
 /*
  * Return the exclusive folio which the missing slice at @address may join,
- * or NULL when a new folio is needed.
+ * or NULL when a new folio is needed.  @multi_folio, when given, reports
+ * whether the tuple already holds any anonymous folio, i.e. whether a new
+ * allocation would make this tuple span two native folios.
  */
 struct folio *ppps_anon_hole_fill_folio(struct vm_area_struct *vma,
-					pte_t *ptep, unsigned long address)
+					pte_t *ptep, unsigned long address,
+					bool *multi_folio)
 {
 	struct folio *folio = ppps_anon_tuple_folio(vma, ptep, address);
 
+	if (multi_folio)
+		*multi_folio = folio ||
+			ppps_anon_tuple_has_any_folio(vma, ptep, address);
 	if (!folio || !ppps_anon_try_reuse_folio(folio, vma))
 		return NULL;
 	return folio;
@@ -476,7 +510,10 @@ void ppps_anon_clear_slice(struct vm_area_struct *vma, struct folio *folio,
 	unsigned int start = vma_address_to_slice(vma, address) * PAGE_SIZE_COMPAT;
 	void *kaddr = kmap_local_page(&folio->page);
 
-	memset(kaddr + start, 0, PAGE_SIZE_COMPAT);
+	if (system_supports_mte() && page_mte_tagged(&folio->page))
+		mte_zero_clear_tags_range(kaddr + start, PAGE_SIZE_COMPAT);
+	else
+		memset(kaddr + start, 0, PAGE_SIZE_COMPAT);
 	kunmap_local(kaddr);
 	flush_dcache_page(&folio->page);
 	/* Make the cleared slice visible before installing its PTE. */
@@ -484,24 +521,46 @@ void ppps_anon_clear_slice(struct vm_area_struct *vma, struct folio *folio,
 }
 
 /*
- * Copy one process-sized slice.  Callers install a PTE for the slice right
- * after this, so the data is made visible first, just as
+ * Copy one process-sized slice, tags included when both pages carry them.
+ * @src may be a tail page of a large page-cache folio, so the page itself is
+ * mapped rather than its folio head.  Callers install a PTE for the slice
+ * right after this, so the data and tags are made visible first, just as
  * __folio_mark_uptodate() does for a brand-new folio.
  */
-void ppps_anon_copy_slice(struct folio *dst, unsigned int dst_slice,
-			  struct folio *src, unsigned int src_slice)
+static void ppps_copy_slice_page(struct page *dst, unsigned int dst_slice,
+				 struct page *src, unsigned int src_slice)
 {
-	void *src_addr = kmap_local_folio(src, 0);
-	void *dst_addr = kmap_local_folio(dst, 0);
+	void *src_addr = kmap_local_page(src);
+	void *dst_addr = kmap_local_page(dst);
 	void *from = src_addr + src_slice * PAGE_SIZE_COMPAT;
 	void *to = dst_addr + dst_slice * PAGE_SIZE_COMPAT;
 
 	memcpy(to, from, PAGE_SIZE_COMPAT);
+	if (system_supports_mte() && page_mte_tagged(dst)) {
+		if (page_mte_tagged(src))
+			mte_copy_tags_range(to, from, PAGE_SIZE_COMPAT);
+		else
+			mte_clear_tags_range(to, PAGE_SIZE_COMPAT);
+	}
 	kunmap_local(dst_addr);
 	kunmap_local(src_addr);
-	flush_dcache_folio(dst);
+	flush_dcache_page(dst);
 	/* Make the copied slice visible before installing its PTE. */
 	smp_wmb();
+}
+
+void ppps_anon_copy_slice(struct folio *dst, unsigned int dst_slice,
+			  struct folio *src, unsigned int src_slice)
+{
+	ppps_copy_slice_page(&dst->page, dst_slice, &src->page, src_slice);
+}
+
+void ppps_anon_fill_slice_from(struct folio *dst, struct vm_area_struct *vma,
+			       unsigned long address, struct page *src)
+{
+	unsigned int slice = vma_address_to_slice(vma, address);
+
+	ppps_copy_slice_page(&dst->page, slice, src, slice);
 }
 
 /*
@@ -805,8 +864,10 @@ struct ppps_mremap_folios *ppps_anon_mremap_prepare(struct vm_area_struct *vma,
 
 struct ppps_reslice_tuple {
 	struct folio *folio;
+	struct folio *fallback[PPPS_SLICES_PER_PAGE];
 	unsigned long first;
 	bool normal;
+	bool boundary;
 	bool zero;
 };
 
@@ -1057,6 +1118,81 @@ static void ppps_anon_reslice_tuple(struct mm_struct *mm,
 }
 
 /*
+ * A compat tuple can straddle two PTE tables.  Such a tuple cannot share one
+ * rmap/reference, and the two PTE pages are protected by different locks.
+ * Reslice each populated address independently into a singleton folio
+ * instead of incrementing a ptep past the end of the first table.
+ */
+static void ppps_anon_reslice_boundary(struct mm_struct *mm,
+		struct ppps_reslice_tuple *tuple, unsigned long old_addr,
+		unsigned long new_addr, unsigned long len)
+{
+	struct ppps_reslice_sources sources = {};
+	unsigned long end = min(tuple->first + PAGE_SIZE, new_addr + len);
+	unsigned long address = max(tuple->first, new_addr);
+
+	for (; address < end; address += PAGE_SIZE_COMPAT) {
+		struct vm_area_struct *vma;
+		struct folio *folio;
+		struct folio *dst;
+		spinlock_t *ptl; /* Protects this slice's PTE table. */
+		unsigned int dst_slice;
+		pte_t entry, old_pte;
+		pte_t *ptep;
+		pmd_t *pmd;
+
+		vma = find_vma(mm, address);
+		if (WARN_ON_ONCE(!vma || address < vma->vm_start))
+			continue;
+		pmd = mm_find_pmd(mm, address);
+		if (WARN_ON_ONCE(!pmd))
+			continue;
+		ptep = pte_offset_map_lock(mm, pmd, address, &ptl);
+		if (WARN_ON_ONCE(!ptep))
+			continue;
+		old_pte = ptep_get(ptep);
+		folio = ppps_anon_pte_folio(old_pte);
+		if (!folio) {
+			ppps_anon_reslice_zero_slice(mm, vma, ptep, address,
+						     old_pte);
+			pte_unmap_unlock(ptep, ptl);
+			continue;
+		}
+		/* Zero-page-only tuple: the folio slices are already in place. */
+		if (!tuple->normal) {
+			pte_unmap_unlock(ptep, ptl);
+			continue;
+		}
+
+		ppps_reslice_sources_add(&sources, folio, old_pte,
+					 old_addr + address - new_addr);
+		dst_slice = vma_address_to_slice(vma, address);
+		dst = tuple->fallback[dst_slice];
+		if (WARN_ON_ONCE(!dst)) {
+			pte_unmap_unlock(ptep, ptl);
+			continue;
+		}
+		ptep_set_wrprotect(mm, address, ptep);
+		flush_tlb_page(vma, address);
+		ppps_anon_copy_slice(dst, dst_slice, folio,
+				     pte_page_offset(old_pte) >> PAGE_SHIFT_COMPAT);
+		__folio_mark_uptodate(dst);
+		ptep_clear_flush(vma, address, ptep);
+
+		add_mm_counter(mm, MM_ANONPAGES, folio_nr_pages(dst));
+		folio_add_new_anon_rmap(dst, vma, address, RMAP_EXCLUSIVE);
+		folio_add_lru_vma(dst, vma);
+		entry = ppps_anon_reslice_pte(vma, dst, old_pte, address);
+		set_pte_at(mm, address, ptep, entry);
+		update_mmu_cache(vma, address, ptep);
+		tuple->fallback[dst_slice] = NULL;
+		pte_unmap_unlock(ptep, ptl);
+	}
+
+	ppps_reslice_sources_drop(mm, &sources, old_addr, new_addr, len);
+}
+
+/*
  * Restore the VA-selected physical slice after mremap.  Complete tuples
  * moved by a native-page multiple need no work.  A misaligned move is
  * regrouped one destination tuple at a time, so a 4K-shifted 16K source uses
@@ -1073,7 +1209,7 @@ int ppps_anon_reslice_range(struct mm_struct *mm, unsigned long old_addr,
 	struct mmu_notifier_range range;
 	unsigned long address;
 	int ret = 0;
-	int i;
+	int i, j;
 
 	if (!ppps_mm_is_compat(mm) || !len)
 		return 0;
@@ -1081,9 +1217,9 @@ int ppps_anon_reslice_range(struct mm_struct *mm, unsigned long old_addr,
 	first_vma = find_vma(mm, new_addr);
 	if (!first_vma || new_addr < first_vma->vm_start)
 		return -EFAULT;
-	/* Complete tuples moved by a native-page multiple need no work. */
-	if (IS_ALIGNED(old_addr, PAGE_SIZE) && IS_ALIGNED(new_addr, PAGE_SIZE) &&
-	    IS_ALIGNED(len, PAGE_SIZE))
+	/* Preserve the established no-op fast path for complete anon tuples. */
+	if (!ppps_vma_has_slices(first_vma) && IS_ALIGNED(old_addr, PAGE_SIZE) &&
+	    IS_ALIGNED(new_addr, PAGE_SIZE) && IS_ALIGNED(len, PAGE_SIZE))
 		return 0;
 	first = ppps_tuple_base(first_vma, new_addr);
 	last = ppps_tuple_base(first_vma,
@@ -1130,19 +1266,28 @@ int ppps_anon_reslice_range(struct mm_struct *mm, unsigned long old_addr,
 		}
 		tuple = &tuples[(ppps_tuple_base(vma, address) - first) >>
 				PAGE_SHIFT];
+		if (!ppps_vma_address_shares_tuple(vma, address))
+			tuple->boundary = true;
 		if (folio) {
 			source = old_addr + address - new_addr;
 			source_base = source - pte_page_offset(pte);
 			wrong = pte_page_offset(pte) !=
 				vma_address_to_slice(vma, address) * PAGE_SIZE_COMPAT ||
-				folio->index != ppps_tuple_index(vma, address);
+				folio->index != ppps_tuple_index(vma, address) ||
+				tuple->boundary;
 			folio_get(folio);
 		} else if (pte_present(pte) && is_zero_pfn(pte_pfn(pte)) &&
 			   pte_page_offset(pte) !=
 				vma_address_to_slice(vma, address) * PAGE_SIZE_COMPAT) {
 			tuple->zero = true;
-		} else if (pte_present(pte) && !pte_special(pte)) {
-			/* Only packed anonymous folios are resliced. */
+		} else if (pte_present(pte) && !pte_special(pte) &&
+			   vma_is_anonymous(vma)) {
+			/*
+			 * A file VMA keeps its source slice in vm_slice_off across
+			 * mremap.  Clean page-cache PTEs and generic singleton COW
+			 * PTEs therefore need no reslice; only packed anonymous
+			 * folios recognized above participate in tuple regrouping.
+			 */
 			pte_unmap_unlock(ptep, ptl);
 			ret = -EINVAL;
 			goto out;
@@ -1159,20 +1304,51 @@ int ppps_anon_reslice_range(struct mm_struct *mm, unsigned long old_addr,
 
 	for (i = 0; i < nr_tuples; i++) {
 		struct vm_area_struct *vma;
-		unsigned long start;
+		unsigned long end, start;
 
 		if (!tuples[i].normal)
 			continue;
 		start = max(tuples[i].first, new_addr);
+		end = min(tuples[i].first + PAGE_SIZE, new_addr + len);
 		vma = find_vma(mm, start);
 		if (!vma || start < vma->vm_start) {
 			ret = -EFAULT;
 			goto out;
 		}
-		tuples[i].folio = ppps_folio_prealloc(mm, vma, start, false);
-		if (!tuples[i].folio) {
-			ret = -ENOMEM;
-			goto out;
+		if (!tuples[i].boundary) {
+			/*
+			 * This folio is populated one slice at a time before its
+			 * PTEs are installed, so under VM_MTE its tag storage must
+			 * be initialised (__GFP_ZEROTAGS) up front.  Otherwise
+			 * mte_sync_tags() would wipe the tags copied into earlier
+			 * slices when the first tagged PTE is set.  Whole-folio
+			 * copies (tuple COW) get their tags from copy_highpage()
+			 * and do not need this.
+			 */
+			tuples[i].folio = ppps_folio_prealloc(mm, vma, start,
+				!!(vma->vm_flags & VM_MTE));
+			if (!tuples[i].folio) {
+				ret = -ENOMEM;
+				goto out;
+			}
+			continue;
+		}
+		for (address = start; address < end;
+		     address += PAGE_SIZE_COMPAT) {
+			unsigned int slice;
+
+			vma = find_vma(mm, address);
+			if (!vma || address < vma->vm_start) {
+				ret = -EFAULT;
+				goto out;
+			}
+			slice = vma_address_to_slice(vma, address);
+			tuples[i].fallback[slice] =
+				ppps_folio_prealloc(mm, vma, address, true);
+			if (!tuples[i].fallback[slice]) {
+				ret = -ENOMEM;
+				goto out;
+			}
 		}
 	}
 
@@ -1182,14 +1358,23 @@ int ppps_anon_reslice_range(struct mm_struct *mm, unsigned long old_addr,
 	for (i = 0; i < nr_tuples; i++) {
 		if (!tuples[i].normal && !tuples[i].zero)
 			continue;
-		ppps_anon_reslice_tuple(mm, &tuples[i], old_addr, new_addr, len);
+		if (tuples[i].boundary)
+			ppps_anon_reslice_boundary(mm, &tuples[i], old_addr,
+						   new_addr, len);
+		else
+			ppps_anon_reslice_tuple(mm, &tuples[i], old_addr,
+						new_addr, len);
 		tuples[i].folio = NULL;
 	}
 	mmu_notifier_invalidate_range_end(&range);
 out:
-	for (i = 0; i < nr_tuples; i++)
+	for (i = 0; i < nr_tuples; i++) {
 		if (tuples[i].folio)
 			folio_put(tuples[i].folio);
+		for (j = 0; j < PPPS_SLICES_PER_PAGE; j++)
+			if (tuples[i].fallback[j])
+				folio_put(tuples[i].fallback[j]);
+	}
 	kvfree(tuples);
 	return ret;
 }
@@ -1453,12 +1638,16 @@ void ppps_anon_swapin_install(const struct ppps_anon_swapin_ctx *ctx,
  */
 
 enum ppps_anon_wp_type ppps_anon_wp_type(struct vm_area_struct *vma,
-					 struct folio *folio, pte_t pte)
+					 struct folio *folio,
+					 unsigned long address, pte_t pte)
 {
 	if (!ppps_mm_is_compat(vma->vm_mm))
 		return PPPS_ANON_WP_NONE;
 	if (folio && folio_test_ppps_compat_anon(folio))
 		return PPPS_ANON_WP_COMPAT;
+	if (folio && !folio_test_anon(folio) &&
+	    ppps_vma_address_shares_tuple(vma, address))
+		return PPPS_ANON_WP_FILE_COW;
 	if (!folio && vma_is_anonymous(vma) && is_zero_pfn(pte_pfn(pte)))
 		return PPPS_ANON_WP_ZERO;
 	return PPPS_ANON_WP_NONE;
@@ -1505,7 +1694,7 @@ static vm_fault_t ppps_wp_zero_tuple_copy(struct vm_fault *vmf)
 		goto out;
 	}
 
-	tuple_folio = ppps_anon_hole_fill_folio(vma, ptep, address);
+	tuple_folio = ppps_anon_hole_fill_folio(vma, ptep, address, NULL);
 	if (tuple_folio) {
 		ppps_anon_clear_slice(vma, tuple_folio, address);
 		folio_put(new_folio);
@@ -1656,6 +1845,83 @@ static vm_fault_t ppps_wp_compat_copy(struct vm_fault *vmf,
 }
 
 /*
+ * Replace one private file PTE with a slice of an already existing compat
+ * anonymous tuple.  The tuple owns one rmap/reference/RSS charge for the
+ * whole (mm, tuple), so adding another slice changes only the file RSS and
+ * file-page rmap for the PTE being replaced.  Falls back to wp_page_copy()
+ * when no exclusive tuple folio exists.
+ */
+static vm_fault_t ppps_file_cow_wp(struct vm_fault *vmf,
+				   struct folio *src_folio)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct mm_struct *mm = vma->vm_mm;
+	struct mmu_notifier_range range;
+	struct folio *tuple_folio;
+	spinlock_t *ptl; /* Protects the faulting PTE and tuple lookup. */
+	pte_t old_pte, entry;
+	pte_t *ptep;
+	vm_fault_t ret;
+	bool multi_folio;
+
+	if (WARN_ON_ONCE(vmf->flags & FAULT_FLAG_UNSHARE))
+		return wp_page_copy(vmf);
+
+	delayacct_wpcopy_start();
+	ret = vmf_anon_prepare(vmf);
+	if (ret)
+		goto out_put;
+
+	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm,
+				vmf->address, vmf->address + PAGE_SIZE_COMPAT);
+	mmu_notifier_invalidate_range_start(&range);
+
+	ptep = pte_offset_map_lock(mm, vmf->pmd, vmf->address, &ptl);
+	if (!ptep || !pte_same(ptep_get(ptep), vmf->orig_pte)) {
+		if (ptep)
+			pte_unmap_unlock(ptep, ptl);
+		mmu_notifier_invalidate_range_end(&range);
+		ret = 0;
+		goto out_put;
+	}
+
+	tuple_folio = ppps_anon_hole_fill_folio(vma, ptep, vmf->address,
+						&multi_folio);
+	if (!tuple_folio) {
+		pte_unmap_unlock(ptep, ptl);
+		mmu_notifier_invalidate_range_end(&range);
+		delayacct_wpcopy_end();
+		ret = wp_page_copy(vmf);
+		if (!ret)
+			count_vm_event(multi_folio ? PPPS_FILE_COW_MULTI_FOLIO :
+						     PPPS_FILE_COW_ALLOC);
+		return ret;
+	}
+
+	old_pte = ptep_get(ptep);
+	ppps_anon_fill_slice_from(tuple_folio, vma, vmf->address, vmf->page);
+	flush_cache_page(vma, vmf->address, pte_pfn(old_pte));
+	ptep_clear_flush(vma, vmf->address, ptep);
+
+	dec_mm_counter(mm, mm_counter_file(src_folio));
+	entry = vma_pte_mkslice(vma, mk_pte(&tuple_folio->page, vma->vm_page_prot), vmf->address);
+	entry = pte_sw_mkyoung(maybe_mkwrite(pte_mkdirty(entry), vma));
+	entry = ppps_pte_inherit(entry, old_pte);
+	set_pte_at(mm, vmf->address, ptep, entry);
+	update_mmu_cache_range(vmf, vma, vmf->address, ptep, 1);
+	folio_remove_rmap_pte(src_folio, vmf->page, vma);
+	count_vm_event(PPPS_FILE_COW_FILL);
+
+	pte_unmap_unlock(ptep, ptl);
+	mmu_notifier_invalidate_range_end(&range);
+	ret = 0;
+out_put:
+	folio_put(src_folio);
+	delayacct_wpcopy_end();
+	return ret;
+}
+
+/*
  * Called from do_wp_page() with the old folio referenced and the PTE lock
  * dropped, exactly like wp_page_copy().
  */
@@ -1667,6 +1933,8 @@ vm_fault_t ppps_anon_wp_copy(struct vm_fault *vmf, struct folio *folio,
 		return ppps_wp_compat_copy(vmf, folio);
 	case PPPS_ANON_WP_ZERO:
 		return ppps_wp_zero_tuple_copy(vmf);
+	case PPPS_ANON_WP_FILE_COW:
+		return ppps_file_cow_wp(vmf, folio);
 	default:
 		return wp_page_copy(vmf);
 	}
@@ -1874,7 +2142,7 @@ bool ppps_anon_fault_anon_prepare(struct vm_fault *vmf, struct folio **foliop,
 		return false;
 	lockdep_assert_held(vmf->ptl);
 	VM_BUG_ON(pte_present(ptep_get(vmf->pte)));
-	folio = ppps_anon_hole_fill_folio(vma, vmf->pte, *addr);
+	folio = ppps_anon_hole_fill_folio(vma, vmf->pte, *addr, NULL);
 	if (folio) {
 		ppps_anon_clear_slice(vma, folio, *addr);
 		folio_put(*foliop);
@@ -1885,4 +2153,89 @@ bool ppps_anon_fault_anon_prepare(struct vm_fault *vmf, struct folio **foliop,
 	VM_BUG_ON(*nr_pages < 1 || *nr_pages > PPPS_SLICES_PER_PAGE);
 	vmf->pte -= (vmf->address - *addr) >> PAGE_SHIFT_COMPAT;
 	return false;
+}
+
+static bool ppps_anon_is_file_cow(struct vm_fault *vmf)
+{
+	return (vmf->flags & FAULT_FLAG_WRITE) &&
+		!(vmf->vma->vm_flags & VM_SHARED) &&
+		!vma_is_anonymous(vmf->vma) &&
+		ppps_vma_address_shares_tuple(vmf->vma, vmf->address);
+}
+
+/**
+ * ppps_anon_file_cow_no_prealloc - recognize a deferred COW allocation
+ * @vmf: file fault, before taking the PTL
+ *
+ * No PTE, lock, reference or counter changes. This is not permission to reuse
+ * a tuple; the event hook must recheck under the PTL.
+ *
+ * Return: true when this compat file COW skipped its preallocation.
+ */
+bool ppps_anon_file_cow_no_prealloc(struct vm_fault *vmf)
+{
+	return ppps_anon_is_file_cow(vmf) && !vmf->cow_page;
+}
+
+/**
+ * ppps_anon_fault_file_cow - finish a compat private-file COW slice
+ * @vmf: revalidated missing PTE with PTL held and source file folio locked
+ * @foliop: preallocated COW folio, or source folio if allocation was deferred
+ * @ret: fault result, written only when the event is handled
+ *
+ * A reused tuple keeps its rmap/ref/RSS. Fill the slice, install its PTE, put
+ * any unused preallocation, clear cow_page and return the final tuple folio
+ * through @foliop for the caller's unlock/mlock epilogue. If revalidation
+ * cannot reuse and cow_page is NULL, end this fault with VM_FAULT_NOPAGE;
+ * leave the source and temporary-reference cleanup to the caller.
+ *
+ * A supplied preallocation instead starts a new tuple through the existing
+ * set_pte_range() primitive, followed by the original RSS/event accounting.
+ * Its allocation reference becomes the mapping reference; cow_page remains
+ * unchanged. No PTL or source-folio lock is released by any result.
+ *
+ * Return: false for an unhandled/native event, with all inputs unchanged;
+ * true with *@ret == 0 after installation, or VM_FAULT_NOPAGE without it.
+ */
+bool ppps_anon_fault_file_cow(struct vm_fault *vmf, struct folio **foliop,
+		vm_fault_t *ret)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	unsigned long addr = vmf->address;
+	struct folio *tuple_folio;
+	bool multi_folio;
+	pte_t entry;
+
+	if (!ppps_anon_is_file_cow(vmf))
+		return false;
+	lockdep_assert_held(vmf->ptl);
+	VM_BUG_ON(pte_present(ptep_get(vmf->pte)));
+	tuple_folio = ppps_anon_hole_fill_folio(vma, vmf->pte, addr,
+						&multi_folio);
+	if (tuple_folio) {
+		ppps_anon_fill_slice_from(tuple_folio, vma, addr, vmf->page);
+		flush_icache_pages(vma, &tuple_folio->page, 1);
+		entry = mk_pte(&tuple_folio->page, vma->vm_page_prot);
+		entry = vma_pte_mkslice(vma, entry, addr);
+		entry = pte_sw_mkyoung(maybe_mkwrite(pte_mkdirty(entry), vma));
+		if (unlikely(vmf_orig_pte_uffd_wp(vmf)))
+			entry = pte_mkuffd_wp(entry);
+		set_pte_at(vma->vm_mm, addr, vmf->pte, entry);
+		update_mmu_cache_range(vmf, vma, addr, vmf->pte, 1);
+		count_vm_event(PPPS_FILE_COW_FILL);
+		if (vmf->cow_page)
+			folio_put(*foliop);
+		vmf->cow_page = NULL;
+		*foliop = tuple_folio;
+	} else if (!vmf->cow_page) {
+		*ret = VM_FAULT_NOPAGE;
+		return true;
+	} else {
+		set_pte_range(vmf, *foliop, vmf->cow_page, 1, addr);
+		add_mm_counter(vma->vm_mm, MM_ANONPAGES, 1);
+		count_vm_event(multi_folio ? PPPS_FILE_COW_MULTI_FOLIO :
+					    PPPS_FILE_COW_ALLOC);
+	}
+	*ret = 0;
+	return true;
 }
