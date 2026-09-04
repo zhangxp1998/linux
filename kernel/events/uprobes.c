@@ -476,6 +476,44 @@ static int update_ref_ctr(struct uprobe *uprobe, struct mm_struct *mm,
 }
 
 /*
+ * GUP has already broken COW for this compat mapping. Keep its tuple rmap,
+ * RSS and reference intact: replacing or zapping one PTE cannot release the
+ * backing folio while sibling slices still map it.
+ */
+static int uprobe_write_compat(struct vm_area_struct *vma, unsigned long vaddr,
+			       struct page *page, uprobe_opcode_t opcode)
+{
+	struct folio *folio = page_folio(page);
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned long addr = vaddr & MM_PAGE_MASK(mm);
+	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, addr, PVMW_SYNC);
+	pte_t entry;
+	int ret = -EAGAIN;
+
+	if (!page_vma_mapped_walk(&pvmw))
+		return ret;
+	if (!pvmw.pte || pvmw.address != addr)
+		goto out;
+	entry = ptep_get(pvmw.pte);
+	if (!pte_present(entry) || pte_page(entry) != page ||
+	    !folio_test_anon(folio) ||
+	    (!pte_write(entry) && (!PageAnonExclusive(page) ||
+				 userfaultfd_pte_wp(vma, entry))))
+		goto out;
+
+	flush_cache_page(vma, addr, pte_pfn(entry));
+	entry = ptep_clear_flush(vma, addr, pvmw.pte);
+	copy_to_page(page, uprobe_vma_page_offset(vma, vaddr), &opcode,
+		     UPROBE_SWBP_INSN_SIZE);
+	smp_wmb();
+	set_pte_at(mm, addr, pvmw.pte, pte_mkdirty(entry));
+	ret = 0;
+out:
+	page_vma_mapped_walk_done(&pvmw);
+	return ret;
+}
+
+/*
  * NOTE:
  * Expect the breakpoint instruction to be the smallest size instruction for
  * the architecture. If an arch has variable length instruction and the
@@ -505,6 +543,8 @@ int uprobe_write_opcode(struct arch_uprobe *auprobe, struct mm_struct *mm,
 
 	is_register = is_swbp_insn(&opcode);
 	uprobe = container_of(auprobe, struct uprobe, arch);
+	if (ppps_mm_is_compat(mm))
+		gup_flags |= FOLL_WRITE | FOLL_SPLIT_PMD;
 
 retry:
 	if (is_register)
@@ -545,6 +585,11 @@ retry:
 	ret = anon_vma_prepare(vma);
 	if (ret)
 		goto put_old;
+
+	if (ppps_mm_is_compat(mm)) {
+		ret = uprobe_write_compat(vma, vaddr, old_page, opcode);
+		goto put_old;
+	}
 
 	ret = -ENOMEM;
 	new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vaddr);
@@ -592,8 +637,8 @@ put_old:
 		goto retry;
 
 	/* Revert back reference counter if instruction update failed. */
-	if (ret && is_register && ref_ctr_updated)
-		update_ref_ctr(uprobe, mm, -1);
+	if (ret && ref_ctr_updated)
+		update_ref_ctr(uprobe, mm, is_register ? -1 : 1);
 
 	/* try collapse pmd for compound page */
 	if (!ret && orig_page_huge)

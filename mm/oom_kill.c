@@ -438,7 +438,9 @@ static int dump_task(struct task_struct *p, void *arg)
 	pr_info("[%7d] %5d %5d %8lu %8lu %8lu %8lu %9lu %8ld %8lu         %5hd %s\n",
 		task->pid, from_kuid(&init_user_ns, task_uid(task)),
 		task->tgid, task->mm->total_vm, get_mm_rss(task->mm),
-		get_mm_counter(task->mm, MM_ANONPAGES), get_mm_counter(task->mm, MM_FILEPAGES),
+		(unsigned long)(get_mm_counter_bytes(task->mm, MM_ANONPAGES) >>
+				MM_PAGE_SHIFT(task->mm)),
+		get_mm_counter(task->mm, MM_FILEPAGES),
 		get_mm_counter(task->mm, MM_SHMEMPAGES), mm_pgtables_bytes(task->mm),
 		get_mm_counter(task->mm, MM_SWAPENTS),
 		task->signal->oom_score_adj, task->comm);

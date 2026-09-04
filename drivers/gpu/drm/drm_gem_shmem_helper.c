@@ -520,7 +520,9 @@ static vm_fault_t drm_gem_shmem_fault(struct vm_fault *vmf)
 	pgoff_t page_offset;
 
 	/* We don't use vmf->pgoff since that has the fake offset */
-	page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
+	page_offset = ((vmf->address - vma->vm_start) +
+		       ((unsigned long)vma_slice_off(vma) << PAGE_SHIFT_COMPAT)) >>
+		      PAGE_SHIFT;
 
 	dma_resv_lock(shmem->base.resv, NULL);
 

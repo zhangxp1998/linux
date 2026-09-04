@@ -1205,39 +1205,11 @@ static ssize_t __iov_iter_get_pages_alloc(struct iov_iter *i,
 			gup_flags |= FOLL_NOFAULT;
 
 		addr = first_iovec_segment(i, &maxsize);
-		if (ppps_mm_is_compat(mm)) {
-			struct vm_area_struct *vma;
-			size_t offset = mm_offset_in_page(mm, addr);
-
-			/*
-			 * A page array and one initial offset cannot describe
-			 * multiple process-page slices within native pages.  Return
-			 * one process page at a time so callers can iterate safely.
-			 */
-			maxsize = min(maxsize, MM_PAGE_SIZE(mm) - offset);
-			n = want_pages_array(pages, maxsize, 0,
-					     min(maxpages, 1U));
-			if (!n)
-				return -ENOMEM;
-
-			addr = untagged_addr(addr);
-			mmap_read_lock(mm);
-			vma = vma_lookup(mm, addr);
-			if (!vma) {
-				res = -EFAULT;
-				goto unlock;
-			}
-			*start = ((size_t)vma_address_to_slice(vma, addr) <<
-				  MM_PAGE_SHIFT(mm)) + offset;
-			res = get_user_pages(addr, 1, gup_flags, *pages);
-unlock:
-			mmap_read_unlock(mm);
-			if (unlikely(res <= 0))
-				return res;
-			iov_iter_advance(i, maxsize);
-			return maxsize;
-		}
-
+		if (ppps_mm_is_compat(current->mm))
+			return iov_iter_extract_compat_page(i, addr, pages,
+							    maxsize, maxpages,
+							    gup_flags, start,
+							    false);
 		*start = addr % PAGE_SIZE;
 		addr &= PAGE_MASK;
 		n = want_pages_array(pages, maxsize, *start, maxpages);
@@ -1884,38 +1856,13 @@ static ssize_t iov_iter_extract_user_pages(struct iov_iter *i,
 		gup_flags |= FOLL_NOFAULT;
 
 	addr = first_iovec_segment(i, &maxsize);
-	offset = addr % pgsize;
-	if (ppps_mm_is_compat(current->mm)) {
-		struct mm_struct *mm = current->mm;
-		struct vm_area_struct *vma;
-
-		/* See the matching get_pages path above. */
-		maxsize = min(maxsize, pgsize - offset);
-		maxpages = want_pages_array_mmsz(pages, maxsize, 0,
-						 min(maxpages, 1U), pgsize);
-		if (!maxpages)
-			return -ENOMEM;
-
-		addr = untagged_addr(addr);
-		mmap_read_lock(mm);
-		vma = vma_lookup(mm, addr);
-		if (!vma) {
-			res = -EFAULT;
-			goto unlock;
-		}
-		*offset0 = ((size_t)vma_address_to_slice(vma, addr) <<
-			    MM_PAGE_SHIFT(mm)) + offset;
-		res = pin_user_pages(addr, 1, gup_flags, *pages);
-unlock:
-		mmap_read_unlock(mm);
-		if (unlikely(res <= 0))
-			return res;
-		iov_iter_advance(i, maxsize);
-		return maxsize;
-	}
-
-	addr &= pgmask;
-	maxpages = want_pages_array_mmsz(pages, maxsize, offset, maxpages, pgsize);
+	if (ppps_mm_is_compat(current->mm))
+		return iov_iter_extract_compat_page(i, addr, pages, maxsize,
+						    maxpages, gup_flags,
+						    offset0, true);
+	*offset0 = offset = addr % PAGE_SIZE;
+	addr &= PAGE_MASK;
+	maxpages = want_pages_array(pages, maxsize, offset, maxpages);
 	if (!maxpages)
 		return -ENOMEM;
 	res = pin_user_pages_fast(addr, maxpages, gup_flags, *pages);

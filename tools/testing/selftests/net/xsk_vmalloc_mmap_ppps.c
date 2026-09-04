@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * AF_XDP for a 4K compat process: a 4K-aligned, non-16K-aligned UMEM page
- * registers, a subpage RX ring offset cookie is rejected, and every 4K slice
- * of a vmalloc'd multi-native-page RX ring maps at misaligned and aligned
+ * AF_XDP for a 4K compat process: a 4K-aligned, non-16K-aligned anonymous
+ * UMEM page is rejected (packed compat anonymous memory cannot back a UMEM),
+ * a subpage RX ring offset cookie is rejected, and every 4K slice of a
+ * vmalloc'd multi-native-page RX ring maps at misaligned and aligned
  * addresses.  A native probe first decides the expected multi-page UMEM result.
  */
 #define _GNU_SOURCE
@@ -106,8 +107,8 @@ static int run_test(bool native_16k)
 		setsockopt(fd, SOL_XDP, XDP_UMEM_REG, &umem_reg,
 			   sizeof(umem_reg));
 	saved_errno = errno;
-	ksft_test_result(reg_ret == 0,
-			 "register one logical UMEM page (errno=%d)\n",
+	ksft_test_result(reg_ret == -1 && saved_errno == EOPNOTSUPP,
+			 "reject a packed anonymous UMEM slice (errno=%d)\n",
 			 saved_errno);
 	multi_fd = socket(AF_XDP, SOCK_RAW | SOCK_CLOEXEC, 0);
 	if (multi_fd < 0)

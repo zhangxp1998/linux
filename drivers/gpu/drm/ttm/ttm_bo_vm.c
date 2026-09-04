@@ -207,9 +207,9 @@ vm_fault_t ttm_bo_vm_fault_reserved(struct vm_fault *vmf,
 	if (unlikely(err != 0))
 		return VM_FAULT_SIGBUS;
 
-	page_offset = ((address - vma->vm_start) >> PAGE_SHIFT) +
-		vma->vm_pgoff - drm_vma_node_start(&bo->base.vma_node);
-	page_last = vma_native_pages(vma) + vma->vm_pgoff -
+	page_offset = vma_linear_page_index(vma, address) -
+		drm_vma_node_start(&bo->base.vma_node);
+	page_last = vma_last_pgoff(vma) + 1 -
 		drm_vma_node_start(&bo->base.vma_node);
 
 	if (unlikely(page_offset >= PFN_UP(bo->base.size)))
@@ -273,8 +273,10 @@ vm_fault_t ttm_bo_vm_fault_reserved(struct vm_fault *vmf,
 				break;
 		}
 
-		address += PAGE_SIZE;
-		if (unlikely(++page_offset >= page_last))
+		address += MM_PAGE_SIZE(vma->vm_mm);
+		page_offset = vma_linear_page_index(vma, address) -
+			drm_vma_node_start(&bo->base.vma_node);
+		if (unlikely(address >= vma->vm_end || page_offset >= page_last))
 			break;
 	}
 	return ret;

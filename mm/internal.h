@@ -19,6 +19,8 @@
 #include <linux/swap_cgroup.h>
 #include <linux/tracepoint-defs.h>
 
+#include "ppps.h"
+
 /* Internal core VMA manipulation functions. */
 #include "vma.h"
 
@@ -414,6 +416,8 @@ static inline vm_fault_t vmf_anon_prepare(struct vm_fault *vmf)
 }
 
 vm_fault_t do_swap_page(struct vm_fault *vmf);
+vm_fault_t wp_page_copy(struct vm_fault *vmf);
+bool wp_can_reuse_anon_folio(struct folio *folio, struct vm_area_struct *vma);
 void folio_rotate_reclaimable(struct folio *folio);
 bool __folio_end_writeback(struct folio *folio);
 void deactivate_file_folio(struct folio *folio);
@@ -1050,11 +1054,17 @@ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
 	pgoff_t pgoff;
 	unsigned long address;
 
-	/* Common case, plus ->pgoff is invalid for KSM */
+	address = ppps_pvmw_walk_end(pvmw);
+	if (address)
+		return address;
+
+	/* Common case, plus ->pgoff is invalid for KSM. */
 	if (pvmw->nr_pages == 1 && !ppps_vma_has_slices(vma))
 		return pvmw->address + PAGE_SIZE;
 
-	pgoff = pvmw->pgoff + pvmw->nr_pages;
+	/* Anonymous offsets count process pages, not native pages. */
+	pgoff = pvmw->pgoff +
+		(pvmw->nr_pages << (PAGE_SHIFT - vma_pgoff_shift(vma)));
 	address = vma_pgoff_to_address(vma, pgoff);
 	/* Check for address beyond vma (or wrapped through 0?) */
 	if (address < vma->vm_start || address > vma->vm_end)
@@ -1596,5 +1606,16 @@ static inline bool reclaim_pt_is_enabled(unsigned long start, unsigned long end,
 }
 #endif /* CONFIG_PT_RECLAIM */
 
+#ifdef CONFIG_USERFAULTFD
+/* Revalidate a UFFD move after reacquiring both PTE locks. */
+static inline bool is_pte_pages_stable(pte_t *dst_pte, pte_t *src_pte,
+				       pte_t orig_dst_pte, pte_t orig_src_pte,
+				       pmd_t *dst_pmd, pmd_t dst_pmdval)
+{
+	return pte_same(ptep_get(src_pte), orig_src_pte) &&
+	       pte_same(ptep_get(dst_pte), orig_dst_pte) &&
+	       pmd_same(dst_pmdval, pmdp_get_lockless(dst_pmd));
+}
+#endif /* CONFIG_USERFAULTFD */
 
 #endif	/* __MM_INTERNAL_H */

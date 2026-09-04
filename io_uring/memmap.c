@@ -271,11 +271,14 @@ int io_uring_mmap_pages(struct io_ring_ctx *ctx, struct vm_area_struct *vma,
 	size_t allowed_size = MM_PAGE_ALIGN(vma->vm_mm, mmap_size);
 	unsigned long nr_pages = npages;
 
-	if (allowed_size < mmap_size ||
-	    vma->vm_end - vma->vm_start > allowed_size)
+	if (ppps_mm_is_compat(vma->vm_mm) &&
+	    (!mmap_size || allowed_size < mmap_size ||
+	     vma->vm_end - vma->vm_start > allowed_size))
 		return -EINVAL;
 
 	vm_flags_set(vma, VM_DONTEXPAND);
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return vm_map_pages_zero(vma, pages, nr_pages);
 	return vm_insert_pages(vma, vma->vm_start, pages, &nr_pages);
 }
 

@@ -40,6 +40,7 @@
 #include <asm/tlb.h>
 
 #include "internal.h"
+#include "ppps.h"
 #include "swap.h"
 
 /*
@@ -340,8 +341,8 @@ static inline int madvise_folio_pte_batch(struct vm_area_struct *vma,
 static inline int madvise_folio_nr_ptes(struct vm_area_struct *vma,
 					struct folio *folio)
 {
-	if (ppps_mm_is_compat(mm) && folio_test_anon(folio))
-		return folio_nr_pages(folio);
+	if (ppps_mm_is_compat(vma->vm_mm) && folio_test_anon(folio))
+		return 1;
 
 	return folio_nr_ptes(folio, vma);
 }
@@ -705,6 +706,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 	unsigned long next;
 	int nr, max_nr;
 	unsigned long page_size = MM_PAGE_SIZE(mm);
+	const unsigned long range_start = addr;
 
 	next = pmd_addr_end_mm(mm, addr, end);
 	if (pmd_trans_huge(*pmd))
@@ -747,6 +749,15 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 
 		folio = vm_normal_folio(vma, addr, ptent);
 		if (!folio || folio_is_zone_device(folio))
+			continue;
+		/*
+		 * Lazyfree is a folio property.  Like a native page, a compat
+		 * tuple is only freed when the range covers every slice mapping
+		 * it; a partially covered tuple keeps its other slices' data.
+		 */
+		if (folio_test_ppps_compat_anon(folio) &&
+		    !ppps_anon_tuple_within(vma, folio, pte, addr, range_start,
+					    end))
 			continue;
 
 		/*
@@ -1651,15 +1662,9 @@ int madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 	unsigned long end;
 	unsigned long len;
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	if (!MM_PAGE_ALIGNED(mm, start))
+	if (mm_uapi_offset_in_page(mm, start))
 		return -EINVAL;
-	len = MM_PAGE_ALIGN(mm, len_in);
-#else
-	if (start & ~__PAGE_MASK)
-		return -EINVAL;
-	len = (len_in + ~__PAGE_MASK) & __PAGE_MASK;
-#endif
+	len = MM_UAPI_PAGE_ALIGN(mm, len_in);
 
 	/* Check to see whether len was rounded up from small -ve to zero */
 	if (len_in && !len)
@@ -1870,15 +1875,9 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	if (!madvise_behavior_valid(behavior))
 		return -EINVAL;
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	if (!MM_PAGE_ALIGNED(mm, start))
+	if (!MM_UAPI_PAGE_ALIGNED(mm, start))
 		return -EINVAL;
-	len = MM_PAGE_ALIGN(mm, len_in);
-#else
-	if (!__PAGE_ALIGNED(start))
-		return -EINVAL;
-	len = __PAGE_ALIGN(len_in);
-#endif
+	len = MM_UAPI_PAGE_ALIGN(mm, len_in);
 
 	/* Check to see whether len was rounded up from small -ve to zero */
 	if (len_in && !len)

@@ -49,6 +49,7 @@
 #include <linux/swapops.h>
 #include <linux/swap_cgroup.h>
 #include "internal.h"
+#include "ppps.h"
 #include "swap.h"
 #include <trace/hooks/bl_hib.h>
 #include <trace/hooks/mm.h>
@@ -2095,6 +2096,8 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	spinlock_t *ptl;
 	pte_t *pte, new_pte, old_pte;
 	bool hwpoisoned = false;
+	bool ppps_compat = ppps_vma_address_shares_tuple(vma, addr);
+	bool ppps_first_slice = true;
 	int ret = 1;
 
 	swapcache = folio;
@@ -2118,6 +2121,8 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	}
 
 	old_pte = ptep_get(pte);
+	if (ppps_compat)
+		ppps_first_slice = ppps_anon_slice_takes_ownership(vma, folio, pte, addr);
 
 	if (unlikely(hwpoisoned || !folio_test_uptodate(folio))) {
 		swp_entry_t swp_entry;
@@ -2141,6 +2146,16 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	arch_swap_restore(folio_swap(entry, folio), folio);
 
 	dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
+	new_pte = pte_mkold(mk_pte(page, vma->vm_page_prot));
+	new_pte = vma_pte_mkslice(vma, new_pte, addr);
+	if (pte_swp_soft_dirty(old_pte))
+		new_pte = pte_mksoft_dirty(new_pte);
+	if (pte_swp_uffd_wp(old_pte))
+		new_pte = pte_mkuffd_wp(new_pte);
+	/* Another slice already holds this (mm, tuple)'s rmap and reference. */
+	if (!ppps_first_slice)
+		goto setpte;
+
 	inc_mm_counter(vma->vm_mm, MM_ANONPAGES);
 	folio_get(folio);
 	if (folio == swapcache) {
@@ -2152,7 +2167,9 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 		 * call and have the folio locked.
 		 */
 		VM_BUG_ON_FOLIO(folio_test_writeback(folio), folio);
-		if (pte_swp_exclusive(old_pte))
+		/* A sibling may still fault this same swapcache folio in. */
+		if (pte_swp_exclusive(old_pte) &&
+		    (!ppps_compat || __swap_count(entry) == 1))
 			rmap_flags |= RMAP_EXCLUSIVE;
 		/*
 		 * We currently only expect small !anon folios, which are either
@@ -2170,11 +2187,6 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 		folio_add_new_anon_rmap(folio, vma, addr, RMAP_EXCLUSIVE);
 		folio_add_lru_vma(folio, vma);
 	}
-	new_pte = pte_mkold(mk_pte(page, vma->vm_page_prot));
-	if (pte_swp_soft_dirty(old_pte))
-		new_pte = pte_mksoft_dirty(new_pte);
-	if (pte_swp_uffd_wp(old_pte))
-		new_pte = pte_mkuffd_wp(new_pte);
 setpte:
 	set_pte_at(vma->vm_mm, addr, pte, new_pte);
 	swap_free(entry);
@@ -3233,6 +3245,10 @@ static void swap_header_to_native_pages(union swap_header *swap_header,
 	sort(swap_header->info.badpages, nr_badpages,
 	     sizeof(swap_header->info.badpages[0]), swap_badpage_cmp, NULL);
 	for (i = 0; i < nr_badpages; i++) {
+		/* Header/padding fragments are not usable native swap slots. */
+		if (!swap_header->info.badpages[i] ||
+		    swap_header->info.badpages[i] > swap_header->info.last_page)
+			continue;
 		if (nr_unique && swap_header->info.badpages[i] ==
 				 swap_header->info.badpages[nr_unique - 1])
 			continue;

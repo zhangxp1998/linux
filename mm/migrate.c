@@ -55,6 +55,7 @@
 #include <trace/hooks/vmscan.h>
 
 #include "internal.h"
+#include "ppps.h"
 
 bool isolate_movable_page(struct page *page, isolate_mode_t mode)
 {
@@ -305,6 +306,7 @@ static bool remove_migration_pte(struct folio *folio,
 
 	while (page_vma_mapped_walk(&pvmw)) {
 		rmap_t rmap_flags = RMAP_NONE;
+		bool ppps_first_slice = true;
 		pte_t old_pte;
 		pte_t pte;
 		swp_entry_t entry;
@@ -326,11 +328,17 @@ static bool remove_migration_pte(struct folio *folio,
 		}
 #endif
 		old_pte = ptep_get(pvmw.pte);
-		if (rmap_walk_arg->map_unused_to_zeropage &&
+		if (!folio_test_ppps_compat_anon(folio) &&
+		    rmap_walk_arg->map_unused_to_zeropage &&
 		    try_to_map_unused_to_zeropage(&pvmw, folio, old_pte, idx))
 			continue;
 
-		folio_get(folio);
+		/* A packed tuple keeps one rmap/reference across all slices. */
+		if (folio_test_ppps_compat_anon(folio))
+			ppps_first_slice = ppps_anon_slice_takes_ownership(vma, folio,
+					pvmw.pte, pvmw.address);
+		if (ppps_first_slice)
+			folio_get(folio);
 		pte = mk_pte(new, READ_ONCE(vma->vm_page_prot));
 		pte = vma_pte_mkslice(vma, pte, pvmw.address);
 
@@ -383,11 +391,11 @@ static bool remove_migration_pte(struct folio *folio,
 		} else
 #endif
 		{
-			if (folio_test_anon(folio))
+			if (!folio_test_anon(folio))
+				folio_add_file_rmap_pte(folio, new, vma);
+			else if (ppps_first_slice)
 				folio_add_anon_rmap_pte(folio, new, vma,
 							pvmw.address, rmap_flags);
-			else
-				folio_add_file_rmap_pte(folio, new, vma);
 			set_pte_at(vma->vm_mm, pvmw.address, pvmw.pte, pte);
 		}
 		if (vma->vm_flags & VM_LOCKED)
@@ -707,6 +715,9 @@ int migrate_huge_page_move_mapping(struct address_space *mapping,
 void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
 {
 	int cpupid;
+
+	if (folio_test_ppps_compat_anon(folio))
+		folio_set_ppps_compat_anon(newfolio);
 
 	if (folio_test_referenced(folio))
 		folio_set_referenced(newfolio);

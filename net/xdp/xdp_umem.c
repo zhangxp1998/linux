@@ -120,7 +120,7 @@ static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 
 		/* A packed anonymous tuple maps address-selected slices. */
 		for (i = 0; i < npgs; i++) {
-			if (!folio_test_ppps_packed_anon(page_folio(umem->pgs[i])))
+			if (!folio_test_ppps_compat_anon(page_folio(umem->pgs[i])))
 				continue;
 			unpin_user_pages(umem->pgs, npgs);
 			npgs = -EOPNOTSUPP;

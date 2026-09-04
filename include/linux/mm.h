@@ -1033,10 +1033,11 @@ static inline bool vma_is_anonymous(struct vm_area_struct *vma)
 	return !vma->vm_ops;
 }
 
-/* Compat file/shared VMAs are the only ones whose PTEs carry vm_slice_off. */
+/* File/shared offsets stay sliced, even before ->mmap installs vm_ops. */
 static inline bool ppps_vma_has_slices(const struct vm_area_struct *vma)
 {
-	return ppps_mm_is_compat(vma->vm_mm) && vma->vm_ops;
+	return ppps_mm_is_compat(vma->vm_mm) &&
+		(vma->vm_file || vma->vm_ops || (vma->vm_flags & VM_SHARED));
 }
 
 /* Which process-page slice of its native page does @address map?  0 natively. */
@@ -1045,7 +1046,7 @@ static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma
 {
 	if (!ppps_mm_is_compat(vma->vm_mm))
 		return 0;
-	if (!vma->vm_ops)	/* anonymous: sliced by address alone */
+	if (!ppps_vma_has_slices(vma)) /* anonymous: sliced by address alone */
 		return (address >> PAGE_SHIFT_COMPAT) & PPPS_SLICE_MASK;
 	return (((address - vma->vm_start) >> PAGE_SHIFT_COMPAT) +
 		vma_slice_off(vma)) & PPPS_SLICE_MASK;
@@ -2083,22 +2084,8 @@ static inline struct folio *pfn_folio(unsigned long pfn)
 	return page_folio(pfn_to_page(pfn));
 }
 
-/*
- * folio_mk_pte_slice - Construct a PTE pointing to a specific subpage slice
- * @folio: the backing folio
- * @pte: the base PTE (aligned to host page)
- * @slice_idx: the index of the subpage slice within the host page
- *
- * Preserve the native page selected by the base PTE and adjust its physical
- * address to the requested process-page slice.
- */
-static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
-				       unsigned int slice_idx)
-{
-	return pte_mkslice(pte, vma_address_to_slice(vma, addr));
-}
-
 #ifdef CONFIG_MMU
+/* @pte re-pointed at the slice that @addr maps in @vma (see pte_mkslice()). */
 static inline pte_t vma_pte_mkslice(const struct vm_area_struct *vma, pte_t pte,
 				    unsigned long addr)
 {
@@ -3732,7 +3719,7 @@ extern unsigned long stack_guard_gap;
 
 static inline unsigned long mm_stack_guard_gap(const struct mm_struct *mm)
 {
-	return (stack_guard_gap >> PAGE_SHIFT) << MM_UAPI_PAGE_SHIFT(mm);
+	return (stack_guard_gap >> PAGE_SHIFT) << MM_PAGE_SHIFT(mm);
 }
 
 /* Generic expand stack which grows the stack according to GROWS{UP,DOWN} */
@@ -3830,7 +3817,7 @@ static inline unsigned long vma_native_pages(const struct vm_area_struct *vma)
 /* log2 of the unit vm_pgoff counts in: process pages for anonymous VMAs. */
 static inline unsigned int vma_pgoff_shift(const struct vm_area_struct *vma)
 {
-	return vma->vm_ops ? PAGE_SHIFT : MM_PAGE_SHIFT(vma->vm_mm);
+	return ppps_vma_has_slices(vma) ? PAGE_SHIFT : MM_PAGE_SHIFT(vma->vm_mm);
 }
 
 /*

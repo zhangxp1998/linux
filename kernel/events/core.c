@@ -6655,11 +6655,11 @@ static struct page *perf_mmap_ppps_page(struct perf_buffer *rb, bool aux,
 	}
 	if (off < page_size) {
 		*slice = 0;
-		return perf_mmap_to_page(rb, 0);
+		return perf_mmap_main_page(rb, 0);
 	}
 	off -= page_size;
 	*slice = offset_in_page(off) / page_size;
-	return perf_mmap_to_page(rb, 1 + off / PAGE_SIZE);
+	return perf_mmap_main_page(rb, 1 + off / PAGE_SIZE);
 }
 
 /* Map every process page of a compat VMA; writes go through pfn_mkwrite. */
@@ -9294,8 +9294,9 @@ void perf_event_mmap(struct vm_area_struct *vma)
 			/* .tid */
 			.start  = vma->vm_start,
 			.len    = vma->vm_end - vma->vm_start,
-			.pgoff  = vma->vm_file ? vma_file_offset(vma) :
-			  (u64)vma->vm_pgoff << MM_PAGE_SHIFT(vma->vm_mm),
+			.pgoff  = vma_is_anonymous(vma) ?
+				  (u64)vma->vm_pgoff << vma_pgoff_shift(vma) :
+				  vma_file_offset(vma),
 		},
 		/* .maj (attr_mmap2 only) */
 		/* .min (attr_mmap2 only) */

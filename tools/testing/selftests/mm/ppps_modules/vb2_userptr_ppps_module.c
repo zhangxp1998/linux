@@ -14,6 +14,7 @@
 #define USER_PAGE_SIZE 4096UL
 #define VB2_USERPTR_VMALLOC 1
 #define VB2_USERPTR_DMA_SG 2
+#define VB2_USERPTR_CAPTURE 3
 
 struct vb2_userptr_request {
 	__u64 user_addr;
@@ -93,6 +94,41 @@ out_free:
 	return ret;
 }
 
+/* A short capture followed by a cancelled capture on the same buffer. */
+static int run_capture(const struct vb2_userptr_request *req)
+{
+	struct vb2_queue q = { .dma_dir = DMA_FROM_DEVICE };
+	struct vb2_buffer vb = { .vb2_queue = &q };
+	const struct vb2_mem_ops *ops = &vb2_vmalloc_memops;
+	unsigned char __user *user = (void __user *)(unsigned long)req->user_addr;
+	unsigned char *vaddr;
+	void *priv;
+	int ret = 0;
+
+	priv = ops->get_userptr(&vb, ppps_misc_device.this_device,
+				(unsigned long)req->user_addr, req->length);
+	if (IS_ERR(priv))
+		return PTR_ERR(priv);
+	ops->prepare(priv);
+	vaddr = ops->vaddr(&vb, priv);
+	if (!vaddr) {
+		ret = -EIO;
+		goto out;
+	}
+	vaddr[0] = 0x31; /* The device only produces one byte. */
+	ops->finish(priv);
+	/* Userspace may edit the dequeued buffer before it is queued again. */
+	if (put_user(0x5a, user + USER_PAGE_SIZE)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ops->prepare(priv);
+	ops->finish(priv); /* Cancelled: the device did not write anything. */
+out:
+	ops->put_userptr(priv);
+	return ret;
+}
+
 static long test_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct vb2_userptr_request req;
@@ -109,6 +145,8 @@ static long test_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return run_vmalloc(&req);
 	case VB2_USERPTR_DMA_SG:
 		return run_dma_sg(&req);
+	case VB2_USERPTR_CAPTURE:
+		return run_capture(&req);
 	default:
 		return -EINVAL;
 	}

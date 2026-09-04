@@ -3,10 +3,6 @@
 
 LOCAL_HDRS += $(selfdir)/mm/local_config.h $(top_srcdir)/mm/gup_test.h
 LOCAL_HDRS += $(selfdir)/mm/mseal_helpers.h
-LOCAL_HDRS += $(selfdir)/mm/pagewalk_ppps.h
-LOCAL_HDRS += $(selfdir)/mm/mmu_notifier_ppps_module/mmu_notifier_ppps.h
-LOCAL_HDRS += $(selfdir)/mm/folio_within_range_ppps.h
-LOCAL_HDRS += $(selfdir)/mm/iov_iter_ppps.h
 
 include local_config.mk
 
@@ -52,7 +48,7 @@ CFLAGS += -U_FORTIFY_SOURCE
 PPPS_TESTS := \
 	aio_ring_ppps anon_pageout_ppps anon_vma_name_ppps \
 	bpf_array_mmap_ppps bpf_ringbuf_mmap_ppps bpf_stack_build_id_ppps \
-	dma_mmap_ppps elf_4k_align_ppps elf_4k_align_probe elf_core_ppps \
+	dma_mmap_ppps elf_core_ppps \
 	exec_user_args_ppps fadvise_dontneed_ppps fault_in_ppps \
 	file_cow_ppps filemap_eof_ppps folio_within_range_ppps \
 	fork_filemap_ppps fork_page_size_ppps futex_shared_ppps \
@@ -88,6 +84,7 @@ PPPS_TESTS := \
 
 PPPS_TESTS_arm64 := \
 	brk_aslr_ppps brk_aslr_ppps_sample elf_brk_gap_ppps exec_aslr_ppps \
+	elf_4k_align_ppps elf_4k_align_probe \
 	exec_aslr_ppps_helper exec_aslr_ppps_interp exec_stack_ppps \
 	exec_stack_random_ppps mmap_aslr_ppps mte_anon_ppps \
 	shmem_thp_mmap_ppps stack_aslr_ppps uprobe_ppps
@@ -100,10 +97,8 @@ TEST_GEN_FILES += dma_mmap_attrs_ppps
 TEST_GEN_FILES += dma_mmap_pages_ppps
 TEST_GEN_FILES += iommu_dma_mmap_ppps
 TEST_GEN_FILES += v9fs_mmap_close_ppps
-ifeq ($(ARCH),arm64)
 TEST_GEN_FILES += elf_4k_align_ppps
 TEST_GEN_FILES += elf_4k_align_probe
-endif
 TEST_GEN_FILES += elf_core_ppps
 TEST_GEN_FILES += taskstats_ppps
 TEST_GEN_FILES += rusage_ppps
@@ -120,6 +115,9 @@ TEST_GEN_FILES += mglru_ppps
 TEST_GEN_FILES += mmu_notifier_ppps
 TEST_GEN_FILES += fault_in_ppps
 TEST_GEN_FILES += anon_pageout_ppps
+TEST_GEN_FILES += packed_anon_ppps
+TEST_GEN_FILES += packed_swap_ppps
+TEST_GEN_FILES += hole_anon_ppps
 TEST_GEN_FILES += swapoff_ppps
 TEST_GEN_FILES += swap_vma_readahead_ppps
 TEST_GEN_FILES += madvise_free_ppps
@@ -170,22 +168,6 @@ TEST_GEN_FILES += thuge-gen
 TEST_GEN_FILES += transhuge-stress
 TEST_GEN_FILES += uffd-stress
 TEST_GEN_FILES += uffd-unit-tests
-TEST_GEN_FILES += userfaultfd_eof_ppps
-TEST_GEN_FILES += userfaultfd_mixed_ppps
-TEST_GEN_FILES += userfaultfd_remote_ppps
-TEST_GEN_FILES += userfaultfd_wp_remote_ppps
-TEST_GEN_FILES += userfaultfd_continue_remote_ppps
-TEST_GEN_FILES += userfaultfd_unregister_remote_ppps
-TEST_GEN_FILES += userfaultfd_poison_remote_ppps
-TEST_GEN_FILES += userfaultfd_remap_ppps
-TEST_GEN_FILES += exec_user_args_ppps
-TEST_GEN_FILES += userfaultfd_retry_ppps
-TEST_GEN_FILES += userfaultfd_shmem_ppps
-TEST_GEN_FILES += userfaultfd_zeropage_ppps
-TEST_GEN_FILES += vm_map_pages_ppps
-TEST_GEN_FILES += vb2_mmap_ppps
-TEST_GEN_FILES += vb2_userptr_ppps
-TEST_GEN_FILES += xdp_umem_ppps
 TEST_GEN_FILES += split_huge_page_test
 TEST_GEN_FILES += ksm_tests
 TEST_GEN_FILES += ksm_functional_tests
@@ -240,41 +222,16 @@ TEST_GEN_FILES += write_to_hugetlbfs
 endif
 
 TEST_PROGS := run_vmtests.sh
+TEST_GEN_PROGS += uffd_copy_tuple_ppps
 
 TEST_FILES := test_vmalloc.sh
 TEST_FILES += test_hmm.sh
 TEST_FILES += va_high_addr_switch.sh
 TEST_FILES += charge_reserved_hugetlb.sh
 TEST_FILES += hugetlb_reparenting_test.sh
-TEST_FILES += test_gup_retry_ppps.sh
-TEST_FILES += $(GUP_RETRY_PPPS_MODULE)
-TEST_FILES += test_iov_iter_ppps.sh
-TEST_FILES += $(IOV_ITER_PPPS_MODULE)
-TEST_FILES += test_mremap_pgoff_ppps.sh
-TEST_FILES += $(MREMAP_PGOFF_PPPS_MODULE)
-TEST_FILES += test_selinux_status_mmap_ppps.sh
-TEST_FILES += test_vm_iomap_memory_ppps.sh
-TEST_FILES += $(VM_IOMAP_MEMORY_PPPS_MODULE)
-TEST_FILES += test_dma_mmap_attrs_ppps.sh
-TEST_FILES += $(DMA_MMAP_ATTRS_PPPS_MODULE)
-TEST_FILES += test_dma_mmap_pages_ppps.sh
-TEST_FILES += $(DMA_MMAP_PAGES_PPPS_MODULE)
-TEST_FILES += test_iommu_dma_mmap_ppps.sh
-TEST_FILES += $(IOMMU_DMA_MMAP_PPPS_MODULE)
-TEST_FILES += test_v9fs_mmap_close_ppps.sh
-TEST_FILES += test_pagewalk_ppps.sh
-TEST_FILES += $(PAGEWALK_PPPS_MODULE)
-TEST_FILES += test_mmu_notifier_ppps.sh
-TEST_FILES += test_fault_in_ppps.sh
-TEST_FILES += $(FAULT_IN_PPPS_MODULE)
-TEST_FILES += test_folio_within_range_ppps.sh
-TEST_FILES += $(FOLIO_WITHIN_RANGE_PPPS_MODULE)
-TEST_FILES += test_vm_map_pages_ppps.sh
-TEST_FILES += $(VM_MAP_PAGES_PPPS_MODULE)
-TEST_FILES += test_vb2_mmap_ppps.sh
-TEST_FILES += $(VB2_MMAP_PPPS_MODULE)
-TEST_FILES += test_vb2_userptr_ppps.sh
-TEST_FILES += $(VB2_USERPTR_PPPS_MODULE)
+TEST_FILES += iommu_dma_mmap_ppps.sh mmu_notifier_ppps.sh \
+	      selinux_status_mmap_ppps.sh v9fs_mmap_close_ppps.sh \
+	      ../ppps/ppps_run_module.sh
 
 # required by charge_reserved_hugetlb.sh
 TEST_FILES += write_hugetlb_memory.sh
@@ -315,6 +272,10 @@ $(eval $(call ppps_test_hdrs,gup_retry_ppps,gup_retry_ppps.h))
 $(eval $(call ppps_test_hdrs,iov_iter_ppps,iov_iter_ppps.h))
 $(eval $(call ppps_test_hdrs,mmu_notifier_ppps,mmu_notifier_ppps.h))
 $(eval $(call ppps_test_hdrs,pagewalk_ppps,pagewalk_ppps.h))
+$(foreach t,file_cow_ppps hole_anon_ppps mte_anon_ppps packed_anon_ppps \
+	    packed_swap_ppps uffd_copy_tuple_ppps, \
+	$(eval $(call ppps_test_hdrs,$(t),ppps_tuple_test.h)))
+
 ifeq ($(ARCH),x86_64)
 BINARIES_32 := $(patsubst %,$(OUTPUT)/%,$(BINARIES_32))
 BINARIES_64 := $(patsubst %,$(OUTPUT)/%,$(BINARIES_64))

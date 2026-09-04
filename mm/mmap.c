@@ -2422,6 +2422,8 @@ int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
 	VMG_STATE(vmg, mm, &vmi, new_start, old_end, 0, vma->vm_pgoff);
 	struct vm_area_struct *next;
 	struct mmu_gather tlb;
+	struct ppps_mremap_folios *ppps_folios;
+	int ret;
 
 	BUG_ON(new_start > new_end);
 
@@ -2444,9 +2446,19 @@ int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
 	 * move the page tables downwards, on failure we rely on
 	 * process cleanup to remove whatever mess we made.
 	 */
-	if (length != move_page_tables(vma, old_start,
-				       vma, new_start, length, false, true))
-		return -ENOMEM;
+	ppps_folios = ppps_anon_mremap_prepare(vma, old_start, new_start, length);
+	if (IS_ERR(ppps_folios))
+		return PTR_ERR(ppps_folios);
+	ret = -ENOMEM;
+	if (length == move_page_tables(vma, old_start, vma, new_start,
+				      length, false, true)) {
+		ret = 0;
+		if (ppps_mm_is_compat(mm) && vma_is_anonymous(vma))
+			ret = ppps_anon_reslice_range(mm, old_start, new_start, length);
+	}
+	ppps_anon_mremap_finish(ppps_folios);
+	if (ret)
+		return ret;
 
 	lru_add_drain();
 	tlb_gather_mmu(&tlb, mm);

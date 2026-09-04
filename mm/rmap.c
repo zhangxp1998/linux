@@ -90,6 +90,7 @@
 #include <trace/hooks/mm.h>
 
 #include "internal.h"
+#include "ppps.h"
 
 static struct kmem_cache *anon_vma_cachep;
 static struct kmem_cache *anon_vma_chain_cachep;
@@ -819,11 +820,13 @@ static unsigned long
 folio_rmap_nr_ptes(struct folio *folio, struct vm_area_struct *vma)
 {
 	/*
-	 * A PPPS anonymous PTE maps one native page, whereas a file PTE maps
-	 * one process-sized slice of the native folio.
+	 * Ordinary compat anonymous folios remain singleton mappings.  Only a
+	 * folio explicitly marked packed spans all process-sized slices.
 	 */
-	if (ppps_mm_is_compat(vma->vm_mm) && !folio_test_anon(folio))
-		return folio_size(folio) >> MM_PAGE_SHIFT(vma->vm_mm);
+	if (ppps_mm_is_compat(vma->vm_mm) &&
+	    (!folio_test_anon(folio) ||
+	     folio_test_ppps_compat_anon(folio)))
+		return folio_nr_ptes(folio, vma);
 
 	return folio_nr_pages(folio);
 }
@@ -845,6 +848,12 @@ static bool folio_referenced_one(struct folio *folio,
 
 		if (vma->vm_flags & VM_LOCKED) {
 			ptes++;
+			if (folio_test_ppps_compat_anon(folio)) {
+				mlock_vma_folio(folio, vma);
+				page_vma_mapped_walk_done(&pvmw);
+				pra->vm_flags |= VM_LOCKED;
+				return false;
+			}
 			pra->mapcount--;
 
 			/* Only mlock fully mapped pages */
@@ -901,7 +910,8 @@ static bool folio_referenced_one(struct folio *folio,
 		}
 
 		ptes++;
-		pra->mapcount--;
+		if (!folio_test_ppps_compat_anon(folio))
+			pra->mapcount--;
 		if (ptes == nr_ptes) {
 			page_vma_mapped_walk_done(&pvmw);
 			break;
@@ -918,7 +928,7 @@ static bool folio_referenced_one(struct folio *folio,
 		pra->vm_flags |= vma->vm_flags & ~VM_LOCKED;
 	}
 
-	if (!pra->mapcount)
+	if (!folio_test_ppps_compat_anon(folio) && !pra->mapcount)
 		return false; /* To break the loop */
 
 	return true;
@@ -1200,6 +1210,13 @@ void folio_move_anon_rmap(struct folio *folio, struct vm_area_struct *vma)
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 	VM_BUG_ON_VMA(!anon_vma, vma);
+	/*
+	 * A compat folio represents a VA tuple and can legitimately span VMA
+	 * boundaries.  Record the root so every VMA in the anon_vma tree keeps
+	 * folio->mapping alive, including after a tuple is moved as a unit.
+	 */
+	if (folio_test_ppps_compat_anon(folio))
+		anon_vma = ((struct anon_vma *)anon_vma)->root;
 
 	anon_vma += PAGE_MAPPING_ANON;
 	/*
@@ -1221,6 +1238,12 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 			     unsigned long address, bool exclusive)
 {
 	struct anon_vma *anon_vma = vma->anon_vma;
+	/*
+	 * A folio becomes a PPPS tuple when its VMA range shares tuples, or when
+	 * the caller pre-marked it as the copy of an existing tuple.
+	 */
+	bool ppps_compat = folio_test_ppps_compat_anon(folio) ||
+		ppps_vma_address_shares_tuple(vma, address);
 
 	BUG_ON(!anon_vma);
 
@@ -1228,7 +1251,7 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 	 * If the folio isn't exclusive to this vma, we must use the _oldest_
 	 * possible anon_vma for the folio mapping!
 	 */
-	if (!exclusive)
+	if (!exclusive || ppps_compat)
 		anon_vma = anon_vma->root;
 
 	/*
@@ -1239,7 +1262,12 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 	 */
 	anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
 	WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
-	folio->index = linear_page_index(vma, address);
+	if (ppps_compat) {
+		folio_set_ppps_compat_anon(folio);
+		folio->index = ppps_tuple_index(vma, address);
+	} else {
+		folio->index = linear_page_index(vma, address);
+	}
 }
 
 /**
@@ -1252,6 +1280,9 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 static void __page_check_anon_rmap(struct folio *folio, struct page *page,
 	struct vm_area_struct *vma, unsigned long address)
 {
+	pgoff_t folio_index = page_to_pgoff(page);
+	pgoff_t address_index = linear_page_index(vma, address);
+
 	/*
 	 * The page's anon-rmap details (mapping and index) are guaranteed to
 	 * be set up correctly at this point.
@@ -1265,8 +1296,11 @@ static void __page_check_anon_rmap(struct folio *folio, struct page *page,
 	 */
 	VM_BUG_ON_FOLIO(folio_anon_vma(folio)->root != vma->anon_vma->root,
 			folio);
-	VM_BUG_ON_PAGE(page_to_pgoff(page) != linear_page_index(vma, address),
-		       page);
+	if (folio_test_ppps_compat_anon(folio))
+		VM_WARN_ON_ONCE(address_index != folio_index +
+				vma_address_to_slice(vma, address));
+	else
+		VM_WARN_ON_ONCE(folio_index != address_index);
 }
 
 static void __folio_mod_stat(struct folio *folio, int nr, int nr_pmdmapped)
@@ -1409,8 +1443,10 @@ void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
 
 	VM_WARN_ON_FOLIO(folio_test_hugetlb(folio), folio);
 	VM_WARN_ON_FOLIO(!exclusive && !folio_test_locked(folio), folio);
-	VM_BUG_ON_VMA(address < vma->vm_start ||
-			address + (nr << PAGE_SHIFT) > vma->vm_end, vma);
+	/* A compat PTE maps one process page, whatever the folio size. */
+	VM_WARN_ON_ONCE(address < vma->vm_start ||
+			address + (nr << MM_PAGE_SHIFT(vma->vm_mm)) >
+			vma->vm_end);
 
 	/*
 	 * VM_DROPPABLE mappings don't swap; instead they're just dropped when
@@ -1450,9 +1486,6 @@ void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
 			SetPageAnonExclusive(&folio->page);
 		nr_pmdmapped = nr;
 	}
-
-	VM_WARN_ON_ONCE(address < vma->vm_start ||
-			address + (nr << MM_PAGE_SHIFT(vma->vm_mm)) > vma->vm_end);
 
 	__folio_mod_stat(folio, nr, nr_pmdmapped);
 	mod_mthp_stat(folio_order(folio), MTHP_STAT_NR_ANON, 1);
@@ -1689,6 +1722,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 	unsigned long nr_ptes = folio_rmap_nr_ptes(folio, vma);
 	unsigned long pfn;
 	unsigned long hsz = 0;
+	struct ppps_anon_unmap_ctx ppps;
 	unsigned long ptes = 0;
 
 	/*
@@ -1709,6 +1743,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 	 * try_to_unmap() must hold a reference on the folio.
 	 */
 	range.end = vma_address_end(&pvmw);
+	ppps_anon_unmap_begin(&ppps, vma, folio, &address, &range.end);
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma->vm_mm,
 				address, range.end);
 	if (folio_test_hugetlb(folio)) {
@@ -1784,8 +1819,8 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 		pfn = pte_pfn(ptep_get(pvmw.pte));
 		subpage = folio_page(folio, pfn - folio_pfn(folio));
 		address = pvmw.address;
-		anon_exclusive = folio_test_anon(folio) &&
-				 PageAnonExclusive(subpage);
+		anon_exclusive = ppps_anon_unmap_sample(&ppps, folio, subpage,
+						    &pvmw);
 
 		if (folio_test_hugetlb(folio)) {
 			bool anon = folio_test_anon(folio);
@@ -1839,7 +1874,8 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 		} else {
 			flush_cache_page(vma, address, pfn);
 			/* Nuke the page table entry. */
-			if (should_defer_flush(mm, flags)) {
+			if (ppps_anon_unmap_can_batch(&ppps) &&
+			    should_defer_flush(mm, flags)) {
 				/*
 				 * We clear the PTE but do not flush so potentially
 				 * a remote CPU could still be writing to the folio.
@@ -1855,6 +1891,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 				pteval = ptep_clear_flush(vma, address, pvmw.pte);
 			}
 		}
+		ppps_anon_unmap_clear(&ppps, vma, folio, pvmw.pte, address);
 
 		/*
 		 * Now the pte is cleared. If this pte was uffd-wp armed,
@@ -1877,7 +1914,8 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 				set_huge_pte_at(mm, address, pvmw.pte, pteval,
 						hsz);
 			} else {
-				dec_mm_counter(mm, mm_counter(folio));
+				if (ppps_anon_unmap_last(&ppps))
+					dec_mm_counter(mm, mm_counter(folio));
 				set_pte_at(mm, address, pvmw.pte, pteval);
 			}
 
@@ -1892,7 +1930,8 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			 * migration) will not expect userfaults on already
 			 * copied pages.
 			 */
-			dec_mm_counter(mm, mm_counter(folio));
+			if (ppps_anon_unmap_last(&ppps))
+				dec_mm_counter(mm, mm_counter(folio));
 		} else if (folio_test_anon(folio)) {
 			swp_entry_t entry = page_swap_entry(subpage);
 			pte_t swp_pte;
@@ -1938,7 +1977,8 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 				      * been dirtied.
 				      */
 				     (vma->vm_flags & VM_DROPPABLE))) {
-					dec_mm_counter(mm, MM_ANONPAGES);
+					if (ppps_anon_unmap_last(&ppps))
+						dec_mm_counter(mm, MM_ANONPAGES);
 					goto discard;
 				}
 
@@ -1968,18 +2008,21 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 
 			/* See folio_try_share_anon_rmap(): clear PTE first. */
 			if (anon_exclusive &&
+			    ppps_anon_unmap_needs_share(&ppps) &&
 			    folio_try_share_anon_rmap_pte(folio, subpage)) {
 				swap_free(entry);
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				goto walk_abort;
 			}
+			ppps_anon_unmap_commit_share(&ppps);
 			if (list_empty(&mm->mmlist)) {
 				spin_lock(&mmlist_lock);
 				if (list_empty(&mm->mmlist))
 					list_add(&mm->mmlist, &init_mm.mmlist);
 				spin_unlock(&mmlist_lock);
 			}
-			dec_mm_counter(mm, MM_ANONPAGES);
+			if (ppps_anon_unmap_last(&ppps))
+				dec_mm_counter(mm, MM_ANONPAGES);
 			inc_mm_counter(mm, MM_SWAPENTS);
 			swp_pte = swp_entry_to_pte(entry);
 			if (anon_exclusive)
@@ -2004,6 +2047,13 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			dec_mm_counter(mm, mm_counter_file(folio));
 		}
 discard:
+		/* A packed tuple keeps one rmap/reference until its last slice. */
+		if (!ppps_anon_unmap_last(&ppps)) {
+			munlock_vma_folio(folio, vma);
+			if (vma->vm_flags & VM_LOCKED)
+				mlock_drain_local();
+			continue;
+		}
 		if (unlikely(folio_test_hugetlb(folio)))
 			hugetlb_remove_rmap(folio);
 		else
@@ -2079,6 +2129,7 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 	enum ttu_flags flags = (enum ttu_flags)(long)arg;
 	unsigned long pfn;
 	unsigned long hsz = 0;
+	struct ppps_anon_unmap_ctx ppps;
 
 	/*
 	 * When racing against e.g. zap_pte_range() on another cpu,
@@ -2105,6 +2156,7 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 	 * try_to_unmap() must hold a reference on the page.
 	 */
 	range.end = vma_address_end(&pvmw);
+	ppps_anon_unmap_begin(&ppps, vma, folio, &address, &range.end);
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma->vm_mm,
 				address, range.end);
 	if (folio_test_hugetlb(folio)) {
@@ -2160,8 +2212,8 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 			subpage = folio_page(folio, pfn - folio_pfn(folio));
 		}
 		address = pvmw.address;
-		anon_exclusive = folio_test_anon(folio) &&
-				 PageAnonExclusive(subpage);
+		anon_exclusive = ppps_anon_unmap_sample(&ppps, folio, subpage,
+						    &pvmw);
 
 		if (folio_test_hugetlb(folio)) {
 			bool anon = folio_test_anon(folio);
@@ -2215,7 +2267,8 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 		} else {
 			flush_cache_page(vma, address, pfn);
 			/* Nuke the page table entry. */
-			if (should_defer_flush(mm, flags)) {
+			if (ppps_anon_unmap_can_batch(&ppps) &&
+			    should_defer_flush(mm, flags)) {
 				/*
 				 * We clear the PTE but do not flush so potentially
 				 * a remote CPU could still be writing to the folio.
@@ -2231,6 +2284,7 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 				pteval = ptep_clear_flush(vma, address, pvmw.pte);
 			}
 		}
+		ppps_anon_unmap_clear(&ppps, vma, folio, pvmw.pte, address);
 
 		/* Set the dirty flag on the folio now the pte is gone. */
 		if (pte_dirty(pteval))
@@ -2284,7 +2338,8 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 				set_huge_pte_at(mm, address, pvmw.pte, pteval,
 						hsz);
 			} else {
-				dec_mm_counter(mm, mm_counter(folio));
+				if (ppps_anon_unmap_last(&ppps))
+					dec_mm_counter(mm, mm_counter(folio));
 				set_pte_at(mm, address, pvmw.pte, pteval);
 			}
 
@@ -2299,7 +2354,8 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 			 * migration) will not expect userfaults on already
 			 * copied pages.
 			 */
-			dec_mm_counter(mm, mm_counter(folio));
+			if (ppps_anon_unmap_last(&ppps))
+				dec_mm_counter(mm, mm_counter(folio));
 		} else {
 			swp_entry_t entry;
 			pte_t swp_pte;
@@ -2328,12 +2384,14 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 					break;
 				}
 			} else if (anon_exclusive &&
+				   ppps_anon_unmap_needs_share(&ppps) &&
 				   folio_try_share_anon_rmap_pte(folio, subpage)) {
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				ret = false;
 				page_vma_mapped_walk_done(&pvmw);
 				break;
 			}
+			ppps_anon_unmap_commit_share(&ppps);
 
 			/*
 			 * Store the pfn of the page in a special migration
@@ -2372,6 +2430,13 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 			 */
 		}
 
+		/* A packed tuple keeps one rmap/reference until its last slice. */
+		if (!ppps_anon_unmap_last(&ppps)) {
+			munlock_vma_folio(folio, vma);
+			if (vma->vm_flags & VM_LOCKED)
+				mlock_drain_local();
+			continue;
+		}
 		if (unlikely(folio_test_hugetlb(folio)))
 			hugetlb_remove_rmap(folio);
 		else
@@ -2676,6 +2741,7 @@ static void rmap_walk_anon(struct folio *folio,
 	struct anon_vma *anon_vma;
 	pgoff_t pgoff_start, pgoff_end;
 	struct anon_vma_chain *avc;
+	unsigned long nr_pages;
 
 	/*
 	 * The folio lock ensures that folio->mapping can't be changed under us
@@ -2694,12 +2760,21 @@ static void rmap_walk_anon(struct folio *folio,
 		return;
 
 	pgoff_start = folio_pgoff(folio);
-	pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
+	/*
+	 * A packed order-0 folio occupies one native struct page, but spans
+	 * four process-sized anonymous indices.  Use that logical range for
+	 * the anon-vma interval-tree lookup; otherwise a VMA which contains
+	 * only a later slice can be skipped after a split.
+	 */
+	nr_pages = folio_nr_pages(folio);
+	if (folio_test_ppps_compat_anon(folio))
+		nr_pages = PPPS_SLICES_PER_PAGE;
+	pgoff_end = pgoff_start + nr_pages - 1;
 	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,
 			pgoff_start, pgoff_end) {
 		struct vm_area_struct *vma = avc->vma;
 		unsigned long address = vma_address(vma, pgoff_start,
-				folio_nr_pages(folio));
+				nr_pages);
 
 		VM_BUG_ON_VMA(address == -EFAULT, vma);
 		cond_resched();

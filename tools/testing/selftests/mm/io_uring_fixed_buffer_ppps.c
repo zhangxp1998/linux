@@ -151,7 +151,7 @@ static void *map_backing_slice(int fd, void **reservation_out)
 	aligned = ((uintptr_t)reservation + NATIVE_PAGE_SIZE - 1) &
 		  ~(NATIVE_PAGE_SIZE - 1);
 	mapping = mmap((void *)(aligned + PROCESS_PAGE_SIZE), TEST_LENGTH,
-		       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+		       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 2 * PROCESS_PAGE_SIZE);
 	if (mapping == MAP_FAILED) {
 		munmap(reservation, 3 * NATIVE_PAGE_SIZE);
 		return MAP_FAILED;
@@ -202,7 +202,7 @@ static int run_test(void)
 	ksft_print_header();
 	ksft_set_plan(8);
 
-	backing_fd = make_file(backing_path, NATIVE_PAGE_SIZE);
+	backing_fd = make_file(backing_path, 2 * NATIVE_PAGE_SIZE);
 	input_fd = make_file(input_path, TEST_LENGTH);
 	if (backing_fd < 0 || input_fd < 0)
 		ksft_exit_fail_msg("test file setup failed: %s\n", strerror(errno));
@@ -210,15 +210,15 @@ static int run_test(void)
 	memset(input_data + PROCESS_PAGE_SIZE, 0xb6, PROCESS_PAGE_SIZE);
 	if (pwrite(input_fd, input_data, sizeof(input_data), 0) !=
 	    sizeof(input_data) ||
-	    pwrite(backing_fd, "\x11", 1, 0) != 1 ||
-	    pwrite(backing_fd, "\x22", 1, PROCESS_PAGE_SIZE) != 1 ||
-	    pwrite(backing_fd, "\x5c", 1, TEST_LENGTH) != 1)
+	    pwrite(backing_fd, "\x11", 1, 2 * PROCESS_PAGE_SIZE) != 1 ||
+	    pwrite(backing_fd, "\x22", 1, 3 * PROCESS_PAGE_SIZE) != 1 ||
+	    pwrite(backing_fd, "\x5c", 1, 2 * PROCESS_PAGE_SIZE + TEST_LENGTH) != 1)
 		ksft_exit_fail_msg("test file initialization failed: %s\n",
 				   strerror(errno));
 
 	mapping = map_backing_slice(backing_fd, &reservation);
 	ksft_test_result(mapping != MAP_FAILED && mapping[0] == 0x11,
-			 "map file offset zero at a mismatched native offset\n");
+			 "map nonzero file slices at a mismatched native offset\n");
 	if (mapping == MAP_FAILED)
 		ksft_exit_fail_msg("test mapping failed: %s\n", strerror(errno));
 
@@ -259,7 +259,7 @@ static int run_test(void)
 	ksft_test_result(mapping[0] == 0xa5 &&
 			 mapping[PROCESS_PAGE_SIZE] == 0xb6,
 			 "READ_FIXED updates both registered file slices\n");
-	if (pread(backing_fd, &adjacent, 1, TEST_LENGTH) != 1)
+	if (pread(backing_fd, &adjacent, 1, 2 * PROCESS_PAGE_SIZE + TEST_LENGTH) != 1)
 		adjacent = 0;
 	ksft_test_result(adjacent == 0x5c,
 			 "READ_FIXED leaves the adjacent file slice unchanged\n");

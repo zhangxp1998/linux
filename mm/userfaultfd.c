@@ -19,6 +19,7 @@
 #include <asm/tlbflush.h>
 #include <asm/tlb.h>
 #include "internal.h"
+#include "ppps.h"
 #include "swap.h"
 
 static __always_inline
@@ -178,18 +179,7 @@ static int __mfill_atomic_install_pte(pmd_t *dst_pmd,
 	spinlock_t *ptl;
 	struct folio *folio = page_folio(page);
 	bool page_in_cache = folio_mapping(folio);
-
-	_dst_pte = mk_pte(page, dst_vma->vm_page_prot);
-	if (ppps_mm_is_compat(dst_mm))
-		_dst_pte = __pte(pte_val(_dst_pte) +
-				 (slice_idx << PAGE_SHIFT_COMPAT));
-	_dst_pte = pte_mkdirty(_dst_pte);
-	if (page_in_cache && !vm_shared)
-		writable = false;
-	if (writable)
-		_dst_pte = pte_mkwrite(_dst_pte, dst_vma);
-	if (flags & MFILL_ATOMIC_WP)
-		_dst_pte = pte_mkuffd_wp(_dst_pte);
+	bool hole_fill = false;
 
 	ret = -EAGAIN;
 	dst_pte = pte_offset_map_lock(dst_mm, dst_pmd, dst_addr, &ptl);
@@ -209,7 +199,6 @@ static int __mfill_atomic_install_pte(pmd_t *dst_pmd,
 	 */
 	if (!pte_none_mostly(ptep_get(dst_pte)))
 		goto out_unlock;
-
 	/* Commit shared data only after every potentially failing PTE check. */
 	if (src_page) {
 		unsigned long size = MM_PAGE_SIZE(dst_mm);
@@ -223,12 +212,36 @@ static int __mfill_atomic_install_pte(pmd_t *dst_pmd,
 		flush_dcache_folio(folio);
 		folio_mark_dirty(folio);
 	}
+	if (!page_in_cache) {
+		struct folio *tuple_folio =
+			ppps_anon_hole_fill_folio(dst_vma, dst_pte, dst_addr);
+
+		if (tuple_folio) {
+			ppps_anon_copy_slice(tuple_folio, slice_idx, folio,
+					     slice_idx);
+			folio_put(folio);
+			folio = tuple_folio;
+			page = &folio->page;
+			hole_fill = true;
+		}
+	}
+
+	_dst_pte = mk_pte(page, dst_vma->vm_page_prot);
+	_dst_pte = pte_mkslice(_dst_pte, slice_idx);
+	_dst_pte = pte_mkdirty(_dst_pte);
+	if (page_in_cache && !vm_shared)
+		writable = false;
+	if (writable)
+		_dst_pte = pte_mkwrite(_dst_pte, dst_vma);
+	if (flags & MFILL_ATOMIC_WP)
+		_dst_pte = pte_mkuffd_wp(_dst_pte);
+
 	if (page_in_cache) {
 		/* Usually, cache pages are already added to LRU */
 		if (newly_allocated)
 			folio_add_lru(folio);
 		folio_add_file_rmap_pte(folio, page, dst_vma);
-	} else {
+	} else if (!hole_fill) {
 		folio_add_new_anon_rmap(folio, dst_vma, dst_addr, RMAP_EXCLUSIVE);
 		folio_add_lru_vma(folio, dst_vma);
 	}
@@ -237,7 +250,8 @@ static int __mfill_atomic_install_pte(pmd_t *dst_pmd,
 	 * Must happen after rmap, as mm_counter() checks mapping (via
 	 * PageAnon()), which is set by __page_set_anon_rmap().
 	 */
-	inc_mm_counter(dst_mm, mm_counter(folio));
+	if (!hole_fill)
+		inc_mm_counter(dst_mm, mm_counter(folio));
 
 	set_pte_at(dst_mm, dst_addr, dst_pte, _dst_pte);
 
@@ -258,6 +272,7 @@ int mfill_atomic_install_pte(pmd_t *dst_pmd, struct vm_area_struct *dst_vma,
 			newly_allocated, slice_idx, flags, NULL);
 }
 
+/* The shmem caller holds the destination folio lock and owns @src_page. */
 int mfill_atomic_install_pte_from(pmd_t *dst_pmd,
 		struct vm_area_struct *dst_vma, unsigned long dst_addr,
 		struct page *page, unsigned int slice_idx, uffd_flags_t flags,
@@ -398,6 +413,7 @@ static int mfill_atomic_pte_zeropage(pmd_t *dst_pmd,
 
 	_dst_pte = pte_mkspecial(pfn_pte(my_zero_pfn(dst_addr),
 					 dst_vma->vm_page_prot));
+	_dst_pte = vma_pte_mkslice(dst_vma, _dst_pte, dst_addr);
 	ret = -EAGAIN;
 	dst_pte = pte_offset_map_lock(dst_vma->vm_mm, dst_pmd, dst_addr, &ptl);
 	if (!dst_pte)
@@ -752,6 +768,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
 	unsigned long src_addr, dst_addr;
 	long copied;
 	struct folio *folio;
+	bool tuple_folio = false;
 	unsigned long pending_offset = 0;
 	unsigned long page_size = MM_PAGE_SIZE(ctx->mm);
 
@@ -806,12 +823,6 @@ retry:
 	if ((flags & MFILL_ATOMIC_WP) && !(dst_vma->vm_flags & VM_UFFD_WP))
 		goto out_unlock;
 
-	if (!MM_PAGE_ALIGNED(dst_vma->vm_mm, dst_start) ||
-	    !MM_PAGE_ALIGNED(dst_vma->vm_mm, dst_start + len)) {
-		err = -EINVAL;
-		goto out_unlock;
-	}
-
 	/*
 	 * If this is a HUGETLB vma, pass off to appropriate routine
 	 */
@@ -826,6 +837,7 @@ retry:
 		goto out_unlock;
 
 	while (src_addr < src_start + len) {
+		unsigned long step;
 		pmd_t dst_pmdval;
 
 		BUG_ON(dst_addr >= dst_start + len);
@@ -863,23 +875,59 @@ retry:
 		 */
 
 		/*
-		 * The VMA may have been replaced while the mmap lock was
-		 * dropped for the copy, moving dst_addr to another slice of
-		 * its page.  The data sits in the old slice, so start over
-		 * rather than install it misplaced.
+		 * PPPS: try to fill a whole native page (all its compat
+		 * slices) from one folio before falling back to the
+		 * per-compat-page path.  Skipped when a folio is already
+		 * pending for the other path.
 		 */
-		if (unlikely(folio && pending_offset !=
-			     vma_page_slice_offset(dst_vma, NULL, dst_addr))) {
-			folio_put(folio);
-			folio = NULL;
+		step = page_size;
+		if (ppps_uffd_copy_tuple_ok(dst_vma, dst_addr,
+					  src_start + len - src_addr, flags) &&
+		    (!folio || tuple_folio)) {
+			err = ppps_uffd_copy_tuple(dst_pmd, dst_vma,
+							  dst_addr, src_addr,
+							  &folio, &tuple_folio);
+			if (!err) {
+				step = PAGE_SIZE;
+			} else if (err == -EBUSY) {
+				/*
+				 * Not all slices were none.  Redo this tuple
+				 * one compat page at a time so the ioctl keeps
+				 * its exact stop-at-first-EEXIST semantics.
+				 */
+				err = mfill_atomic_pte(dst_pmd, dst_vma,
+						       dst_addr, src_addr,
+						       flags, &folio);
+			}
+		} else {
+			if (unlikely(folio && tuple_folio)) {
+				/* The tuple path became ineligible; drop it. */
+				folio_put(folio);
+				folio = NULL;
+				tuple_folio = false;
+			}
+			/*
+			 * The VMA may have been replaced while the mmap lock
+			 * was dropped for the copy, moving dst_addr to another
+			 * slice of its page.  The data sits in the old slice,
+			 * so start over rather than install it misplaced.
+			 */
+			if (unlikely(folio && pending_offset !=
+				     vma_page_slice_offset(dst_vma, NULL,
+							   dst_addr))) {
+				folio_put(folio);
+				folio = NULL;
+			}
+			err = mfill_atomic_pte(dst_pmd, dst_vma, dst_addr,
+					       src_addr, flags, &folio);
 		}
-		err = mfill_atomic_pte(dst_pmd, dst_vma, dst_addr,
-				       src_addr, flags, &folio);
 		cond_resched();
 
 		if (unlikely(err == -ENOENT)) {
-			unsigned long offset =
-				vma_address_to_slice(dst_vma, dst_addr) * page_size;
+			/* A pending tuple folio is filled whole, at offset 0. */
+			unsigned long offset = tuple_folio ? 0 :
+				vma_page_slice_offset(dst_vma, NULL, dst_addr);
+			unsigned long size = tuple_folio ? PAGE_SIZE : page_size;
 			void *kaddr;
 
 			up_read(&ctx->map_changing_lock);
@@ -890,7 +938,7 @@ retry:
 			kaddr = kmap_local_folio(folio, 0);
 			err = copy_from_user(kaddr + offset,
 					     (const void __user *) src_addr,
-					     page_size);
+					     size);
 			kunmap_local(kaddr);
 			if (unlikely(err)) {
 				err = -EFAULT;
@@ -902,9 +950,9 @@ retry:
 			BUG_ON(folio);
 
 		if (!err) {
-			dst_addr += page_size;
-			src_addr += page_size;
-			copied += page_size;
+			dst_addr += step;
+			src_addr += step;
+			copied += step;
 
 			if (fatal_signal_pending(current))
 				err = -EINTR;
@@ -1084,15 +1132,6 @@ void double_pt_unlock(spinlock_t *ptl1,
 		__release(ptl2);
 }
 
-static inline bool is_pte_pages_stable(pte_t *dst_pte, pte_t *src_pte,
-				       pte_t orig_dst_pte, pte_t orig_src_pte,
-				       pmd_t *dst_pmd, pmd_t dst_pmdval)
-{
-	return pte_same(ptep_get(src_pte), orig_src_pte) &&
-	       pte_same(ptep_get(dst_pte), orig_dst_pte) &&
-	       pmd_same(dst_pmdval, pmdp_get_lockless(dst_pmd));
-}
-
 /*
  * Checks if the two ptes and the corresponding folio are eligible for batched
  * move. If so, then returns pointer to the locked folio. Otherwise, returns NULL.
@@ -1122,6 +1161,11 @@ static struct folio *check_ptes_for_batched_move(struct vm_area_struct *src_vma,
 		folio_unlock(folio);
 		return NULL;
 	}
+	if (ppps_mm_is_compat(src_vma->vm_mm) &&
+	    folio_test_ppps_compat_anon(folio)) {
+		folio_unlock(folio);
+		return NULL;
+	}
 	return folio;
 }
 
@@ -1137,7 +1181,8 @@ static long move_present_ptes(struct mm_struct *mm,
 			      pte_t orig_dst_pte, pte_t orig_src_pte,
 			      pmd_t *dst_pmd, pmd_t dst_pmdval,
 			      spinlock_t *dst_ptl, spinlock_t *src_ptl,
-			      struct folio **first_src_folio, unsigned long len)
+			      struct folio **first_src_folio, unsigned long len,
+			      bool *ppps_fallback)
 {
 	int err = 0;
 	struct folio *src_folio = *first_src_folio;
@@ -1151,6 +1196,12 @@ static long move_present_ptes(struct mm_struct *mm,
 
 	if (!is_pte_pages_stable(dst_pte, src_pte, orig_dst_pte, orig_src_pte,
 				 dst_pmd, dst_pmdval)) {
+		err = -EAGAIN;
+		goto out;
+	}
+	if (ppps_mm_is_compat(mm) &&
+	    folio_test_ppps_compat_anon(src_folio)) {
+		*ppps_fallback = true;
 		err = -EAGAIN;
 		goto out;
 	}
@@ -1298,6 +1349,7 @@ static int move_zeropage_pte(struct mm_struct *mm,
 
 	zero_pte = pte_mkspecial(pfn_pte(my_zero_pfn(dst_addr),
 					 dst_vma->vm_page_prot));
+	zero_pte = vma_pte_mkslice(dst_vma, zero_pte, dst_addr);
 	ptep_clear_flush(src_vma, src_addr, src_pte);
 	set_pte_at(mm, dst_addr, dst_pte, zero_pte);
 	double_pt_unlock(dst_ptl, src_ptl);
@@ -1315,7 +1367,7 @@ static long move_pages_ptes(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd
 			    struct vm_area_struct *dst_vma,
 			    struct vm_area_struct *src_vma,
 			    unsigned long dst_addr, unsigned long src_addr,
-			    unsigned long len, __u64 mode)
+			    unsigned long len, __u64 mode, bool *ppps_fallback)
 {
 	swp_entry_t entry;
 	struct swap_info_struct *si = NULL;
@@ -1486,12 +1538,41 @@ retry:
 			goto retry;
 		}
 
-		ret = move_present_ptes(mm, dst_vma, src_vma,
+		if (ppps_mm_is_compat(mm) &&
+		    folio_test_ppps_compat_anon(src_folio) &&
+		    ppps_uffd_move_tuple_ok(dst_vma, src_vma, dst_addr,
+					 src_addr, len)) {
+			ret = ppps_uffd_move_tuple(mm, dst_vma, src_vma,
+						     dst_addr, src_addr,
+						     dst_pte, src_pte,
+						     orig_dst_pte, orig_src_pte,
+						     dst_pmd, dst_pmdval,
+						     dst_ptl, src_ptl,
+						     &src_folio, ppps_fallback);
+			if (*ppps_fallback && src_folio) {
+				*ppps_fallback = false;
+				ret = ppps_uffd_move_slice(mm, dst_vma,
+						src_vma, dst_addr, src_addr,
+						dst_pte, src_pte, orig_dst_pte,
+						orig_src_pte, dst_pmd, dst_pmdval,
+						dst_ptl, src_ptl, src_folio);
+			}
+		} else if (ppps_mm_is_compat(mm))
+			ret = ppps_uffd_move_slice(mm, dst_vma, src_vma,
+							  dst_addr, src_addr,
+							  dst_pte, src_pte,
+							  orig_dst_pte,
+							  orig_src_pte,
+							  dst_pmd, dst_pmdval,
+							  dst_ptl, src_ptl,
+							  src_folio);
+		else
+			ret = move_present_ptes(mm, dst_vma, src_vma,
 					dst_addr, src_addr, dst_pte, src_pte,
 					orig_dst_pte, orig_src_pte,
 					dst_pmd, dst_pmdval,
 					dst_ptl, src_ptl, &src_folio,
-					len);
+					len, ppps_fallback);
 	} else {
 		struct folio *folio = NULL;
 
@@ -1513,6 +1594,12 @@ retry:
 			goto out;
 		}
 
+		/* Even an aligned subrange must not split a tuple's swap identity. */
+		if (ppps_mm_is_compat(mm)) {
+			*ppps_fallback = true;
+			ret = -EAGAIN;
+			goto out;
+		}
 		si = get_swap_device(entry);
 		if (unlikely(!si)) {
 			ret = -EAGAIN;
@@ -1840,6 +1927,7 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	struct vm_area_struct *src_vma, *dst_vma;
 	unsigned long src_addr, dst_addr, src_end;
 	pmd_t *src_pmd, *dst_pmd;
+	bool ppps_fallback = false;
 	long err = -EINVAL;
 	ssize_t moved = 0;
 
@@ -1854,7 +1942,12 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	    WARN_ON_ONCE(dst_start + len <= dst_start))
 		goto out;
 
-	err = uffd_move_lock(mm, dst_start, src_start, &dst_vma, &src_vma);
+	src_addr = src_start;
+	dst_addr = dst_start;
+	src_end = src_start + len;
+
+retry_lock:
+	err = uffd_move_lock(mm, dst_addr, src_addr, &dst_vma, &src_vma);
 	if (err)
 		goto out;
 
@@ -1871,7 +1964,7 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	err = -EINVAL;
 	if (src_vma->vm_flags & VM_SHARED)
 		goto out_unlock;
-	if (src_start + len > src_vma->vm_end)
+	if (src_end > src_vma->vm_end)
 		goto out_unlock;
 
 	if (dst_vma->vm_flags & VM_SHARED)
@@ -1883,8 +1976,7 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	if (err)
 		goto out_unlock;
 
-	for (src_addr = src_start, dst_addr = dst_start, src_end = src_start + len;
-	     src_addr < src_end;) {
+	for (; src_addr < src_end;) {
 		spinlock_t *ptl;
 		pmd_t dst_pmdval;
 		unsigned long step_size;
@@ -1978,7 +2070,12 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 
 			ret = move_pages_ptes(mm, dst_pmd, src_pmd,
 					      dst_vma, src_vma, dst_addr,
-					      src_addr, src_end - src_addr, mode);
+					      src_addr, src_end - src_addr, mode,
+					      &ppps_fallback);
+			if (ppps_mm_is_compat(mm) && ppps_fallback) {
+				err = -EAGAIN;
+				break;
+			}
 			if (ret < 0)
 				err = ret;
 			else
@@ -2009,6 +2106,24 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 out_unlock:
 	up_read(&ctx->map_changing_lock);
 	uffd_move_unlock(dst_vma, src_vma);
+	if (ppps_mm_is_compat(mm) && ppps_fallback) {
+		vm_fault_t fault;
+
+		ppps_fallback = false;
+		mmap_read_lock(mm);
+		src_vma = find_vma(mm, src_addr);
+		if (!src_vma || src_addr < src_vma->vm_start) {
+			err = -ENOENT;
+		} else {
+			fault = handle_mm_fault(src_vma, src_addr,
+						FAULT_FLAG_REMOTE, NULL);
+			err = fault & VM_FAULT_ERROR ?
+				vm_fault_to_errno(fault, 0) : 0;
+		}
+		mmap_read_unlock(mm);
+		if (!err)
+			goto retry_lock;
+	}
 out:
 	VM_WARN_ON(moved < 0);
 	VM_WARN_ON(err > 0);

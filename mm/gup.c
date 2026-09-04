@@ -3988,7 +3988,7 @@ static long gup_user_range(struct mm_struct *mm, unsigned long start,
 	unsigned long nr_pages = mm_user_range_pages(mm, start, length);
 	unsigned long addr, end, page_size = MM_PAGE_SIZE(mm);
 	struct vm_area_struct *vma = NULL;
-	bool locked = false;
+	int locked = 0;
 	size_t remaining = length;
 	long ret, i;
 
@@ -4013,12 +4013,26 @@ static long gup_user_range(struct mm_struct *mm, unsigned long start,
 		ret = -EOVERFLOW;
 		goto out;
 	}
-	if (locked)
+retry:
+	if (locked) {
 		ret = pin ? pin_user_pages_remote(mm, start, nr_pages,
-						  gup_flags, pages, NULL) :
+						  gup_flags, pages, &locked) :
 			    get_user_pages_remote(mm, start, nr_pages,
-						  gup_flags, pages, NULL);
-	else
+						  gup_flags, pages, &locked);
+		if (ret > 0 && !locked && ppps_mm_is_compat(mm)) {
+			/* Faulting may replace VMAs: recompute spans from new pins. */
+			if (pin)
+				unpin_user_pages(pages, ret);
+			else
+				release_pages(pages, ret);
+			if (mmap_read_lock_killable(mm)) {
+				ret = -EINTR;
+				goto out;
+			}
+			locked = 1;
+			goto retry;
+		}
+	} else
 		ret = pin ? pin_user_pages_fast(start, nr_pages, gup_flags,
 						pages) :
 			    get_user_pages_fast(start, nr_pages, gup_flags,

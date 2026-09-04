@@ -394,7 +394,7 @@ static int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	} else {
 		new->vm_start = addr;
 		new->vm_pgoff = vma_pgoff_offset(vma, addr);
-		vma_set_slice_off(new, vma_slice_offset(vma, addr));
+		vma_set_slice_off(new, vma_address_to_slice(vma, addr));
 	}
 
 	err = -ENOMEM;
@@ -442,7 +442,7 @@ static int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	if (new_below) {
 		vma->vm_start = addr;
 		vma->vm_pgoff = vma_pgoff_offset(new, addr);
-		vma_set_slice_off(vma, vma_slice_offset(new, addr));
+		vma_set_slice_off(vma, vma_address_to_slice(new, addr));
 	} else {
 		vma->vm_end = addr;
 	}
@@ -632,16 +632,11 @@ static int commit_merge(struct vma_merge_struct *vmg,
 		vma_iter_store_overwrite(vmg->vmi, vmg->vma);
 
 	if (adj_start) {
-		adjust_start = adjust->vm_start + adj_start;
-		if (adj_start < 0) {
-			adjust_pgoff = vma_pgoff_offset(vmg->vma, adjust_start);
-			adjust_slice_off =
-				vma_slice_offset(vmg->vma, adjust_start);
-		} else {
-			adjust_pgoff = vma_pgoff_offset(adjust, adjust_start);
-			adjust_slice_off =
-				vma_slice_offset(adjust, adjust_start);
-		}
+		/* The VMA whose geometry still covers the new start of @adjust. */
+		struct vm_area_struct *src = adj_start < 0 ? vmg->vma : adjust;
+		unsigned long adjust_start = adjust->vm_start + adj_start;
+		unsigned int slice_off = vma_address_to_slice(src, adjust_start);
+
 		vma_set_range(adjust, adjust_start, adjust->vm_end,
 			      vma_pgoff_offset(src, adjust_start));
 		vma_set_slice_off(adjust, slice_off);
@@ -1789,12 +1784,14 @@ out:
  */
 static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *b)
 {
+	struct vma_offset end = vma_offset_at(a, b->vm_start);
+
 	return a->vm_end == b->vm_start &&
 		mpol_equal(vma_policy(a), vma_policy(b)) &&
 		a->vm_file == b->vm_file &&
 		!((a->vm_flags ^ b->vm_flags) & ~(VM_ACCESS_FLAGS | VM_SOFTDIRTY)) &&
-		b->vm_pgoff == a->vm_pgoff +
-			((b->vm_start - a->vm_start) >> MM_PAGE_SHIFT(a->vm_mm));
+		b->vm_pgoff == end.pgoff &&
+		(!ppps_vma_has_slices(a) || vma_slice_off(b) == end.slice);
 }
 
 /*

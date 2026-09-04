@@ -708,6 +708,7 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	long to_account = new_len - old_len;
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_area_struct *new_vma;
+	struct ppps_mremap_folios *ppps_folios;
 	unsigned long vm_flags = vma->vm_flags;
 	pgoff_t new_pgoff;
 	unsigned int new_slice_off;
@@ -758,8 +759,7 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 
 	vma_start_write(vma);
 	new_pgoff = vma_pgoff_offset(vma, old_addr);
-	new_slice_off = (ppps_vma_has_slices(vma) ?
-			 vma_address_to_slice(vma, old_addr) : 0);
+	new_slice_off = vma_address_to_slice(vma, old_addr);
 	new_vma = copy_vma(&vma, new_addr, new_len, new_pgoff,
 			   new_slice_off, &need_rmap_locks);
 	if (!new_vma) {
@@ -769,14 +769,24 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 		return -ENOMEM;
 	}
 
+	ppps_folios = ppps_anon_mremap_prepare(vma, old_addr, new_addr, old_len);
+	if (IS_ERR(ppps_folios)) {
+		err = PTR_ERR(ppps_folios);
+		ppps_folios = NULL;
+		moved_len = 0;
+		goto revert;
+	}
 	moved_len = move_page_tables(vma, old_addr, new_vma, new_addr, old_len,
 				     need_rmap_locks, false);
-	if (moved_len < old_len) {
+	if (moved_len < old_len)
 		err = -ENOMEM;
-	} else if (vma->vm_ops && vma->vm_ops->mremap) {
+	if (!err && vma->vm_ops && vma->vm_ops->mremap)
 		err = vma->vm_ops->mremap(new_vma);
-	}
+	/* No fallible operation may follow a committed slice rearrangement. */
+	if (!err && ppps_vma_shares_tuple(new_vma))
+		err = ppps_anon_reslice_range(mm, old_addr, new_addr, old_len);
 
+revert:
 	if (unlikely(err)) {
 		/*
 		 * On error, move entries back from new area to old,
@@ -793,6 +803,7 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 		mremap_userfaultfd_prep(new_vma, uf);
 	}
 
+	ppps_anon_mremap_finish(ppps_folios);
 	if (is_vm_hugetlb_page(vma)) {
 		clear_vma_resv_huge_pages(vma);
 	}
@@ -1147,6 +1158,11 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 	/* Don't allow remapping vmas when they have already been sealed */
 	if (!can_modify_vma(vma)) {
 		ret = -EPERM;
+		goto out;
+	}
+
+	if (old_len > vma->vm_end - addr) {
+		ret = -EFAULT;
 		goto out;
 	}
 
