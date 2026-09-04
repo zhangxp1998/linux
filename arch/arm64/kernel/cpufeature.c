@@ -2874,6 +2874,7 @@ static const struct arm64_cpu_capabilities arm64_features[] = {
 		.matches = has_cpuid_feature,
 		ARM64_CPUID_FIELDS(ID_AA64MMFR3_EL1, TCRX, IMP)
 	},
+#ifdef CONFIG_ARM64_S1PIE
 	{
 		.desc = "Stage-1 Permission Indirection Extension (S1PIE)",
 		.capability = ARM64_HAS_S1PIE,
@@ -2881,6 +2882,7 @@ static const struct arm64_cpu_capabilities arm64_features[] = {
 		.matches = has_cpuid_feature,
 		ARM64_CPUID_FIELDS(ID_AA64MMFR3_EL1, S1PIE, IMP)
 	},
+#endif
 	{
 		.desc = "VHE for hypervisor only",
 		.capability = ARM64_KVM_HVHE,
