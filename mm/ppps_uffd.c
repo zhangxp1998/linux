@@ -327,7 +327,7 @@ long ppps_uffd_move_slice(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 		ret = -EEXIST;
 		goto out_unlock;
 	}
-	dst_folio = ppps_anon_hole_fill_folio(dst_vma, dst_pte, dst_addr);
+	dst_folio = ppps_anon_hole_fill_folio(dst_vma, dst_pte, dst_addr, NULL);
 	if (!dst_folio) {
 		dst_folio = prealloc;
 		new_tuple = true;
