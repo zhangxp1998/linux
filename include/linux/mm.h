@@ -1054,7 +1054,6 @@ static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma
 
 /* Byte offset within the native page for the process page at @addr. */
 static inline unsigned long vma_page_slice_offset(struct vm_area_struct *vma,
-						  struct page *page,
 						  unsigned long addr)
 {
 	return (unsigned long)vma_address_to_slice(vma, addr) <<
@@ -2807,6 +2806,10 @@ long get_user_pages_remote(struct mm_struct *mm,
 			   unsigned long start, unsigned long nr_pages,
 			   unsigned int gup_flags, struct page **pages,
 			   int *locked);
+long pin_user_pages_remote(struct mm_struct *mm,
+			   unsigned long start, unsigned long nr_pages,
+			   unsigned int gup_flags, struct page **pages,
+			   int *locked);
 /* Array capacity needed for a byte range, without rounding overflow. */
 static inline unsigned long
 mm_user_range_pages(struct mm_struct *mm, unsigned long start, size_t length)
@@ -2829,14 +2832,14 @@ long get_user_pages_range(struct mm_struct *mm, unsigned long start,
 			  unsigned int gup_flags, struct page **pages,
 			  struct page_span *spans);
 
-long pin_user_pages_remote(struct mm_struct *mm,
-			   unsigned long start, unsigned long nr_pages,
-			   unsigned int gup_flags, struct page **pages,
-			   int *locked);
 long pin_user_pages_with_offsets(struct mm_struct *mm, unsigned long start,
 				 unsigned long nr_pages, unsigned int gup_flags,
 				 struct page **pages, unsigned int *offsets);
 unsigned long mm_user_slice_offset(struct mm_struct *mm, unsigned long addr);
+
+struct page *get_user_page_vma_remote_with_offset(struct mm_struct *mm,
+		unsigned long addr, unsigned int gup_flags,
+		struct vm_area_struct **vmap, unsigned long *page_offset);
 
 /*
  * Retrieves a single page alongside its VMA. Does not support FOLL_NOWAIT.

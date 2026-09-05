@@ -381,10 +381,10 @@ static bool valid_arg_len(struct linux_binprm *bprm, long len)
 #endif /* CONFIG_MMU */
 
 static unsigned long bprm_slice_offset(struct linux_binprm *bprm,
-				       struct page *page, unsigned long pos)
+				       unsigned long pos)
 {
 #ifdef CONFIG_MMU
-	return vma_page_slice_offset(bprm->vma, page, pos);
+	return vma_page_slice_offset(bprm->vma, pos);
 #else
 	return 0;
 #endif
@@ -661,7 +661,7 @@ static int copy_strings(int argc, struct user_arg_ptr argv,
 				kaddr = kmap_local_page(kmapped_page);
 				kpos = pos & MM_PAGE_MASK(bprm->mm);
 				/* Anonymous bprm pages are sliced by address. */
-				slice_offset = bprm_slice_offset(bprm, page, pos);
+				slice_offset = bprm_slice_offset(bprm, pos);
 				flush_arg_page(bprm, kpos, kmapped_page);
 			}
 			if (copy_from_user(kaddr + slice_offset + offset, str,
@@ -715,7 +715,7 @@ int copy_string_kernel(const char *arg, struct linux_binprm *bprm)
 			return -E2BIG;
 		flush_arg_page(bprm, pos & MM_PAGE_MASK(bprm->mm), page);
 		memcpy_to_page(page,
-			       bprm_slice_offset(bprm, page, pos) +
+			       bprm_slice_offset(bprm, pos) +
 			       mm_offset_in_page(bprm->mm, pos),
 			       arg, bytes_to_copy);
 		put_arg_page(page);
@@ -1799,7 +1799,7 @@ int remove_arg_zero(struct linux_binprm *bprm)
 		if (!page)
 			return -EFAULT;
 		kmap = kmap_local_page(page);
-		kaddr = kmap + bprm_slice_offset(bprm, page, bprm->p);
+		kaddr = kmap + bprm_slice_offset(bprm, bprm->p);
 
 		for (; offset < MM_PAGE_SIZE(bprm->mm) && kaddr[offset];
 				offset++, bprm->p++)
