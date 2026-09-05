@@ -274,6 +274,18 @@ run_test() {
 	fi # test_selected
 }
 
+# Run a PPPS test that needs one of the fixture modules in ppps_modules/:
+# load <module>_ppps_module.ko, make sure /dev/<module>_ppps exists, run the
+# command, unload the module again.
+ppps_runner=./ppps_run_module.sh
+[ -x "$ppps_runner" ] || ppps_runner=../ppps/ppps_run_module.sh
+run_ppps_module_test() {
+	local module=$1
+	shift
+	run_test "$ppps_runner" "ppps_modules/${module}_ppps_module.ko" \
+		"/dev/${module}_ppps" -- "$@"
+}
+
 echo "TAP version 13" | tap_output
 
 CATEGORY="hugetlb" run_test ./hugepage-mmap
@@ -309,7 +321,7 @@ if test_selected "hugetlb"; then
 fi
 
 CATEGORY="mmap" run_test ./map_fixed_noreplace
-CATEGORY="mmap" run_test ./mglru_folded
+CATEGORY="mmap" run_test ./mglru_folded_ppps
 if [ -x ./elf_4k_align_ppps ]; then
 	CATEGORY="mmap" run_test ./elf_4k_align_ppps
 fi
@@ -324,25 +336,25 @@ CATEGORY="mmap" run_test ./io_uring_fixed_buffer_ppps
 CATEGORY="mmap" run_test ./aio_ring_ppps
 CATEGORY="mmap" run_test ./stack_guard_gap_ppps
 CATEGORY="mmap" run_test ./mglru_ppps
-CATEGORY="mmap" run_test ./test_mmu_notifier_ppps.sh
+CATEGORY="mmap" run_test ./mmu_notifier_ppps.sh
 CATEGORY="mmap" run_test ./anon_pageout_ppps
 CATEGORY="mmap" run_test ./madvise_free_ppps
 CATEGORY="mmap" run_test ./madvise_guard_ppps
 CATEGORY="mmap" run_test ./thp_mmap_offset_ppps
 CATEGORY="mmap" run_test ./shmem_mmap_offset_ppps
-CATEGORY="mmap" run_test ./secretmem_eof_ppps
-CATEGORY="mmap" run_test ./shmem_eof_ppps
+CATEGORY="mmap" run_test ./memfd_eof_ppps secretmem
+CATEGORY="mmap" run_test ./memfd_eof_ppps shmem
 CATEGORY="mmap" run_test ./mincore_ppps
-CATEGORY="mmap" run_test ./test_gup_retry_ppps.sh mmap_action_cleanup_ppps
-CATEGORY="mmap" run_test ./test_selinux_status_mmap_ppps.sh
-CATEGORY="mmap" run_test ./test_vm_iomap_memory_ppps.sh
-CATEGORY="mmap" run_test ./test_dma_mmap_attrs_ppps.sh
-CATEGORY="mmap" run_test ./test_dma_mmap_pages_ppps.sh
-CATEGORY="mmap" run_test ./test_iommu_dma_mmap_ppps.sh
-CATEGORY="mmap" run_test ./test_v9fs_mmap_close_ppps.sh
-CATEGORY="mmap" run_test ./test_vm_map_pages_ppps.sh
-CATEGORY="mmap" run_test ./test_vb2_mmap_ppps.sh
-CATEGORY="mmap" run_test ./test_vb2_userptr_ppps.sh
+CATEGORY="mmap" run_ppps_module_test gup_retry ./mmap_action_cleanup_ppps
+CATEGORY="mmap" run_test ./selinux_status_mmap_ppps.sh
+CATEGORY="mmap" run_ppps_module_test vm_iomap_memory ./vm_iomap_memory_ppps
+CATEGORY="mmap" run_ppps_module_test dma_mmap_attrs ./dma_mmap_ppps attrs
+CATEGORY="mmap" run_ppps_module_test dma_mmap_pages ./dma_mmap_ppps pages
+CATEGORY="mmap" run_test ./iommu_dma_mmap_ppps.sh
+CATEGORY="mmap" run_test ./v9fs_mmap_close_ppps.sh
+CATEGORY="mmap" run_ppps_module_test vm_map_pages ./vm_map_pages_ppps
+CATEGORY="mmap" run_ppps_module_test vb2_mmap sh -c './vb2_mmap_ppps --native && exec ./vb2_mmap_ppps'
+CATEGORY="mmap" run_ppps_module_test vb2_userptr ./vb2_userptr_ppps
 CATEGORY="mmap" run_test ./mmap_hint_ppps
 CATEGORY="mmap" run_test ./brk_aslr_ppps
 CATEGORY="mmap" run_test ./elf_brk_gap_ppps
@@ -361,8 +373,8 @@ CATEGORY="mmap" run_test ./rss_stat_trace_ppps
 CATEGORY="mmap" run_test ./pci_mmap_ppps
 CATEGORY="mmap" run_test ./anon_vma_name_ppps
 CATEGORY="mmap" run_test ./print_vma_addr_ppps
-CATEGORY="mmap" run_test ./test_pagewalk_ppps.sh
-CATEGORY="mmap" run_test ./test_folio_within_range_ppps.sh
+CATEGORY="mmap" run_ppps_module_test pagewalk ./pagewalk_ppps
+CATEGORY="mmap" run_ppps_module_test folio_within_range ./folio_within_range_ppps
 CATEGORY="mmap" run_test ./remap_file_pages_ppps
 CATEGORY="mmap" run_test ./shmem_swap_usage_ppps
 CATEGORY="mmap" run_test ./trace_ring_buffer_mmap_ppps
@@ -381,11 +393,14 @@ fi
 # Dump pages 0, 19, and 4096, using pin_user_pages:
 CATEGORY="gup_test" run_test ./gup_test -ct -F 0x1 0 19 0x1000
 CATEGORY="gup_test" run_test ./gup_longterm
-CATEGORY="gup_test" run_test ./test_gup_retry_ppps.sh
-CATEGORY="gup_test" run_test ./test_iov_iter_ppps.sh
-CATEGORY="gup_test" run_test ./test_fault_in_ppps.sh
+CATEGORY="gup_test" run_ppps_module_test gup_retry ./gup_retry_ppps
+CATEGORY="gup_test" run_ppps_module_test iov_iter ./iov_iter_ppps
+CATEGORY="gup_test" run_ppps_module_test iov_iter ./page_range_ppps
+CATEGORY="gup_test" run_ppps_module_test iov_iter ./page_range_ppps --native
+CATEGORY="gup_test" run_ppps_module_test fault_in ./fault_in_ppps
 CATEGORY="mmap" run_test ./futex_shared_ppps
 CATEGORY="mmap" run_test ./xdp_umem_ppps
+CATEGORY="mmap" run_test ./tcp_zerocopy_align_ppps
 
 CATEGORY="userfaultfd" run_test ./uffd-unit-tests
 CATEGORY="userfaultfd" run_test ./userfaultfd_eof_ppps
@@ -461,7 +476,7 @@ CATEGORY="mremap" run_test ./mremap_test
 CATEGORY="mremap" run_test ./mremap_rlimit_ppps
 CATEGORY="mremap" run_test ./mremap_commit_ppps
 CATEGORY="mremap" run_test ./mremap_hint_ppps
-CATEGORY="mremap" run_test ./test_mremap_pgoff_ppps.sh
+CATEGORY="mremap" run_ppps_module_test mremap_pgoff ./mremap_pgoff_ppps
 CATEGORY="mmap" run_test ./msync_offset_ppps
 CATEGORY="mmap" run_test ./bpf_array_mmap_ppps
 CATEGORY="mmap" run_test ./bpf_ringbuf_mmap_ppps
