@@ -2469,7 +2469,7 @@ static int __vm_map_pages(struct vm_area_struct *vma, struct page **pages,
 				unsigned long num, unsigned long offset,
 				unsigned int slice)
 {
-	unsigned long count = vma_native_pages(vma);
+	unsigned long count = vma_pgoff_count(vma);
 	unsigned long uaddr = vma->vm_start;
 
 	if (ppps_mm_is_compat(vma->vm_mm)) {

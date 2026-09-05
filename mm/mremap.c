@@ -710,8 +710,6 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	struct vm_area_struct *new_vma;
 	struct ppps_mremap_folios *ppps_folios;
 	unsigned long vm_flags = vma->vm_flags;
-	pgoff_t new_pgoff;
-	unsigned int new_slice_off;
 	unsigned long moved_len;
 	bool account_start = false;
 	bool account_end = false;
@@ -758,10 +756,7 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	}
 
 	vma_start_write(vma);
-	new_pgoff = vma_pgoff_offset(vma, old_addr);
-	new_slice_off = vma_address_to_slice(vma, old_addr);
-	new_vma = copy_vma(&vma, new_addr, new_len, new_pgoff,
-			   new_slice_off, &need_rmap_locks);
+	new_vma = copy_vma(&vma, new_addr, new_len, old_addr, &need_rmap_locks);
 	if (!new_vma) {
 		if (vm_flags & VM_ACCOUNT)
 			vm_unacct_memory_mm(mm,

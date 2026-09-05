@@ -639,7 +639,7 @@ static int io_pin_pbuf_ring(struct io_uring_buf_reg *reg,
 	size_t ring_size;
 	void *ring_map;
 	struct page **pages;
-	unsigned int page_offset = 0;
+	struct page_span span = {};
 	int nr_pages, ret;
 
 	ring_size = MM_PAGE_ALIGN(mm,
@@ -657,9 +657,9 @@ static int io_pin_pbuf_ring(struct io_uring_buf_reg *reg,
 		if (!pages)
 			return -ENOMEM;
 
-		ret = pin_user_pages_with_offsets(mm, addr, 1,
-						  FOLL_WRITE | FOLL_LONGTERM,
-						  pages, &page_offset);
+		ret = pin_user_pages_range(mm, addr, ring_size, 1,
+					   FOLL_WRITE | FOLL_LONGTERM, pages,
+					   &span);
 		if (ret != 1) {
 			kvfree(pages);
 			return ret < 0 ? ret : -EFAULT;
@@ -676,7 +676,7 @@ static int io_pin_pbuf_ring(struct io_uring_buf_reg *reg,
 		ret = -ENOMEM;
 		goto error_unpin;
 	}
-	br = ring_map + page_offset;
+	br = ring_map + span.offset;
 
 #ifdef SHM_COLOUR
 	/*
