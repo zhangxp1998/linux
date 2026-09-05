@@ -7,11 +7,6 @@
 #include <linux/tracepoint.h>
 #include <trace/events/mmflags.h>
 
-#define OOM_PROCESS_PAGES_TO_KB(mm, pages) \
-	((pages) << (MM_PAGE_SHIFT(mm) - 10))
-#define OOM_NATIVE_PAGES_TO_KB(pages) \
-	((pages) << (PAGE_SHIFT - 10))
-
 TRACE_EVENT(oom_score_adj_update,
 
 	TP_PROTO(struct task_struct *task),
@@ -95,16 +90,13 @@ TRACE_EVENT(mark_victim,
 
 	TP_fast_assign(
 		struct mm_struct *mm = task->mm;
-		unsigned long anon = get_mm_counter(mm, MM_ANONPAGES);
-		unsigned long file = get_mm_counter(mm, MM_FILEPAGES);
-		unsigned long shmem = get_mm_counter(mm, MM_SHMEMPAGES);
 
 		__entry->pid = task->pid;
 		__assign_str(comm);
-		__entry->total_vm = OOM_PROCESS_PAGES_TO_KB(mm, mm->total_vm);
-		__entry->anon_rss = OOM_NATIVE_PAGES_TO_KB(anon);
-		__entry->file_rss = OOM_PROCESS_PAGES_TO_KB(mm, file);
-		__entry->shmem_rss = OOM_PROCESS_PAGES_TO_KB(mm, shmem);
+		__entry->total_vm = mm_process_pages_to_bytes(mm, mm->total_vm) >> 10;
+		__entry->anon_rss = get_mm_counter_kb(mm, MM_ANONPAGES);
+		__entry->file_rss = get_mm_counter_kb(mm, MM_FILEPAGES);
+		__entry->shmem_rss = get_mm_counter_kb(mm, MM_SHMEMPAGES);
 		__entry->uid = uid;
 		__entry->pgtables = mm_pgtables_bytes(task->mm) >> 10;
 		__entry->oom_score_adj = task->signal->oom_score_adj;
