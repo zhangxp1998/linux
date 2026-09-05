@@ -51,7 +51,8 @@ PPPS_TESTS := \
 	dma_mmap_ppps elf_core_ppps \
 	exec_user_args_ppps fadvise_dontneed_ppps fault_in_ppps \
 	file_cow_ppps filemap_eof_ppps folio_within_range_ppps \
-	fork_filemap_ppps fork_page_size_ppps futex_shared_ppps \
+	fork_filemap_ppps fork_page_size_ppps fork_pinned_anon_ppps \
+	futex_shared_ppps \
 	gup_retry_ppps hole_anon_ppps io_uring_fixed_buffer_ppps \
 	io_uring_mmap_ppps iommu_dma_mmap_ppps iov_iter_ppps kcov_ppps \
 	madv_cold_large_file_ppps madvise_free_ppps madvise_guard_ppps \
@@ -228,6 +229,7 @@ $(eval $(call ppps_test_hdrs,gup_retry_ppps,gup_retry_ppps.h))
 $(eval $(call ppps_test_hdrs,iov_iter_ppps,iov_iter_ppps.h))
 $(eval $(call ppps_test_hdrs,mmu_notifier_ppps,mmu_notifier_ppps.h))
 $(eval $(call ppps_test_hdrs,pagewalk_ppps,pagewalk_ppps.h))
+$(eval $(call ppps_test_hdrs,vm_map_pages_ppps,vm_map_pages_ppps.h))
 $(foreach t,file_cow_ppps hole_anon_ppps mte_anon_ppps packed_anon_ppps \
 	    packed_swap_ppps uffd_copy_tuple_ppps, \
 	$(eval $(call ppps_test_hdrs,$(t),ppps_tuple_test.h)))

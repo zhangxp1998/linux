@@ -474,6 +474,7 @@ struct uffd_move_result {
 	bool tuple_move_preserved;
 	bool tuple_move_rss_preserved;
 	bool tuple_move_partial_preserved;
+	bool tuple_move_hole_fallback;
 	bool tuple_move_race_preserved;
 	unsigned long tuple_rss_before;
 	unsigned long tuple_rss_after;
@@ -639,6 +640,59 @@ out:
 	return passed;
 }
 
+static bool userfaultfd_holey_tuple_move(int uffd)
+{
+	struct uffdio_register reg = {
+		.mode = UFFDIO_REGISTER_MODE_MISSING,
+	};
+	struct uffdio_move move = {};
+	unsigned char *src_reservation = NULL;
+	unsigned char *dst_reservation = NULL;
+	unsigned char *src = MAP_FAILED;
+	unsigned char *dst = MAP_FAILED;
+	uint64_t pfn[PPPS_SLICES];
+	bool passed = false;
+	int ret;
+
+	src = map_aligned(2 * NATIVE_PAGE_SIZE, &src_reservation);
+	dst = map_aligned(2 * NATIVE_PAGE_SIZE, &dst_reservation);
+	if (src == MAP_FAILED || dst == MAP_FAILED)
+		goto out;
+	populate(src);
+	if (!read_pfns(src, pfn) || !same_pfn(pfn) ||
+	    madvise(src + PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
+		    MADV_DONTNEED))
+		goto out;
+
+	reg.range.start = (uintptr_t)dst;
+	reg.range.len = NATIVE_PAGE_SIZE;
+	if (ioctl(uffd, UFFDIO_REGISTER, &reg))
+		goto out;
+	move.dst = (uintptr_t)dst;
+	move.src = (uintptr_t)src;
+	move.len = NATIVE_PAGE_SIZE;
+	errno = 0;
+	ret = ioctl(uffd, UFFDIO_MOVE, &move);
+	passed = ret == -1 && errno == EAGAIN &&
+		 move.move == PROCESS_PAGE_SIZE && !src[0] && dst[0] == 0x31 &&
+		 src[2 * PROCESS_PAGE_SIZE] == 0x33 &&
+		 src[3 * PROCESS_PAGE_SIZE] == 0x34;
+	if (!passed) {
+		ksft_print_msg("holey MOVE: ret=%d errno=%d moved=%lld\n",
+			       ret, errno, (long long)move.move);
+		ksft_print_msg("source slices: %02x/%02x/%02x\n", src[0],
+			       src[2 * PROCESS_PAGE_SIZE],
+			       src[3 * PROCESS_PAGE_SIZE]);
+	}
+	unregister_range(uffd, dst, NATIVE_PAGE_SIZE);
+out:
+	if (src_reservation && src != MAP_FAILED)
+		munmap(src_reservation, 3 * NATIVE_PAGE_SIZE);
+	if (dst_reservation && dst != MAP_FAILED)
+		munmap(dst_reservation, 3 * NATIVE_PAGE_SIZE);
+	return passed;
+}
+
 static struct uffd_move_result userfaultfd_move_depacks(void)
 {
 	struct uffd_move_result result = {};
@@ -745,6 +799,8 @@ static struct uffd_move_result userfaultfd_move_depacks(void)
 					    &result.tuple_rss_after);
 	result.tuple_move_partial_preserved =
 		userfaultfd_partial_tuple_move(uffd);
+	result.tuple_move_hole_fallback =
+		userfaultfd_holey_tuple_move(uffd);
 	result.tuple_move_race_preserved =
 		userfaultfd_tuple_move_races(uffd);
 
@@ -778,7 +834,7 @@ static int run_test(void)
 	unsigned char value = 1;
 
 	ksft_print_header();
-	ksft_set_plan(29);
+	ksft_set_plan(30);
 
 	base = map_aligned(2 * NATIVE_PAGE_SIZE, &reservation);
 	ksft_test_result(base != MAP_FAILED, "map anonymous test range\n");
@@ -874,6 +930,7 @@ static int run_test(void)
 		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
 		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
 		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
+		ksft_test_result_skip("UFFDIO_MOVE is unavailable\n");
 	} else {
 		ksft_test_result(uffd_move.register_preserved,
 				 "userfaultfd registration preserves tuple folios\n");
@@ -889,6 +946,8 @@ static int run_test(void)
 				 uffd_move.tuple_rss_after);
 		ksft_test_result(uffd_move.tuple_move_partial_preserved,
 				 "busy destination preserves MOVE partial progress\n");
+		ksft_test_result(uffd_move.tuple_move_hole_fallback,
+				 "holey tuple MOVE falls back with partial progress\n");
 		ksft_test_result(uffd_move.tuple_move_race_preserved,
 				 "concurrent full-tuple MOVEs publish one winner\n");
 	}

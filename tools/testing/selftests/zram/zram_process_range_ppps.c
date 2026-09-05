@@ -15,7 +15,6 @@
 
 #include "kselftest_ppps.h"
 
-
 #define DIRECT_MAPPING_ADDR	0x7fef000000UL
 #define STRIDE_MAPPING_ADDR	0x7ff0000000UL
 #define ALIGN_MAPPING_ADDR	0x7ff1000000UL
@@ -27,6 +26,7 @@ struct child_info {
 	uintptr_t stride_mapping;
 	uintptr_t align_mapping;
 	uint64_t direct_pagemap_entry;
+	uint64_t stride_first_pagemap_entry;
 	uint64_t stride_pagemap_entry;
 	long page_size;
 };
@@ -79,6 +79,10 @@ static int run_child(int info_fd, int command_fd)
 	    page_out((uintptr_t)stride_mapping + PROCESS_PAGE_SIZE,
 		     &info.stride_pagemap_entry))
 		return EXIT_FAILURE;
+	if (!ppps_pagemap_entry_of(0, PROCESS_PAGE_SIZE,
+				   (uintptr_t)stride_mapping,
+				   &info.stride_first_pagemap_entry))
+		return EXIT_FAILURE;
 
 	info.direct_mapping = (uintptr_t)direct_mapping;
 	info.stride_mapping = (uintptr_t)stride_mapping;
@@ -115,17 +119,21 @@ static int run_parent(const char *device)
 	int stride_error;
 	int align_error;
 	int tagged_error;
+	int high_error;
+	int unaligned_error;
 	int direct_result;
 	int stride_result;
 	int align_result;
 	int tagged_result;
+	int high_result;
+	int unaligned_result;
 	int pidfd;
 	int zram_fd;
 	char command = 1;
 	pid_t child;
 
 	ksft_print_header();
-	ksft_set_plan(13);
+	ksft_set_plan(16);
 	ksft_test_result(sysconf(_SC_PAGESIZE) == NATIVE_PAGE_SIZE,
 			 "caller uses native 16K pages\n");
 	if (pipe(info_pipe) || pipe(command_pipe))
@@ -148,8 +156,9 @@ static int run_parent(const char *device)
 		       info.page_size, (unsigned long)info.direct_mapping,
 		       (unsigned long)info.stride_mapping,
 		       (unsigned long)info.align_mapping);
-	ksft_print_msg("pagemap entries=%#llx/%#llx\n",
+	ksft_print_msg("pagemap entries=%#llx/%#llx/%#llx\n",
 		       (unsigned long long)info.direct_pagemap_entry,
+		       (unsigned long long)info.stride_first_pagemap_entry,
 		       (unsigned long long)info.stride_pagemap_entry);
 	ksft_test_result(info.page_size == PROCESS_PAGE_SIZE,
 			 "target uses 4K compat pages\n");
@@ -161,6 +170,8 @@ static int run_parent(const char *device)
 			 "direct first 4K slice is swapped out\n");
 	ksft_test_result(info.stride_pagemap_entry & PAGEMAP_SWAPPED,
 			 "second 4K slice is swapped out\n");
+	ksft_test_result(info.stride_first_pagemap_entry & PAGEMAP_SWAPPED,
+			 "packed tuple also swaps the first 4K slice\n");
 
 	zram_fd = open(device, O_RDWR | O_CLOEXEC);
 	if (zram_fd < 0)
@@ -204,7 +215,7 @@ static int run_parent(const char *device)
 			 (unsigned long long)request.written_bytes);
 	ksft_test_result(!stride_result &&
 			 request.next_addr ==
-			 info.stride_mapping + 2 * PROCESS_PAGE_SIZE,
+			 info.stride_mapping + PROCESS_PAGE_SIZE,
 			 "next address advances at the target 4K granularity (%#llx)\n",
 			 (unsigned long long)request.next_addr);
 
@@ -232,6 +243,31 @@ static int run_parent(const char *device)
 	ksft_test_result(!tagged_result,
 			 "accept a tagged target range start (%s)\n",
 			 tagged_result ? strerror(tagged_error) : "ok");
+
+	memset(&request, 0, sizeof(request));
+	request.pidfd = pidfd;
+	request.start_addr = UINT64_MAX;
+	errno = 0;
+	high_result = ioctl(zram_fd,
+			    ZRAM_ANDROID_IOC_PROCESS_RANGE_WRITEBACK,
+			    &request);
+	high_error = errno;
+	ksft_test_result(high_result == -1 && high_error == EINVAL,
+			 "reject a range start beyond the target address space (%s)\n",
+			 high_result == -1 ? strerror(high_error) : "unexpected success");
+
+	memset(&request, 0, sizeof(request));
+	request.pidfd = pidfd;
+	request.start_addr = info.align_mapping + 1;
+	errno = 0;
+	unaligned_result = ioctl(zram_fd,
+				 ZRAM_ANDROID_IOC_PROCESS_RANGE_WRITEBACK,
+				 &request);
+	unaligned_error = errno;
+	ksft_test_result(unaligned_result == -1 && unaligned_error == EINVAL,
+			 "reject a target-page-unaligned range start (%s)\n",
+			 unaligned_result == -1 ? strerror(unaligned_error) :
+			 "unexpected success");
 
 	close(pidfd);
 	close(zram_fd);
