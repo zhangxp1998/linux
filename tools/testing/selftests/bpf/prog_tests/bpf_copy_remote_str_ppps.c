@@ -45,9 +45,28 @@ struct bpf_copy_state {
 	uint64_t file_ptr;
 	int32_t anon_ret;
 	int32_t file_ret;
+	int32_t invalid_flags_ret;
+	int32_t zero_size_ret;
+	int32_t fault_pad_ret;
+	int32_t fault_no_pad_ret;
+	int32_t no_pad_ret;
 	char anon_output[OUTPUT_SIZE];
 	char file_output[OUTPUT_SIZE];
+	char fault_pad_output[8];
+	char no_pad_output[OUTPUT_SIZE];
 };
+
+static bool all_zeros(const void *data, size_t size)
+{
+	const unsigned char *bytes = data;
+	size_t i;
+
+	for (i = 0; i < size; i++) {
+		if (bytes[i])
+			return false;
+	}
+	return true;
+}
 
 static int run_target(int info_fd, int finish_fd)
 {
@@ -198,6 +217,19 @@ static void run_loader(void)
 	ASSERT_STREQ(state.anon_output, anon_expected, "anonymous contents");
 	ASSERT_EQ(state.file_ret, (int)sizeof(file_expected), "file return");
 	ASSERT_STREQ(state.file_output, file_expected, "file contents");
+	ASSERT_EQ(state.invalid_flags_ret, -EINVAL, "invalid flags");
+	ASSERT_EQ(state.zero_size_ret, 0, "zero destination size");
+	ASSERT_EQ(state.fault_pad_ret, -EFAULT, "fault with zero padding");
+	ASSERT_EQ(state.fault_no_pad_ret, -EFAULT, "fault without padding");
+	ASSERT_EQ(state.no_pad_ret, (int)sizeof(anon_expected),
+		  "no-padding return");
+	ASSERT_STREQ(state.no_pad_output, anon_expected, "no-padding contents");
+	ASSERT_TRUE(all_zeros(state.fault_pad_output,
+			      sizeof(state.fault_pad_output)),
+		    "fault output zeroed");
+	ASSERT_TRUE(all_zeros(state.anon_output + sizeof(anon_expected),
+			      sizeof(state.anon_output) - sizeof(anon_expected)),
+		    "success output padded");
 
 release_child:
 	bpf_copy_remote_str_ppps__destroy(skeleton);

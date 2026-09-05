@@ -3,7 +3,9 @@
 #include <linux/highmem.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/ppps.h>
 
+#include "../vm_map_pages_ppps.h"
 #include "../../ppps/ppps_misc_module.h"
 
 #define USER_PAGE_SIZE	4096UL
@@ -11,9 +13,57 @@
 
 static struct page *test_pages[TEST_PAGE_COUNT];
 
+static int expected_error(int error, int expected)
+{
+	if (error == expected)
+		return 0;
+	return error ?: -EINVAL;
+}
+
+static int vm_insert_pages_edge_case(struct vm_area_struct *vma)
+{
+	unsigned long offset = (vma->vm_pgoff << PPPS_SLICE_SHIFT) +
+		vma_slice_off(vma);
+	unsigned long count = 1;
+	int error;
+
+	switch (offset) {
+	case VM_MAP_PAGES_PPPS_ZERO:
+		count = 0;
+		return vm_insert_pages(vma, vma->vm_start, test_pages, &count);
+	case VM_MAP_PAGES_PPPS_BEFORE:
+		error = vm_insert_pages(vma, vma->vm_start - USER_PAGE_SIZE,
+					test_pages, &count);
+		return expected_error(error, -EFAULT);
+	case VM_MAP_PAGES_PPPS_AFTER:
+		error = vm_insert_pages(vma, vma->vm_end, test_pages, &count);
+		return expected_error(error, -EFAULT);
+	case VM_MAP_PAGES_PPPS_TOO_MANY:
+		count = 2;
+		error = vm_insert_pages(vma, vma->vm_start, test_pages, &count);
+		return expected_error(error, -EFAULT);
+	case VM_MAP_PAGES_PPPS_BUSY:
+		error = vm_insert_pages(vma, vma->vm_start, test_pages, &count);
+		if (error || count)
+			return error ?: -EINVAL;
+		count = 1;
+		error = vm_insert_pages(vma, vma->vm_start, test_pages, &count);
+		if (count != 1)
+			return -EINVAL;
+		return expected_error(error, -EBUSY);
+	default:
+		return -EINVAL;
+	}
+}
+
 static int vm_map_pages_ppps_mmap(struct file *file,
 				  struct vm_area_struct *vma)
 {
+	unsigned long offset = (vma->vm_pgoff << PPPS_SLICE_SHIFT) +
+		vma_slice_off(vma);
+
+	if (offset >= VM_MAP_PAGES_PPPS_ZERO)
+		return vm_insert_pages_edge_case(vma);
 	return vm_map_pages(vma, test_pages, ARRAY_SIZE(test_pages));
 }
 
