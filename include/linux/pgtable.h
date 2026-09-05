@@ -104,8 +104,8 @@ static inline unsigned long pte_index_mm(struct mm_struct *mm,
 #ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return pte_index(address);
 #else
-	return (address >> MM_ADDR_PAGE_SHIFT(address, mm)) &
-		(MM_ADDR_PTRS_PER_PTE(address, mm) - 1);
+	return (address >> MM_PAGE_SHIFT(pgt_mm(address, mm))) &
+		(MM_PTRS_PER_PTE(pgt_mm(address, mm)) - 1);
 #endif
 }
 
@@ -124,8 +124,8 @@ static inline unsigned long pmd_index_mm(struct mm_struct *mm,
 #ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return pmd_index(address);
 #else
-	return (address >> MM_ADDR_PMD_SHIFT(address, mm)) &
-		(MM_ADDR_PTRS_PER_PMD(address, mm) - 1);
+	return (address >> MM_PMD_SHIFT(pgt_mm(address, mm))) &
+		(MM_PTRS_PER_PMD(pgt_mm(address, mm)) - 1);
 #endif
 }
 
@@ -145,8 +145,8 @@ static inline unsigned long pud_index_mm(struct mm_struct *mm,
 #ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return pud_index(address);
 #else
-	return (address >> MM_ADDR_PUD_SHIFT(address, mm)) &
-		(MM_ADDR_PTRS_PER_PUD(address, mm) - 1);
+	return (address >> MM_PUD_SHIFT(pgt_mm(address, mm))) &
+		(MM_PTRS_PER_PUD(pgt_mm(address, mm)) - 1);
 #endif
 }
 
@@ -182,14 +182,14 @@ static inline void pud_init(void *addr)
 #define pgd_index_mm(mm, a) ((void)(mm), pgd_index(a))
 #else
 #define pgd_index_mm(mm, a) \
-	(((a) >> MM_ADDR_PGD_SHIFT((a), (mm))) & \
-	 (MM_ADDR_PTRS_PER_PGD((a), (mm)) - 1))
+	(((a) >> MM_PGD_SHIFT(pgt_mm(a, mm))) & \
+	 (MM_PTRS_PER_PGD(pgt_mm(a, mm)) - 1))
 #endif
 
 #ifndef p4d_index_mm
 #define p4d_index_mm(mm, a) \
-	(((a) >> MM_ADDR_P4D_SHIFT((a), (mm))) & \
-	 (MM_ADDR_PTRS_PER_P4D((a), (mm)) - 1))
+	(((a) >> MM_P4D_SHIFT(pgt_mm(a, mm))) & \
+	 (MM_PTRS_PER_P4D(pgt_mm(a, mm)) - 1))
 #endif
 
 #ifndef pte_offset_kernel
@@ -1407,8 +1407,8 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 
 #define pgd_addr_end_mm(mm, addr, end)					\
 ({									\
-	unsigned long __boundary = ((addr) + MM_ADDR_PGDIR_SIZE(addr, mm)) &\
-				   MM_ADDR_PGDIR_MASK(addr, mm);	\
+	unsigned long __boundary = ((addr) + MM_PGDIR_SIZE(pgt_mm(addr, mm))) &\
+				   MM_PGDIR_MASK(pgt_mm(addr, mm));	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 
@@ -1421,8 +1421,8 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 
 #define p4d_addr_end_mm(mm, addr, end)					\
 ({									\
-	unsigned long __boundary = ((addr) + MM_ADDR_P4D_SIZE(addr, mm)) &\
-				   MM_ADDR_P4D_MASK(addr, mm);	\
+	unsigned long __boundary = ((addr) + MM_P4D_SIZE(pgt_mm(addr, mm))) &\
+				   MM_P4D_MASK(pgt_mm(addr, mm));	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 
@@ -1436,8 +1436,8 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 
 #define pud_addr_end_mm(mm, addr, end)					\
 ({									\
-	unsigned long __boundary = ((addr) + MM_ADDR_PUD_SIZE(addr, mm)) &\
-				   MM_ADDR_PUD_MASK(addr, mm);	\
+	unsigned long __boundary = ((addr) + MM_PUD_SIZE(pgt_mm(addr, mm))) &\
+				   MM_PUD_MASK(pgt_mm(addr, mm));	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 
@@ -1450,8 +1450,8 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 
 #define pmd_addr_end_mm(mm, addr, end)					\
 ({									\
-	unsigned long __boundary = ((addr) + MM_ADDR_PMD_SIZE(addr, mm)) &\
-				   MM_ADDR_PMD_MASK(addr, mm);	\
+	unsigned long __boundary = ((addr) + MM_PMD_SIZE(pgt_mm(addr, mm))) &\
+				   MM_PMD_MASK(pgt_mm(addr, mm));	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 

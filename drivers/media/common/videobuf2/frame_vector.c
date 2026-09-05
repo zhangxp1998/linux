@@ -47,7 +47,6 @@ int get_vaddr_frames(unsigned long start, unsigned int nr_frames, bool write,
 {
 	struct mm_struct *mm = current->mm;
 	size_t length;
-	int ret;
 
 	if (!nr_frames)
 		return 0;
@@ -59,8 +58,7 @@ int get_vaddr_frames(unsigned long start, unsigned int nr_frames, bool write,
 		return -EOVERFLOW;
 	length = ((size_t)nr_frames << MM_PAGE_SHIFT(mm)) -
 		 mm_offset_in_page(mm, start);
-	ret = get_vaddr_frames_range(start, length, write, vec);
-	return ret ? ret : -EFAULT;
+	return get_vaddr_frames_range(start, length, write, vec);
 }
 EXPORT_SYMBOL(get_vaddr_frames);
 

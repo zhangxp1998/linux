@@ -2418,8 +2418,7 @@ static int set_bit_to_user(int nr, void __user *addr)
 {
 	unsigned long log = (unsigned long)addr;
 	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
-	unsigned long page_offset = 0;
+	struct page_span span;
 	struct page *page;
 	void *base;
 	int bit;
@@ -2428,26 +2427,12 @@ static int set_bit_to_user(int nr, void __user *addr)
 	if (!mm)
 		return -EFAULT;
 
-	/*
-	 * Keep the VMA stable while translating the process-page offset to
-	 * its native backing-page slice and pinning that page.
-	 */
-	mmap_read_lock(mm);
-	vma = vma_lookup(mm, log);
-	if (!vma) {
-		r = -EFAULT;
-		goto unlock;
-	}
-	r = pin_user_pages(log, 1, FOLL_WRITE, &page);
-	if (r == 1)
-		page_offset = vma_page_slice_offset(vma, page, log) +
-			      mm_offset_in_page(mm, log);
-unlock:
-	mmap_read_unlock(mm);
+	/* Locate the log byte in the pinned native page. */
+	r = pin_user_pages_range(mm, log, 1, 1, FOLL_WRITE, &page, &span);
 	if (r != 1)
 		return r < 0 ? r : -EFAULT;
 
-	bit = nr + page_offset * 8;
+	bit = nr + span.offset * 8;
 	base = kmap_atomic(page);
 	set_bit(bit, base);
 	kunmap_atomic(base);

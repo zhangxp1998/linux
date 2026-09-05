@@ -176,7 +176,10 @@
 #define PTE_UXN			(_AT(pteval_t, 1) << 54)	/* User XN */
 #define PTE_SWBITS_MASK		_AT(pteval_t, (BIT(63) | GENMASK(58, 55)))
 
-#define PTE_ADDR_LOW		(((_AT(pteval_t, 1) << (50 - PAGE_SHIFT)) - 1) << PAGE_SHIFT)
+#define __PTE_ADDR_LOW(shift)	(((_AT(pteval_t, 1) << (50 - (shift))) - 1) << (shift))
+#define PTE_ADDR_LOW		__PTE_ADDR_LOW(PAGE_SHIFT)
+/* Also covers the PPPS slice bits between PAGE_SHIFT_COMPAT and PAGE_SHIFT. */
+#define PTE_ADDR_LOW_COMPAT	__PTE_ADDR_LOW(PAGE_SHIFT_COMPAT)
 #ifdef CONFIG_ARM64_PA_BITS_52
 #ifdef CONFIG_ARM64_64K_PAGES
 #define PTE_ADDR_HIGH		(_AT(pteval_t, 0xf) << 12)
@@ -296,6 +299,13 @@
 #define TCR_TG0_4K		(UL(0) << TCR_TG0_SHIFT)
 #define TCR_TG0_64K		(UL(1) << TCR_TG0_SHIFT)
 #define TCR_TG0_16K		(UL(2) << TCR_TG0_SHIFT)
+#ifdef CONFIG_ARM64_64K_PAGES
+#define TCR_TG0_NATIVE		TCR_TG0_64K
+#elif defined(CONFIG_ARM64_16K_PAGES)
+#define TCR_TG0_NATIVE		TCR_TG0_16K
+#else
+#define TCR_TG0_NATIVE		TCR_TG0_4K
+#endif
 
 #define TCR_TG1_SHIFT		30
 #define TCR_TG1_MASK		(UL(3) << TCR_TG1_SHIFT)

@@ -1055,8 +1055,8 @@ static inline phys_addr_t p4d_page_paddr(p4d_t p4d)
 
 #define pud_index(addr)		(((addr) >> PUD_SHIFT) & (PTRS_PER_PUD - 1))
 #define pud_index_mm(mm, addr) \
-	(((addr) >> MM_ADDR_PUD_SHIFT((addr), (mm))) & \
-	 (MM_ADDR_PTRS_PER_PUD((addr), (mm)) - 1))
+	(((addr) >> MM_PUD_SHIFT(pgt_mm(addr, mm))) & \
+	 (MM_PTRS_PER_PUD(pgt_mm(addr, mm)) - 1))
 
 static inline pud_t *p4d_to_folded_pud(p4d_t *p4dp, unsigned long addr)
 {
@@ -1069,7 +1069,7 @@ static inline pud_t *p4d_to_folded_pud(p4d_t *p4dp, unsigned long addr)
 static inline pud_t *p4d_to_folded_pud_mm(struct mm_struct *mm, p4d_t *p4dp,
 					  unsigned long addr)
 {
-	return (pud_t *)PTR_ALIGN_DOWN(p4dp, MM_ADDR_PAGE_SIZE(addr, mm)) +
+	return (pud_t *)PTR_ALIGN_DOWN(p4dp, MM_PAGE_SIZE(pgt_mm(addr, mm))) +
 		pud_index_mm(mm, addr);
 }
 
@@ -1210,8 +1210,8 @@ static inline phys_addr_t pgd_page_paddr(pgd_t pgd)
 
 #define p4d_index(addr)		(((addr) >> P4D_SHIFT) & (PTRS_PER_P4D - 1))
 #define p4d_index_mm(mm, addr) \
-	(((addr) >> MM_ADDR_P4D_SHIFT((addr), (mm))) & \
-	 (MM_ADDR_PTRS_PER_P4D((addr), (mm)) - 1))
+	(((addr) >> MM_P4D_SHIFT(pgt_mm(addr, mm))) & \
+	 (MM_PTRS_PER_P4D(pgt_mm(addr, mm)) - 1))
 
 static inline p4d_t *pgd_to_folded_p4d(pgd_t *pgdp, unsigned long addr)
 {
@@ -1224,7 +1224,7 @@ static inline p4d_t *pgd_to_folded_p4d(pgd_t *pgdp, unsigned long addr)
 static inline p4d_t *pgd_to_folded_p4d_mm(struct mm_struct *mm, pgd_t *pgdp,
 					  unsigned long addr)
 {
-	return (p4d_t *)PTR_ALIGN_DOWN(pgdp, MM_ADDR_PAGE_SIZE(addr, mm)) +
+	return (p4d_t *)PTR_ALIGN_DOWN(pgdp, MM_PAGE_SIZE(pgt_mm(addr, mm))) +
 		p4d_index_mm(mm, addr);
 }
 
