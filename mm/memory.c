@@ -2419,6 +2419,7 @@ EXPORT_SYMBOL(vm_insert_page_slice);
 int vm_insert_page_native(struct vm_area_struct *vma, unsigned long addr,
 			  struct page *page)
 {
+	unsigned long start = addr;
 	unsigned int slice;
 	int ret;
 
@@ -2430,8 +2431,15 @@ int vm_insert_page_native(struct vm_area_struct *vma, unsigned long addr,
 	for (slice = 0; slice < PPPS_SLICES_PER_PAGE && addr < vma->vm_end;
 	     slice++, addr += PAGE_SIZE_COMPAT) {
 		ret = vm_insert_page_slice(vma, addr, page, slice);
-		if (ret)
+		if (ret) {
+			/*
+			 * Callers own @page again after an error.  Remove every
+			 * slice installed by this invocation before returning it.
+			 */
+			if (addr != start)
+				zap_page_range_single(vma, start, addr - start, NULL);
 			return ret;
+		}
 	}
 	return 0;
 }
@@ -2469,7 +2477,7 @@ static int __vm_map_pages(struct vm_area_struct *vma, struct page **pages,
 				unsigned long num, unsigned long offset,
 				unsigned int slice)
 {
-	unsigned long count = vma_native_pages(vma);
+	unsigned long count = vma_pgoff_count(vma);
 	unsigned long uaddr = vma->vm_start;
 
 	if (ppps_mm_is_compat(vma->vm_mm)) {
@@ -2963,7 +2971,10 @@ static int remap_pfn_range_internal(struct vm_area_struct *vma, unsigned long ad
 	if (is_cow_mapping(vma->vm_flags)) {
 		if (addr != vma->vm_start || end != vma->vm_end)
 			return -EINVAL;
-		vma->vm_pgoff = PHYS_PFN(phys_addr);
+		vma_set_offset(vma, (struct vma_offset){
+			.pgoff = PHYS_PFN(phys_addr),
+			.slice = vma_offset_to_slice(vma, phys_addr),
+		});
 	}
 
 	vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
@@ -3091,17 +3102,21 @@ int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start,
 	unsigned long pfn, pages;
 
 	if (ppps_mm_is_compat(vma->vm_mm)) {
+		unsigned long page_offset =
+			start & (MM_PAGE_SIZE(vma->vm_mm) - 1);
+
 		requested_offset = vma_file_offset(vma);
 		if (requested_offset < 0 ||
-		    check_add_overflow(len, start & ~PAGE_MASK, &map_len) ||
-		    check_add_overflow(map_len, PAGE_SIZE - 1, &map_len))
+		    check_add_overflow(len, page_offset, &map_len) ||
+		    check_add_overflow(map_len, MM_PAGE_SIZE(vma->vm_mm) - 1,
+				       &map_len))
 			return -EINVAL;
-		map_len &= PAGE_MASK;
+		map_len &= MM_PAGE_MASK(vma->vm_mm);
 		if ((u64)requested_offset >= map_len ||
 		    vm_len > map_len - requested_offset)
 			return -EINVAL;
 
-		phys_addr = start & PAGE_MASK;
+		phys_addr = start - page_offset;
 		if (check_add_overflow(phys_addr, (u64)requested_offset,
 				       &phys_addr))
 			return -EINVAL;

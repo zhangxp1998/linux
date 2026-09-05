@@ -89,6 +89,9 @@ struct vma_merge_struct {
 	enum vma_merge_flags merge_flags;
 	enum vma_merge_state state;
 
+	/* Preserve slice semantics if an existing VMA becomes a new range. */
+	bool ppps_sliced :1;
+
 	/*
 	 * If a merge is possible, but an OOM error occurs, give up and don't
 	 * execute the merge, returning NULL.
@@ -138,6 +141,7 @@ static inline pgoff_t vma_pgoff_offset(struct vm_area_struct *vma,
 		.policy = vma_policy(vma_),			\
 		.uffd_ctx = vma_->vm_userfaultfd_ctx,		\
 		.anon_name = anon_vma_name(vma_),		\
+		.ppps_sliced = ppps_vma_has_slices(vma_),	\
 		.state = VMA_MERGE_START,			\
 		.merge_flags = VMG_FLAG_DEFAULT,		\
 	}
@@ -336,8 +340,9 @@ void vma_link_file(struct vm_area_struct *vma);
 int vma_link(struct mm_struct *mm, struct vm_area_struct *vma);
 
 struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
-	unsigned long addr, unsigned long len, pgoff_t pgoff,
-	unsigned int slice_off, bool *need_rmap_locks);
+				unsigned long addr, unsigned long len,
+				unsigned long source_addr,
+				bool *need_rmap_locks);
 
 struct anon_vma *find_mergeable_anon_vma(struct vm_area_struct *vma);
 

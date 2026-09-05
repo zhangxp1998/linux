@@ -393,8 +393,7 @@ static int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		new->vm_end = addr;
 	} else {
 		new->vm_start = addr;
-		new->vm_pgoff = vma_pgoff_offset(vma, addr);
-		vma_set_slice_off(new, vma_address_to_slice(vma, addr));
+		vma_set_offset(new, vma_offset_at(vma, addr));
 	}
 
 	err = -ENOMEM;
@@ -441,8 +440,7 @@ static int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 
 	if (new_below) {
 		vma->vm_start = addr;
-		vma->vm_pgoff = vma_pgoff_offset(new, addr);
-		vma_set_slice_off(vma, vma_address_to_slice(new, addr));
+		vma_set_offset(vma, vma_offset_at(new, addr));
 	} else {
 		vma->vm_end = addr;
 	}
@@ -626,7 +624,10 @@ static int commit_merge(struct vma_merge_struct *vmg,
 	vma_prepare(&vp);
 	vma_adjust_trans_huge(vmg->vma, vmg->start, vmg->end, adj_start);
 	vma_set_range(vmg->vma, vmg->start, vmg->end, vmg->pgoff);
-	vma_set_slice_off(vmg->vma, vmg->slice_off);
+	vma_set_offset(vmg->vma, (struct vma_offset){
+					 vmg->pgoff,
+					 vmg->slice_off,
+				 });
 
 	if (expanded)
 		vma_iter_store_overwrite(vmg->vmi, vmg->vma);
@@ -635,11 +636,11 @@ static int commit_merge(struct vma_merge_struct *vmg,
 		/* The VMA whose geometry still covers the new start of @adjust. */
 		struct vm_area_struct *src = adj_start < 0 ? vmg->vma : adjust;
 		unsigned long adjust_start = adjust->vm_start + adj_start;
-		unsigned int slice_off = vma_address_to_slice(src, adjust_start);
+		struct vma_offset offset = vma_offset_at(src, adjust_start);
 
 		vma_set_range(adjust, adjust_start, adjust->vm_end,
-			      vma_pgoff_offset(src, adjust_start));
-		vma_set_slice_off(adjust, slice_off);
+			      offset.pgoff);
+		vma_set_offset(adjust, offset);
 		if (adj_start < 0) {
 			WARN_ON(expanded);
 			vma_iter_store_overwrite(vmg->vmi, adjust);
@@ -1666,10 +1667,12 @@ int vma_link(struct mm_struct *mm, struct vm_area_struct *vma)
  * prior to moving page table entries, to effect an mremap move.
  */
 struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
-	unsigned long addr, unsigned long len, pgoff_t pgoff,
-	unsigned int slice_off, bool *need_rmap_locks)
+				unsigned long addr, unsigned long len,
+				unsigned long source_addr,
+				bool *need_rmap_locks)
 {
 	struct vm_area_struct *vma = *vmap;
+	struct vma_offset offset = vma_offset_at(vma, source_addr);
 	unsigned long vma_start = vma->vm_start;
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_area_struct *new_vma;
@@ -1683,8 +1686,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	 * to match new location, to increase its chance of merging.
 	 */
 	if (unlikely(vma_is_anonymous(vma) && !vma->anon_vma)) {
-		pgoff = addr >> MM_PAGE_SHIFT(mm);
-		slice_off = 0;
+		offset = (struct vma_offset){ addr >> MM_PAGE_SHIFT(mm), 0 };
 		faulted_in_anon_vma = false;
 	}
 
@@ -1693,8 +1695,8 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 		return NULL;	/* should never get here */
 
 	vmg.vma = NULL; /* New VMA range. */
-	vmg.pgoff = pgoff;
-	vmg.slice_off = slice_off;
+	vmg.pgoff = offset.pgoff;
+	vmg.slice_off = offset.slice;
 	vmg.next = vma_iter_next_rewind(&vmi, NULL);
 	new_vma = vma_merge_new_range(&vmg);
 
@@ -1726,8 +1728,8 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 			goto out;
 		/* Do not preserve padding flags on the new VMA */
 		vm_flags_clear(new_vma, VM_PAD_MASK);
-		vma_set_range(new_vma, addr, addr + len, pgoff);
-		vma_set_slice_off(new_vma, slice_off);
+		vma_set_range(new_vma, addr, addr + len, offset.pgoff);
+		vma_set_offset(new_vma, offset);
 		if (vma_dup_policy(vma, new_vma))
 			goto out_free_vma;
 		if (anon_vma_clone(new_vma, vma))
