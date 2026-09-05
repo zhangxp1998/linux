@@ -8,6 +8,7 @@
 #include <linux/uio.h>
 
 #include "../iov_iter_ppps.h"
+#include "../page_range_ppps.h"
 
 #include "../../ppps/ppps_misc_module.h"
 
@@ -119,12 +120,111 @@ static ssize_t run_bulk_extract(unsigned long address, size_t length)
 	return ret;
 }
 
+/* Pure offset/unit contracts, exercised in both native and compat processes. */
+static bool check_public_helpers(void)
+{
+	static const struct vm_operations_struct ops;
+	static struct file file;
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct vma = {
+		.vm_mm = mm,
+		.vm_ops = &ops,
+		.vm_file = &file,
+		.vm_start = 0x100000,
+		.vm_end = 0x100000 + 2 * PAGE_SIZE,
+	};
+	struct vma_offset saved, next;
+	unsigned long size = MM_PAGE_SIZE(mm);
+
+	if (mm_user_range_pages(mm, 17, 0) ||
+	    mm_user_range_pages(mm, 17, size) != 2 ||
+	    mm_counter_to_bytes(mm, MM_ANONPAGES, 1) != PAGE_SIZE ||
+	    mm_counter_to_bytes(mm, MM_SWAPENTS, 1) != size ||
+	    mm_counter_to_bytes(mm, MM_FILEPAGES, 1) != size ||
+	    mm_counter_to_bytes(mm, MM_SHMEMPAGES, 1) != size)
+		return false;
+	if (vma_set_file_offset(&vma, PAGE_SIZE - size))
+		return false;
+	saved = vma_get_offset(&vma);
+	if (vma_set_file_offset(&vma, 1) != -EINVAL ||
+	    vma_file_offset(&vma) != PAGE_SIZE - size)
+		return false;
+	next = vma_offset_advance(mm, saved, ppps_vma_has_slices(&vma), size);
+	vma_set_offset(&vma, next);
+	if (vma_file_offset(&vma) != PAGE_SIZE)
+		return false;
+	vma_set_offset(&vma, saved);
+	if (vma_addr_file_offset(&vma, vma.vm_start + size) != PAGE_SIZE)
+		return false;
+	next = vma_offset_at(&vma, vma.vm_start + size);
+	if (next.pgoff != 1 || next.slice != 0)
+		return false;
+	/* Lossless driver-selector save/restore, even beyond byte-offset width. */
+	saved.pgoff = ULONG_MAX;
+	vma_set_offset(&vma, saved);
+	return vma_get_offset(&vma).pgoff == ULONG_MAX;
+}
+
+static long page_range_ioctl(unsigned long arg)
+{
+	struct page_range_ppps_args request;
+	struct page_span spans[PAGE_RANGE_PPPS_MAX];
+	struct page *pages[PAGE_RANGE_PPPS_MAX];
+	long nr;
+	int i;
+
+	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
+		return -EFAULT;
+	if (request.capacity > ARRAY_SIZE(pages) || request.pin > 1 ||
+	    request.address > ULONG_MAX || request.length > SIZE_MAX)
+		return -EINVAL;
+	memset(request.spans, 0, sizeof(request.spans));
+	request.helpers_ok = check_public_helpers();
+	nr = request.pin ?
+		     pin_user_pages_range(current->mm, request.address,
+					  request.length, request.capacity,
+					  FOLL_WRITE, pages, spans) :
+		     get_user_pages_range(current->mm, request.address,
+					  request.length, request.capacity,
+					  FOLL_WRITE, pages, spans);
+	request.result = nr;
+	for (i = 0; i < nr; i++) {
+		u8 *base;
+
+		if (!spans[i].length || spans[i].offset >= PAGE_SIZE ||
+		    spans[i].length > PAGE_SIZE - spans[i].offset) {
+			if (request.pin)
+				unpin_user_pages(pages + i, nr - i);
+			else
+				release_pages(pages + i, nr - i);
+			return -ERANGE;
+		}
+		base = kmap_local_page(pages[i]);
+
+		request.spans[i].offset = spans[i].offset;
+		request.spans[i].length = spans[i].length;
+		request.spans[i].first = base[spans[i].offset];
+		request.spans[i].last =
+			base[spans[i].offset + spans[i].length - 1];
+		kunmap_local(base);
+		if (request.pin)
+			unpin_user_page(pages[i]);
+		else
+			put_page(pages[i]);
+	}
+	return copy_to_user((void __user *)arg, &request, sizeof(request)) ?
+		       -EFAULT :
+		       0;
+}
+
 static long iov_iter_ppps_ioctl(struct file *file, unsigned int cmd,
 				unsigned long arg)
 {
 	struct iov_iter_ppps_args request;
 	bool expect_packed;
 
+	if (cmd == PAGE_RANGE_PPPS_IOCTL)
+		return page_range_ioctl(arg);
 	if (cmd != IOV_ITER_PPPS_IOCTL)
 		return -EINVAL;
 	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))

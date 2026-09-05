@@ -63,7 +63,7 @@ PPPS_TESTS := \
 	mmu_notifier_ppps mremap_commit_ppps mremap_hint_ppps \
 	mremap_pgoff_ppps mremap_rlimit_ppps msync_offset_ppps munmap_ppps \
 	oom_anon_score_ppps oom_score_ppps oom_trace_ppps packed_anon_ppps \
-	packed_swap_ppps pagemap_exclusive_ppps pagewalk_ppps pci_mmap_ppps \
+	packed_swap_ppps page_range_ppps pagemap_exclusive_ppps pagewalk_ppps pci_mmap_ppps \
 	perf_mmap_offset_ppps perf_page_size_ppps perf_phys_addr_ppps \
 	print_vma_addr_ppps proc_pagewalk_ppps process_madvise_ppps \
 	process_mrelease_ppps process_vm_access_ppps remap_file_pages_ppps \
@@ -227,6 +227,7 @@ $(eval $(call ppps_test_hdrs,fault_in_ppps,fault_in_ppps.h))
 $(eval $(call ppps_test_hdrs,folio_within_range_ppps,folio_within_range_ppps.h))
 $(eval $(call ppps_test_hdrs,gup_retry_ppps,gup_retry_ppps.h))
 $(eval $(call ppps_test_hdrs,iov_iter_ppps,iov_iter_ppps.h))
+$(eval $(call ppps_test_hdrs,page_range_ppps,iov_iter_ppps.h page_range_ppps.h))
 $(eval $(call ppps_test_hdrs,mmu_notifier_ppps,mmu_notifier_ppps.h))
 $(eval $(call ppps_test_hdrs,pagewalk_ppps,pagewalk_ppps.h))
 $(eval $(call ppps_test_hdrs,vm_map_pages_ppps,vm_map_pages_ppps.h))
