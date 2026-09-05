@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include <linux/highmem.h>
-#include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/ppps.h>
 
 #include "../vm_map_pages_ppps.h"
-<<<<<<< HEAD:tools/testing/selftests/mm/vm_map_pages_ppps_module/vm_map_pages_ppps_module.c
-=======
 #include "../../ppps/ppps_misc_module.h"
->>>>>>> 3ec956eb80f7 (selftests: cover PPPS tuple and subsystem edge cases):tools/testing/selftests/mm/ppps_modules/vm_map_pages_ppps_module.c
 
 #define USER_PAGE_SIZE	4096UL
 #define TEST_PAGE_COUNT	8
@@ -76,12 +72,6 @@ static const struct file_operations vm_map_pages_ppps_fops = {
 	.mmap = vm_map_pages_ppps_mmap,
 };
 
-static struct miscdevice vm_map_pages_ppps_device = {
-	.minor = MISC_DYNAMIC_MINOR,
-	.name = VM_MAP_PAGES_PPPS_DEVICE_NAME,
-	.fops = &vm_map_pages_ppps_fops,
-};
-
 static void free_test_pages(void)
 {
 	unsigned int i;
@@ -113,28 +103,15 @@ static int allocate_test_pages(void)
 	return 0;
 }
 
-static int __init vm_map_pages_ppps_init(void)
+static int vm_map_pages_ppps_setup(void)
 {
-	int error;
+	int error = allocate_test_pages();
 
-	error = allocate_test_pages();
 	if (error)
-		goto free_pages;
-	error = misc_register(&vm_map_pages_ppps_device);
-	if (!error)
-		return 0;
-free_pages:
-	free_test_pages();
+		free_test_pages();
 	return error;
 }
 
-static void __exit vm_map_pages_ppps_exit(void)
-{
-	misc_deregister(&vm_map_pages_ppps_device);
-	free_test_pages();
-}
-
-module_init(vm_map_pages_ppps_init);
-module_exit(vm_map_pages_ppps_exit);
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("PPPS vm_map_pages regression test helper");
+PPPS_MISC_MODULE("vm_map_pages_ppps", &vm_map_pages_ppps_fops, 0,
+		 vm_map_pages_ppps_setup, free_test_pages,
+		 "PPPS vm_map_pages regression test helper");
