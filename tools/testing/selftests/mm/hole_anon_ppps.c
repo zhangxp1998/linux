@@ -88,6 +88,43 @@ out:
 	return passed;
 }
 
+static bool mremap_zero_tuple_shifted(void)
+{
+	unsigned char *src_reservation = NULL, *dst_reservation = NULL;
+	unsigned char *src, *dst_area, *dst;
+	uint64_t pfn[PPPS_SLICES];
+	unsigned char value = 0;
+	unsigned int slice;
+	void *moved;
+	bool passed = false;
+
+	src = map_aligned(NATIVE_PAGE_SIZE, &src_reservation);
+	dst_area = map_aligned(3 * NATIVE_PAGE_SIZE, &dst_reservation);
+	if (src == MAP_FAILED || dst_area == MAP_FAILED)
+		goto out;
+	dst = dst_area + PROCESS_PAGE_SIZE;
+	for (slice = 0; slice < PPPS_SLICES; slice++)
+		value |= src[slice * PROCESS_PAGE_SIZE];
+	if (value)
+		goto out;
+	moved = mremap(src, NATIVE_PAGE_SIZE, NATIVE_PAGE_SIZE,
+		       MREMAP_MAYMOVE | MREMAP_FIXED, dst);
+	if (moved != dst)
+		goto out;
+	for (slice = 0; slice < PPPS_SLICES; slice++)
+		if (dst[slice * PROCESS_PAGE_SIZE])
+			goto out;
+	fill_tuple(dst, 0x55);
+	passed = check_tuple(dst, 0x55) && read_pfns(dst, pfn) &&
+		 two_shifted_tuple_pfns(pfn);
+out:
+	if (src_reservation)
+		munmap(src_reservation, 2 * NATIVE_PAGE_SIZE);
+	if (dst_reservation)
+		munmap(dst_reservation, 4 * NATIVE_PAGE_SIZE);
+	return passed;
+}
+
 static bool mremap_dontunmap_slices(void)
 {
 	unsigned char *src_reservation = NULL, *dst_reservation = NULL;
@@ -288,7 +325,7 @@ static int run_test(void)
 	unsigned int i;
 
 	ksft_print_header();
-	ksft_set_plan(15);
+	ksft_set_plan(16);
 
 	base = map_aligned(NATIVE_PAGE_SIZE, &reservation);
 	if (base == MAP_FAILED)
@@ -346,6 +383,8 @@ static int run_test(void)
 			 "aligned mremap preserves one tuple\n");
 	ksft_test_result(mremap_tuple(true),
 			 "4K-shifted mremap regroups into two tuples\n");
+	ksft_test_result(mremap_zero_tuple_shifted(),
+			 "4K-shifted mremap reslices zero-page PTEs\n");
 	ksft_test_result(mremap_dontunmap_slices(),
 			 "repeated 4K DONTUNMAP moves preserve every slice\n");
 	ksft_test_result(mremap_sparse_with_timeout(false),

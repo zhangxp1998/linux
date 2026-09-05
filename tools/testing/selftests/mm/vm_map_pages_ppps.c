@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 
 #include "kselftest_ppps.h"
+#include "vm_map_pages_ppps.h"
 
 #define FILE_OFFSET	PROCESS_PAGE_SIZE
 #define MAPPING_PAGES	5
@@ -33,6 +34,21 @@ static bool read_mapping(const unsigned char *mapping, unsigned char *value)
 	return true;
 }
 
+static bool mmap_edge_case(int fd, unsigned long offset, bool readable)
+{
+	unsigned char value;
+	unsigned char *mapping;
+	bool result;
+
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, offset * PROCESS_PAGE_SIZE);
+	if (mapping == MAP_FAILED)
+		return false;
+	result = read_mapping(mapping, &value) == readable;
+	munmap(mapping, PROCESS_PAGE_SIZE);
+	return result;
+}
+
 static int run_test(void)
 {
 	struct sigaction action = {
@@ -47,7 +63,7 @@ static int run_test(void)
 	pid_t pid;
 
 	ksft_print_header();
-	ksft_set_plan(5);
+	ksft_set_plan(10);
 
 	fd = ppps_open_fixture_or_skip("/dev/vm_map_pages_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the vm_map_pages test device\n");
@@ -102,6 +118,17 @@ static int run_test(void)
 		ksft_exit_fail_msg("waitpid failed: %s\n", strerror(errno));
 	ksft_test_result(WIFEXITED(status) && !WEXITSTATUS(status),
 			 "fork inherits every vm_map_pages slice\n");
+
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_ZERO, false),
+			 "zero-page vm_insert_pages request is a no-op\n");
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_BEFORE, false),
+			 "vm_insert_pages rejects an address before the VMA\n");
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_AFTER, false),
+			 "vm_insert_pages rejects an address at the VMA end\n");
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_TOO_MANY, false),
+			 "vm_insert_pages rejects too many native pages\n");
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_BUSY, true),
+			 "vm_insert_pages reports a duplicate PTE and remaining page\n");
 
 	munmap(mapping, MAPPING_SIZE);
 	close(fd);
