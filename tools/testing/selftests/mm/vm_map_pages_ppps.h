@@ -1,7 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0
-#ifndef __SELFTEST_MM_VM_MAP_PAGES_PPPS_H
-#define __SELFTEST_MM_VM_MAP_PAGES_PPPS_H
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __VM_MAP_PAGES_PPPS_H
+#define __VM_MAP_PAGES_PPPS_H
 
-#define VM_MAP_PAGES_PPPS_DEVICE_NAME "vm_map_pages_ppps"
+/* High vm_pgoff values select vm_insert_pages() edge cases in the fixture. */
+#define VM_MAP_PAGES_PPPS_ZERO		0x100UL
+#define VM_MAP_PAGES_PPPS_BEFORE	0x101UL
+#define VM_MAP_PAGES_PPPS_AFTER		0x102UL
+#define VM_MAP_PAGES_PPPS_TOO_MANY	0x103UL
+#define VM_MAP_PAGES_PPPS_BUSY		0x104UL
 
-#endif
+#endif /* __VM_MAP_PAGES_PPPS_H */
