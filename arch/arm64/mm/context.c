@@ -359,10 +359,10 @@ void mm_switch_tcr(struct mm_struct *mm)
 	if (!mm || mm == &init_mm)
 		return;
 
-	if (mm->page_shift == PAGE_SHIFT_COMPAT)
+	if (ppps_mm_is_compat(mm))
 		geometry = TCR_TG0_4K | TCR_T0SZ(VA_BITS_COMPAT);
 	else
-		geometry = TCR_TG0_16K | TCR_T0SZ(vabits_actual);
+		geometry = TCR_TG0_NATIVE | TCR_T0SZ(vabits_actual);
 
 	old_tcr = read_sysreg(tcr_el1);
 	if ((old_tcr & geometry_mask) == geometry)

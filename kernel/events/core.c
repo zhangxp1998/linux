@@ -6885,80 +6885,58 @@ static const struct vm_operations_struct perf_mmap_vmops = {
 };
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-static int perf_map_main_ppps(struct perf_buffer *rb,
-			      struct vm_area_struct *vma)
+/*
+ * A compat mapping is laid out in process pages: one metadata page, then the
+ * data (or AUX) area.  Native page and slice backing byte @off of it.
+ */
+static struct page *perf_mmap_ppps_page(struct perf_buffer *rb, bool aux,
+					unsigned long off, unsigned int *slice)
 {
-	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
-	unsigned long data_size = perf_data_size(rb);
-	unsigned long data_offset = 0;
-	unsigned long uaddr = vma->vm_start;
-	pgprot_t prot = vm_get_page_prot(vma->vm_flags & ~VM_SHARED);
-	struct page *page;
-	int ret;
+	unsigned long page_size = perf_mmap_page_size(rb);
 
-	page = perf_mmap_main_page(rb, 0);
-	if (!page) {
-		ret = -EINVAL;
-		goto out;
+	if (aux) {
+		*slice = offset_in_page(off) / page_size;
+		return virt_to_page(rb->aux_pages[off / PAGE_SIZE]);
 	}
-	ret = remap_pfn_range_slice(vma, uaddr, page_to_pfn(page), 0,
-				    page_size, prot);
-	if (ret)
-		goto out;
-	uaddr += page_size;
-
-	while (data_offset < data_size) {
-		unsigned int slice = offset_in_page(data_offset) / page_size;
-
-		page = perf_mmap_main_page(rb, (__PAGE_SIZE / PAGE_SIZE) +
-						  data_offset / PAGE_SIZE);
-		if (!page) {
-			ret = -EINVAL;
-			goto out;
-		}
-		ret = remap_pfn_range_slice(vma, uaddr, page_to_pfn(page),
-					    slice, page_size, prot);
-		if (ret)
-			goto out;
-		uaddr += page_size;
-		data_offset += page_size;
+	if (off < page_size) {
+		*slice = 0;
+		return perf_mmap_main_page(rb, 0);
 	}
-
-	ret = uaddr == vma->vm_end ? 0 : -EINVAL;
-out:
-	if (ret)
-		zap_page_range_single(vma, vma->vm_start,
-				      vma->vm_end - vma->vm_start, NULL);
-	return ret;
+	off -= page_size;
+	*slice = offset_in_page(off) / page_size;
+	return perf_mmap_main_page(rb, 1 + off / PAGE_SIZE);
 }
 
-static int perf_map_aux_ppps(struct perf_buffer *rb,
-			     struct vm_area_struct *vma)
+/* Map every process page of a compat VMA; writes go through pfn_mkwrite. */
+static int perf_mmap_ppps(struct perf_buffer *rb, struct vm_area_struct *vma,
+			  bool aux)
 {
 	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
 	unsigned long size = vma->vm_end - vma->vm_start;
-	unsigned long offset = 0;
-	unsigned long uaddr = vma->vm_start;
 	pgprot_t prot = vm_get_page_prot(vma->vm_flags & ~VM_SHARED);
+	unsigned long off;
 	int ret = 0;
 
-	while (offset < size) {
-		unsigned int slice = offset_in_page(offset) / page_size;
-		struct page *page;
+	for (off = 0; off < size; off += page_size) {
+		unsigned int slice;
+		struct page *page = perf_mmap_ppps_page(rb, aux, off, &slice);
 
-		page = virt_to_page(rb->aux_pages[offset / PAGE_SIZE]);
-		ret = remap_pfn_range_slice(vma, uaddr, page_to_pfn(page),
-					    slice, page_size, prot);
+		if (!page) {
+			ret = -EINVAL;
+			break;
+		}
+		ret = remap_pfn_range_slice(vma, vma->vm_start + off,
+					    page_to_pfn(page), slice, page_size,
+					    prot);
 		if (ret)
 			break;
-		uaddr += page_size;
-		offset += page_size;
 	}
 
 	if (ret)
 		zap_page_range_single(vma, vma->vm_start, size, NULL);
 	return ret;
 }
+
 #endif
 
 static int map_range(struct perf_buffer *rb, struct vm_area_struct *vma)
@@ -6970,9 +6948,9 @@ static int map_range(struct perf_buffer *rb, struct vm_area_struct *vma)
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (ppps_mm_is_compat(vma->vm_mm)) {
 		if (!vma_file_offset(vma))
-			return perf_map_main_ppps(rb, vma);
+			return perf_mmap_ppps(rb, vma, false);
 		if (perf_mmap_is_aux(rb, vma))
-			return perf_map_aux_ppps(rb, vma);
+			return perf_mmap_ppps(rb, vma, true);
 		return -EINVAL;
 	}
 #endif
@@ -7102,7 +7080,7 @@ static int perf_mmap_rb(struct vm_area_struct *vma, struct perf_event *event,
 	if (event->rb) {
 		if (data_page_nr(event->rb) != nr_pages ||
 		    perf_data_size(event->rb) != data_size ||
-		    perf_mmap_page_size(event->rb) != MM_PAGE_SIZE(vma->vm_mm))
+		    perf_mmap_page_size(event->rb) != MM_UAPI_PAGE_SIZE(vma->vm_mm))
 			return -EINVAL;
 
 		/*
@@ -7148,7 +7126,7 @@ static int perf_mmap_rb(struct vm_area_struct *vma, struct perf_event *event,
 	refcount_set(&rb->mmap_count, 1);
 	rb->mmap_user = get_current_user();
 	rb->mmap_locked = extra;
-	perf_set_mmap_page_size(rb, MM_PAGE_SIZE(vma->vm_mm));
+	rb->mmap_page_size = MM_UAPI_PAGE_SIZE(vma->vm_mm);
 
 	ring_buffer_attach(event, rb);
 
@@ -7230,7 +7208,7 @@ static int perf_mmap_aux(struct vm_area_struct *vma, struct perf_event *event,
 		}
 
 		refcount_set(&rb->aux_mmap_count, 1);
-		perf_set_aux_offset(rb, mmap_offset);
+		rb->aux_offset = mmap_offset;
 		rb->aux_mmap_locked = extra;
 	}
 
@@ -7267,9 +7245,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 	vma_size = vma->vm_end - vma->vm_start;
 	mmap_offset = vma_file_offset(vma);
 	if (!mmap_offset) {
-		unsigned long metadata_size = ppps_mm_is_compat(vma->vm_mm) ?
-					      MM_PAGE_SIZE(vma->vm_mm) :
-					      __PAGE_SIZE;
+		unsigned long metadata_size = MM_UAPI_PAGE_SIZE(vma->vm_mm);
 
 		if (vma_size < metadata_size)
 			return -EINVAL;
@@ -9736,8 +9712,9 @@ void perf_event_mmap(struct vm_area_struct *vma)
 			/* .tid */
 			.start  = vma->vm_start,
 			.len    = vma->vm_end - vma->vm_start,
-			.pgoff  = vma->vm_file ? vma_file_offset(vma) :
-			  (u64)vma->vm_pgoff << MM_PAGE_SHIFT(vma->vm_mm),
+			.pgoff  = vma_is_anonymous(vma) ?
+				  (u64)vma->vm_pgoff << vma_pgoff_shift(vma) :
+				  vma_file_offset(vma),
 		},
 		/* .maj (attr_mmap2 only) */
 		/* .min (attr_mmap2 only) */

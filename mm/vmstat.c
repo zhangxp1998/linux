@@ -1499,6 +1499,11 @@ const char * const vmstat_text[] = {
 	[I(KSTACK_REST)]			= "kstack_rest",
 #endif
 #endif
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	"ppps_file_cow_alloc",
+	"ppps_file_cow_fill",
+	"ppps_file_cow_multi_folio",
+#endif
 #undef I
 #endif /* CONFIG_VM_EVENT_COUNTERS */
 };

@@ -145,29 +145,19 @@ static int io_region_pin_pages(struct io_ring_ctx *ctx,
 	int nr_pages;
 
 	if (ppps_mm_is_compat(mm)) {
-		struct vm_area_struct *vma;
-		unsigned long addr = untagged_addr(reg->user_addr);
+		struct page_span span;
 		int ret;
 
 		pages = kvmalloc_array(1, sizeof(*pages), GFP_KERNEL_ACCOUNT);
 		if (!pages)
 			return -ENOMEM;
 
-		mmap_read_lock(mm);
-		vma = vma_lookup(mm, addr);
-		if (!vma || reg->size > vma->vm_end - addr) {
-			ret = -EFAULT;
-		} else {
-			ret = pin_user_pages(addr, 1,
-					     FOLL_WRITE | FOLL_LONGTERM, pages);
-			if (ret == 1)
-				*page_offset = vma_page_slice_offset(vma, pages[0],
-								     addr);
-		}
-		mmap_read_unlock(mm);
-		if (ret != 1) {
-			if (ret > 0)
-				unpin_user_pages(pages, ret);
+		ret = pin_user_pages_range(mm, reg->user_addr, reg->size, 1,
+					   FOLL_WRITE | FOLL_LONGTERM,
+					   pages, &span);
+		if (ret == 1)
+			*page_offset = span.offset;
+		else {
 			kvfree(pages);
 			return ret < 0 ? ret : -EFAULT;
 		}
@@ -362,11 +352,14 @@ static int io_region_mmap(struct io_ring_ctx *ctx,
 	size_t allowed_size = MM_PAGE_ALIGN(vma->vm_mm, mmap_size);
 	unsigned long nr_pages = min(mr->nr_pages, max_pages);
 
-	if (!mmap_size || allowed_size < mmap_size ||
-	    vma->vm_end - vma->vm_start > allowed_size)
+	if (ppps_mm_is_compat(vma->vm_mm) &&
+	    (!mmap_size || allowed_size < mmap_size ||
+	     vma->vm_end - vma->vm_start > allowed_size))
 		return -EINVAL;
 
 	vm_flags_set(vma, VM_DONTEXPAND);
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return vm_map_pages_zero(vma, mr->pages, nr_pages);
 	return vm_insert_pages(vma, vma->vm_start, mr->pages, &nr_pages);
 }
 

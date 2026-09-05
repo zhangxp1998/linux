@@ -137,7 +137,7 @@ enum pageflags {
 	PG_oem_reserved_4,
 #endif
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	PG_ppps_packed_anon,
+	PG_ppps_compat_anon,
 #endif
 	__NR_PAGEFLAGS,
 
@@ -592,9 +592,9 @@ FOLIO_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 	__FOLIO_CLEAR_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 	__FOLIO_SET_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-FOLIO_FLAG(ppps_packed_anon, FOLIO_HEAD_PAGE)
+FOLIO_FLAG(ppps_compat_anon, FOLIO_HEAD_PAGE)
 #else
-FOLIO_FLAG_FALSE(ppps_packed_anon)
+FOLIO_FLAG_FALSE(ppps_compat_anon)
 #endif
 
 /*

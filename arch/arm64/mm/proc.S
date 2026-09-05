@@ -533,6 +533,7 @@ alternative_else_nop_endif
 	msr	mair_el1, mair
 	msr	tcr_el1, tcr
 
+#ifdef CONFIG_ARM64_S1PIE
 	mrs_s	x1, SYS_ID_AA64MMFR3_EL1
 	ubfx	x1, x1, #ID_AA64MMFR3_EL1_S1PIE_SHIFT, #4
 	cbz	x1, .Lskip_indirection
@@ -545,6 +546,7 @@ alternative_else_nop_endif
 	orr	tcr2, tcr2, TCR2_EL1_PIE
 
 .Lskip_indirection:
+#endif /* CONFIG_ARM64_S1PIE */
 
 	mrs_s	x1, SYS_ID_AA64MMFR3_EL1
 	ubfx	x1, x1, #ID_AA64MMFR3_EL1_TCRX_SHIFT, #4

@@ -881,19 +881,11 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 	if (grows == (PROT_GROWSDOWN|PROT_GROWSUP)) /* can't be both */
 		return -EINVAL;
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	if (!MM_PAGE_ALIGNED(current->mm, start))
+	if (!MM_UAPI_PAGE_ALIGNED(current->mm, start))
 		return -EINVAL;
 	if (!len)
 		return 0;
-	len = MM_PAGE_ALIGN(current->mm, len);
-#else
-	if (!__PAGE_ALIGNED(start))
-		return -EINVAL;
-	if (!len)
-		return 0;
-	len = __PAGE_ALIGN(len);
-#endif
+	len = MM_UAPI_PAGE_ALIGN(current->mm, len);
 	end = start + len;
 	if (end <= start)
 		return -ENOMEM;

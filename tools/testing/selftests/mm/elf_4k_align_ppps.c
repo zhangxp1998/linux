@@ -1,23 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process executes a 4K-aligned ELF whose segments must not be
+ * mapped past its BSS, and the probe exits cleanly.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
+#include "kselftest_ppps.h"
 
 static bool get_probe_path(char path[PATH_MAX])
 {
@@ -45,9 +36,7 @@ static int run_test(void)
 	pid_t pid;
 
 	ksft_print_header();
-	ksft_set_plan(2);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(1);
 	if (!get_probe_path(probe_path))
 		ksft_exit_fail_msg("could not locate the ELF probe: %s\n",
 				   strerror(errno));
@@ -72,25 +61,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "elf_4k_align_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

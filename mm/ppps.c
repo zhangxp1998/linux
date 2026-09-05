@@ -7,62 +7,39 @@
 #include <linux/binfmts.h>
 #include <linux/dcache.h>
 #include <linux/fs.h>
-#include <linux/string.h>
 #include <linux/ppps.h>
-#include <linux/highmem.h>
+#include <linux/string.h>
 #include <asm/memory.h>
-#include "internal.h"
 
-#ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-#undef mm_task_size64
-#undef mm_task_size64_of
-#endif
-
-unsigned long mm_task_size64(void)
-{
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	struct mm_struct *mm = current->mm;
-
-	if (!mm)
-		return (1UL << vabits_actual);
-
-	if (mm->page_shift == PAGE_SHIFT_COMPAT)
-		return 1UL << VA_BITS_COMPAT;
-#endif
-
-	return 1UL << vabits_actual;
-}
-EXPORT_SYMBOL(mm_task_size64);
+#include "ppps.h"
 
 unsigned long mm_task_size64_of(struct mm_struct *mm)
 {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	if (!mm)
-		return (1UL << vabits_actual);
-
-	if (mm->page_shift == PAGE_SHIFT_COMPAT)
-		return 1UL << VA_BITS_COMPAT;
-#else
-	(void)mm;
-#endif
-
-	return 1UL << vabits_actual;
+	return ppps_mm_is_compat(mm) ? 1UL << VA_BITS_COMPAT :
+				       1UL << vabits_actual;
 }
 EXPORT_SYMBOL(mm_task_size64_of);
 
+unsigned long mm_task_size64(void)
+{
+	return mm_task_size64_of(current->mm);
+}
+EXPORT_SYMBOL(mm_task_size64);
+
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+unsigned long mm_default_map_window64_of(struct mm_struct *mm)
+{
+	return ppps_mm_is_compat(mm) ? 1UL << VA_BITS_COMPAT :
+				       1UL << VA_BITS_MIN;
+}
+EXPORT_SYMBOL(mm_default_map_window64_of);
+
 unsigned long mm_default_map_window64(void)
 {
 	return mm_default_map_window64_of(current->mm);
 }
+EXPORT_SYMBOL(mm_default_map_window64);
 
-unsigned long mm_default_map_window64_of(struct mm_struct *mm)
-{
-	if (ppps_mm_is_compat(mm))
-		return 1UL << VA_BITS_COMPAT;
-
-	return 1UL << VA_BITS_MIN;
-}
 /* Testing only: select Android app runtimes, not init or its other services. */
 static bool ppps_test_app_runtime(const struct linux_binprm *bprm)
 {
@@ -89,4 +66,45 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm)
 		mm->page_shift = PAGE_SHIFT;
 }
 
-#endif
+/*
+ * vm_insert_pages() for a compat VMA: every slice of each native page in
+ * @pages is mapped by one process-page PTE, consecutively from @addr up to
+ * the end of the VMA.  On return *num is the number of pages that were not
+ * (completely) mapped, like vm_insert_pages().
+ */
+int ppps_vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
+			 struct page **pages, unsigned long *num)
+{
+	const unsigned long nr_pages = *num;
+	unsigned long user_pages, logical_pages, i;
+
+	if (!nr_pages)
+		return 0;
+	if (addr < vma->vm_start || addr >= vma->vm_end)
+		return -EFAULT;
+
+	/* pages[] always starts at byte zero, independently of the VMA offset. */
+	if (!MM_PAGE_ALIGNED(vma->vm_mm, addr))
+		return -EFAULT;
+	user_pages = (vma->vm_end - addr) >> PAGE_SHIFT_COMPAT;
+	if (nr_pages > DIV_ROUND_UP(user_pages, PPPS_SLICES_PER_PAGE))
+		return -EFAULT;
+	/* The final native page may cover only the remaining VMA slices. */
+	logical_pages = min(user_pages, nr_pages << PPPS_SLICE_SHIFT);
+	for (i = 0; i < logical_pages; i++) {
+		unsigned long total_slice = i;
+		unsigned long page_index = total_slice >> PPPS_SLICE_SHIFT;
+		int error;
+
+		error = vm_insert_page_slice(vma, addr, pages[page_index],
+					     total_slice & PPPS_SLICE_MASK);
+		if (error) {
+			*num = nr_pages - page_index;
+			return error;
+		}
+		addr += PAGE_SIZE_COMPAT;
+	}
+	*num = 0;
+	return 0;
+}
+#endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */

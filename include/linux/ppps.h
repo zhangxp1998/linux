@@ -1,4 +1,43 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Per-Process Page Size (PPPS)
+ *
+ * The kernel runs with the native page size (16K on the supported arm64
+ * configuration).  A process that execs with the ADDR_4KB_COMPAT_PAGE_SIZE
+ * personality bit becomes a "compat" process: its mm has page_shift ==
+ * PAGE_SHIFT_COMPAT and its page tables are walked with 4K geometry.  Every
+ * user-visible boundary (mmap/mprotect/madvise alignment, /proc page counts,
+ * ...) uses the process page size; folios, the page cache and rmap stay
+ * native.  PPPS provides only the minimal 4K interface user space needs to
+ * run; whatever is not part of that interface keeps native 16K behaviour.
+ *
+ * Vocabulary
+ *   native page   PAGE_SIZE bytes, one struct page / folio.
+ *   process page  MM_PAGE_SIZE(mm) bytes, one PTE of that mm.
+ *   slice         one process page inside a native page, index
+ *                 0..PPPS_SLICES_PER_PAGE-1.  A compat PTE maps one slice,
+ *                 encoded in the PTE address bits between PAGE_SHIFT_COMPAT
+ *                 and PAGE_SHIFT (see pte_mkslice()).
+ *   tuple         an address/PTE group of PPPS_SLICES_PER_PAGE compat
+ *                 slices (mm/ppps_anon.c), not a single-folio guarantee.
+ *                 Ownership and accounting belong to (mm, tuple, folio);
+ *                 a tuple crossing VMAs can contain several folios.
+ *
+ * VMA bookkeeping (see vma_address_to_slice(), vma_linear_page_index()):
+ *
+ *   VMA kind             vm_pgoff unit   vm_slice_off   PTE maps slice
+ *   native (any)         native pages    0              -
+ *   compat private anon  process pages   0              address bits
+ *   compat file/shared   native pages    first slice    (addr - vm_start)/4K
+ *                                                       + vm_slice_off
+ *
+ * MM_PAGE_*(mm) is the process geometry of @mm; mm == NULL means the
+ * kernel's native geometry, so MM_PAGE_SIZE(NULL) == PAGE_SIZE and no
+ * caller needs "mm ? MM_PAGE_SIZE(mm) : PAGE_SIZE".  MM_UAPI_*(mm) in
+ * page_size_compat_defs.h is the same thing on PPPS kernels and falls back
+ * to the x86 page-size-emulation geometry elsewhere; use it at syscall
+ * entry points that must compile on both.
+ */
 #ifndef _LINUX_PPPS_H
 #define _LINUX_PPPS_H
 
@@ -20,33 +59,15 @@ struct linux_binprm;
 #define ppps_mm_is_compat(mm)						\
 	(((struct mm_struct *)(mm)) && ((struct mm_struct *)(mm))->page_shift == PAGE_SHIFT_COMPAT)
 
-unsigned long mm_task_size64(void);
-unsigned long mm_task_size64_of(struct mm_struct *mm);
 unsigned long mm_default_map_window64(void);
 unsigned long mm_default_map_window64_of(struct mm_struct *mm);
 
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 /* fork() must preserve the geometry of the page tables it copies. */
-#define mm_inherit_pagesize(mm) \
-	((mm)->page_shift = current->mm ? current->mm->page_shift : PAGE_SHIFT)
+#define mm_inherit_pagesize(mm, oldmm) \
+	((mm)->page_shift = (oldmm) ? (oldmm)->page_shift : PAGE_SHIFT)
 #define vma_set_slice_off(vma, val)	((vma)->vm_slice_off = (val))
 #define vma_slice_off(vma)		((vma)->vm_slice_off)
-#define vma_page_shift(vma) \
-	((ppps_mm_is_compat((vma)->vm_mm) && !(vma)->vm_ops) ? \
-	 PAGE_SHIFT_COMPAT : PAGE_SHIFT)
-
-#define vma_slice_shift(vma) \
-	((ppps_mm_is_compat((vma)->vm_mm) && !(vma)->vm_ops) ? \
-	 PPPS_SLICE_SHIFT : 0)
-/*
- * clear_pte_slice_offset - Clear any existing subpage offset bits in the PTE
- *
- * In a host page, the address bits between PAGE_SIZE_COMPAT and PAGE_SIZE
- * track the subpage slice offset. Clear these bits from the physical address
- * field of the PTE before applying a new subpage slice offset.
- */
-#define clear_pte_slice_offset(pte)					\
-	__pte(pte_val(pte) & ~((PAGE_SIZE - 1) & ~(PAGE_SIZE_COMPAT - 1)))
 #else
 #define PAGE_SHIFT_COMPAT	PAGE_SHIFT
 #ifdef VA_BITS
@@ -63,19 +84,19 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 #endif
 #define ppps_mm_is_compat(mm)		((void)(mm), false)
 
-#define mm_task_size64()		(1UL << vabits_actual)
-#define mm_task_size64_of(mm)		((void)(mm), (1UL << vabits_actual))
 #define mm_default_map_window64()	(1UL << VA_BITS_MIN)
 #define mm_default_map_window64_of(mm)	((void)(mm), (1UL << VA_BITS_MIN))
 
 static inline void mm_init_pagesize(struct mm_struct *mm,
 				    const struct linux_binprm *bprm) {}
-#define mm_inherit_pagesize(mm)		((void)(mm))
+#define mm_inherit_pagesize(mm, oldmm)	((void)(mm), (void)(oldmm))
 #define vma_set_slice_off(vma, val)	((void)(vma), (void)(val))
 #define vma_slice_off(vma)		((void)(vma), 0)
-#define vma_page_shift(vma)		((void)(vma), PAGE_SHIFT)
-#define vma_slice_shift(vma)		((void)(vma), 0)
 #endif
+
+/* Out of line in both configurations: both are on the GKI symbol list. */
+unsigned long mm_task_size64(void);
+unsigned long mm_task_size64_of(struct mm_struct *mm);
 
 #define PPPS_SLICE_SHIFT	(PAGE_SHIFT - PAGE_SHIFT_COMPAT)
 #define PPPS_SLICES_PER_PAGE	(1UL << PPPS_SLICE_SHIFT)
@@ -91,35 +112,9 @@ static inline void mm_init_pagesize(struct mm_struct *mm,
 
 #define PMD_SHIFT_COMPAT	(PAGE_SHIFT_COMPAT + LEVEL_SHIFT_COMPAT)
 #define PUD_SHIFT_COMPAT	(PMD_SHIFT_COMPAT + LEVEL_SHIFT_COMPAT)
-#define P4D_SHIFT_COMPAT	(PUD_SHIFT_COMPAT + LEVEL_SHIFT_COMPAT)
-
-#if CONFIG_PGTABLE_LEVELS == 2
-#define PGD_SHIFT_COMPAT	PMD_SHIFT_COMPAT
-#elif CONFIG_PGTABLE_LEVELS == 3
-#define PGD_SHIFT_COMPAT	PUD_SHIFT_COMPAT
-#elif CONFIG_PGTABLE_LEVELS == 4
-#define PGD_SHIFT_COMPAT	P4D_SHIFT_COMPAT
-#elif CONFIG_PGTABLE_LEVELS == 5
-#define PGD_SHIFT_COMPAT	(P4D_SHIFT_COMPAT + LEVEL_SHIFT_COMPAT)
-#endif
-
-#define PTRS_PER_PTE_COMPAT	(1UL << LEVEL_SHIFT_COMPAT)
-#define PTRS_PER_PMD_COMPAT	(1UL << LEVEL_SHIFT_COMPAT)
-#define PTRS_PER_PUD_COMPAT	(1UL << LEVEL_SHIFT_COMPAT)
-#define PTRS_PER_P4D_COMPAT	(1UL << LEVEL_SHIFT_COMPAT)
-#define PTRS_PER_PGD_COMPAT	(1UL << (VA_BITS_COMPAT - PGD_SHIFT_COMPAT))
 
 #define PMD_SIZE_COMPAT		(1UL << PMD_SHIFT_COMPAT)
-#define PMD_MASK_COMPAT		(~(PMD_SIZE_COMPAT - 1))
 #define PUD_SIZE_COMPAT		(1UL << PUD_SHIFT_COMPAT)
-#define PUD_MASK_COMPAT		(~(PUD_SIZE_COMPAT - 1))
-#define PGDIR_SIZE_COMPAT	(1UL << PGD_SHIFT_COMPAT)
-#define PGDIR_MASK_COMPAT	(~(PGDIR_SIZE_COMPAT - 1))
-
-#define PTE_ADDR_LOW_COMPAT \
-	(((_AT(pteval_t, 1) << (50 - PAGE_SHIFT_COMPAT)) - 1) \
-	 << PAGE_SHIFT_COMPAT)
-
 
 #define MM_PAGE_SIZE(mm)	(1UL << MM_PAGE_SHIFT(mm))
 #define MM_PAGE_MASK(mm)	(~(MM_PAGE_SIZE(mm) - 1))
@@ -127,7 +122,7 @@ static inline void mm_init_pagesize(struct mm_struct *mm,
 #define MM_LEVEL_SHIFT(mm)	(MM_PAGE_SHIFT(mm) - 3)
 
 #define MM_PAGE_ALIGN(mm, addr)	ALIGN(addr, MM_PAGE_SIZE(mm))
-#define MM_PAGE_ALIGNED(mm, addr)	(!((addr) & ~MM_PAGE_MASK(mm)))
+#define MM_PAGE_ALIGNED(mm, addr)	IS_ALIGNED((unsigned long)(addr), MM_PAGE_SIZE(mm))
 #define MM_PHYS_PFN(mm, x)		((x) >> MM_PAGE_SHIFT(mm))
 #define mm_offset_in_page(mm, p)	((unsigned long)(p) & ~MM_PAGE_MASK(mm))
 
@@ -210,68 +205,12 @@ static inline void mm_init_pagesize(struct mm_struct *mm,
 
 #define IS_KERNEL_ADDR(addr)	((long)(addr) < 0)
 
-#define __MM_ADDR_EVAL(addr, kern_val, mm_val) \
-	(IS_KERNEL_ADDR(addr) ? (kern_val) : (mm_val))
-
-#define MM_ADDR_PAGE_SHIFT(addr, mm) \
-	__MM_ADDR_EVAL(addr, PAGE_SHIFT, MM_PAGE_SHIFT(mm))
-
-#define MM_ADDR_PAGE_SIZE(addr, mm) \
-	__MM_ADDR_EVAL(addr, PAGE_SIZE, MM_PAGE_SIZE(mm))
-
-#define MM_ADDR_PAGE_MASK(addr, mm) \
-	__MM_ADDR_EVAL(addr, PAGE_MASK, MM_PAGE_MASK(mm))
-
-#define MM_ADDR_PMD_SHIFT(addr, mm) \
-	__MM_ADDR_EVAL(addr, PMD_SHIFT, MM_PMD_SHIFT(mm))
-
-#define MM_ADDR_PMD_SIZE(addr, mm) \
-	__MM_ADDR_EVAL(addr, PMD_SIZE, MM_PMD_SIZE(mm))
-
-#define MM_ADDR_PMD_MASK(addr, mm) \
-	__MM_ADDR_EVAL(addr, PMD_MASK, MM_PMD_MASK(mm))
-
-#define MM_ADDR_PUD_SHIFT(addr, mm) \
-	__MM_ADDR_EVAL(addr, PUD_SHIFT, MM_PUD_SHIFT(mm))
-
-#define MM_ADDR_PUD_SIZE(addr, mm) \
-	__MM_ADDR_EVAL(addr, PUD_SIZE, MM_PUD_SIZE(mm))
-
-#define MM_ADDR_PUD_MASK(addr, mm) \
-	__MM_ADDR_EVAL(addr, PUD_MASK, MM_PUD_MASK(mm))
-
-#define MM_ADDR_P4D_SHIFT(addr, mm) \
-	__MM_ADDR_EVAL(addr, P4D_SHIFT, MM_P4D_SHIFT(mm))
-
-#define MM_ADDR_P4D_SIZE(addr, mm) \
-	__MM_ADDR_EVAL(addr, P4D_SIZE, MM_P4D_SIZE(mm))
-
-#define MM_ADDR_P4D_MASK(addr, mm) \
-	__MM_ADDR_EVAL(addr, P4D_MASK, MM_P4D_MASK(mm))
-
-#define MM_ADDR_PGD_SHIFT(addr, mm) \
-	__MM_ADDR_EVAL(addr, PGDIR_SHIFT, MM_PGD_SHIFT(mm))
-
-#define MM_ADDR_PGDIR_SIZE(addr, mm) \
-	__MM_ADDR_EVAL(addr, PGDIR_SIZE, MM_PGDIR_SIZE(mm))
-
-#define MM_ADDR_PGDIR_MASK(addr, mm) \
-	__MM_ADDR_EVAL(addr, PGDIR_MASK, MM_PGDIR_MASK(mm))
-
-#define MM_ADDR_PTRS_PER_PTE(addr, mm) \
-	__MM_ADDR_EVAL(addr, PTRS_PER_PTE, MM_PTRS_PER_PTE(mm))
-
-#define MM_ADDR_PTRS_PER_PMD(addr, mm) \
-	__MM_ADDR_EVAL(addr, PTRS_PER_PMD, MM_PTRS_PER_PMD(mm))
-
-#define MM_ADDR_PTRS_PER_PUD(addr, mm) \
-	__MM_ADDR_EVAL(addr, PTRS_PER_PUD, MM_PTRS_PER_PUD(mm))
-
-#define MM_ADDR_PTRS_PER_P4D(addr, mm) \
-	__MM_ADDR_EVAL(addr, PTRS_PER_P4D, MM_PTRS_PER_P4D(mm))
-
-#define MM_ADDR_PTRS_PER_PGD(addr, mm) \
-	__MM_ADDR_EVAL(addr, PTRS_PER_PGD, MM_PTRS_PER_PGD(mm))
+/*
+ * The mm whose page-table geometry applies to @addr: kernel addresses always
+ * use the native geometry, which MM_*(NULL) yields.  Use as
+ * MM_PMD_SHIFT(pgt_mm(addr, mm)) when a walk may cover both halves.
+ */
+#define pgt_mm(addr, mm)	(IS_KERNEL_ADDR(addr) ? NULL : (mm))
 
 #endif /* __ASSEMBLY__ */
 

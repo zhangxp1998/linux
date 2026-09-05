@@ -201,8 +201,9 @@ static int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
 	pte_t *ptep = NULL;
 	spinlock_t *ptl;
 	unsigned long addr;
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
 
-	for (addr = start; addr < end; addr += MM_PAGE_SIZE(vma->vm_mm)) {
+	for (addr = start; addr < end; addr += page_size) {
 		pte_t pte;
 		swp_entry_t entry;
 		struct folio *folio;
@@ -329,7 +330,7 @@ static long madvise_willneed(struct madvise_behavior *madv_behavior)
 	 */
 	mark_mmap_lock_dropped(madv_behavior);
 	get_file(file);
-	offset = (loff_t)(start - vma->vm_start) + vma_file_offset(vma);
+	offset = vma_addr_file_offset(vma, start);
 	mmap_read_unlock(mm);
 	vfs_fadvise(file, offset, end - start, POSIX_FADV_WILLNEED);
 	fput(file);
@@ -357,37 +358,19 @@ static inline int madvise_folio_pte_batch(struct vm_area_struct *vma,
 					  struct folio *folio, pte_t *ptep,
 					  pte_t *ptentp)
 {
-	struct mm_struct *mm = vma->vm_mm;
-	int max_nr = (end - addr) / MM_PAGE_SIZE(mm);
-	int nr;
+	unsigned int max_nr = (end - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
 
-	if (ppps_mm_is_compat(mm)) {
-		for (nr = 1; nr < max_nr; nr++) {
-			pte_t next_pte = ptep_get(ptep + nr);
-
-			if (!pte_present(next_pte) ||
-			    vm_normal_folio(vma, addr + nr * MM_PAGE_SIZE(mm),
-					    next_pte) != folio)
-				break;
-			if (pte_young(next_pte))
-				*ptentp = pte_mkyoung(*ptentp);
-			if (pte_dirty(next_pte))
-				*ptentp = pte_mkdirty(*ptentp);
-		}
-		return nr;
-	}
-
-	return folio_pte_batch_flags(folio, NULL, ptep, ptentp, max_nr,
-				     FPB_MERGE_YOUNG_DIRTY);
+	return vma_folio_pte_batch(vma, folio, addr, ptep, ptentp, max_nr,
+				   FPB_MERGE_YOUNG_DIRTY);
 }
 
-static inline int madvise_folio_nr_ptes(struct mm_struct *mm,
+static inline int madvise_folio_nr_ptes(struct vm_area_struct *vma,
 					struct folio *folio)
 {
-	if (ppps_mm_is_compat(mm) && folio_test_anon(folio))
-		return folio_nr_pages(folio);
+	if (ppps_mm_is_compat(vma->vm_mm) && folio_test_anon(folio))
+		return 1;
 
-	return folio_size(folio) >> MM_PAGE_SHIFT(mm);
+	return folio_nr_ptes(folio, vma);
 }
 
 static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
@@ -409,6 +392,7 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 	int folio_nr_ptes;
 	int nr;
 	int ret = 0;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
 
 	trace_android_vh_madvise_cold_or_pageout_abort(vma, &abort_madvise);
 	if (fatal_signal_pending(current) || abort_madvise)
@@ -494,7 +478,7 @@ huge_unlock:
 
 regular_folio:
 #endif
-	tlb_change_page_size(tlb, MM_PAGE_SIZE(mm));
+	tlb_change_page_size(tlb, page_size);
 restart:
 	start_pte = pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (!start_pte)
@@ -531,10 +515,7 @@ restart:
 		 * folio cannot be split below PAGE_SIZE, so leave it in place
 		 * when a PPPS range covers only some of its slices.
 		 */
-		folio_nr_ptes = madvise_folio_nr_ptes(mm, folio);
-		if (ppps_mm_is_compat(mm) &&
-		    ppps_anon_pte_is_packed(vma, folio, addr, pte))
-			folio_nr_ptes = PPPS_SLICES_PER_PAGE;
+		folio_nr_ptes = madvise_folio_nr_ptes(vma, folio);
 		if (folio_nr_ptes > 1) {
 			nr = madvise_folio_pte_batch(vma, addr, end, folio, pte,
 						     &ptent);
@@ -570,11 +551,6 @@ restart:
 				continue;
 			}
 		}
-
-		/* Packed tuples remain resident until packed swap is made safe. */
-		if (ppps_mm_is_compat(mm) && pageout &&
-		    folio_test_ppps_packed_anon(folio))
-			continue;
 
 		/*
 		 * Do not interfere with other mappings of this folio and
@@ -741,21 +717,21 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 	int nr_swap = 0;
 	unsigned long next;
 	int nr, max_nr;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
+	const unsigned long range_start = addr;
 
 	next = pmd_addr_end_mm(mm, addr, end);
 	if (pmd_trans_huge(*pmd))
 		if (madvise_free_huge_pmd(tlb, vma, pmd, addr, next))
 			return 0;
 
-	tlb_change_page_size(tlb, MM_PAGE_SIZE(mm));
+	tlb_change_page_size(tlb, page_size);
 	start_pte = pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
 	if (!start_pte)
 		return 0;
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
-	for (; addr != end; pte += nr, addr += MM_PAGE_SIZE(mm) * nr) {
-		bool ppps_packed = false;
-
+	for (; addr != end; pte += nr, addr += page_size * nr) {
 		nr = 1;
 		ptent = ptep_get(pte);
 
@@ -768,28 +744,13 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 */
 		if (!pte_present(ptent)) {
 			swp_entry_t entry;
-			int packed_nr = 0;
 
 			entry = pte_to_swp_entry(ptent);
 			if (!non_swap_entry(entry)) {
-				max_nr = (end - addr) / MM_PAGE_SIZE(mm);
-				if (ppps_mm_is_compat(mm))
-					packed_nr = ppps_swap_pte_batch(pte, max_nr, ptent,
-									addr);
-				if (packed_nr) {
-					int i;
-
-					nr = packed_nr;
-					if (IS_ALIGNED(addr, PAGE_SIZE))
-						nr_swap--;
-					for (i = 0; i < nr; i++)
-						free_swap_and_cache(entry);
-				}
-				if (!packed_nr) {
-					nr = swap_pte_batch(pte, max_nr, ptent);
-					nr_swap -= nr;
-					free_swap_and_cache_nr(entry, nr);
-				}
+				max_nr = (end - addr) / page_size;
+				nr = swap_pte_batch(pte, max_nr, ptent);
+				nr_swap -= nr;
+				free_swap_and_cache_nr(entry, nr);
 				clear_not_present_full_ptes(mm, addr, pte, nr, tlb->fullmm);
 			} else if (is_hwpoison_entry(entry) ||
 				   is_poisoned_swp_entry(entry)) {
@@ -801,6 +762,15 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		folio = vm_normal_folio(vma, addr, ptent);
 		if (!folio || folio_is_zone_device(folio))
 			continue;
+		/*
+		 * Lazyfree is a folio property.  Like a native page, a compat
+		 * tuple is only freed when the range covers every slice mapping
+		 * it; a partially covered tuple keeps its other slices' data.
+		 */
+		if (folio_test_ppps_compat_anon(folio) &&
+		    !ppps_anon_tuple_within(vma, folio, pte, addr, range_start,
+					    end))
+			continue;
 
 		/*
 		 * If a folio spans multiple process PTEs, only split a large
@@ -808,12 +778,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 		 * folio cannot be split below PAGE_SIZE, so leave it in place
 		 * when a PPPS range covers only some of its slices.
 		 */
-		folio_nr_ptes = madvise_folio_nr_ptes(mm, folio);
-		if (ppps_mm_is_compat(mm) &&
-		    ppps_anon_pte_is_packed(vma, folio, addr, pte)) {
-			folio_nr_ptes = PPPS_SLICES_PER_PAGE;
-			ppps_packed = true;
-		}
+		folio_nr_ptes = madvise_folio_nr_ptes(vma, folio);
 		if (folio_nr_ptes > 1) {
 			nr = madvise_folio_pte_batch(vma, addr, end, folio, pte,
 						     &ptent);
@@ -872,9 +837,6 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 			clear_young_dirty_ptes(vma, addr, pte, nr, cydp_flags);
 			tlb_remove_tlb_entries(tlb, pte, nr, addr);
 		}
-		/* Do not create an unreclaimable lazy-free packed tuple. */
-		if (ppps_packed)
-			continue;
 		folio_mark_lazyfree(folio);
 	}
 
@@ -1137,7 +1099,7 @@ static long madvise_remove(struct madvise_behavior *madv_behavior)
 	if (!vma_is_shared_maywrite(vma))
 		return -EACCES;
 
-	offset = (loff_t)(start - vma->vm_start) + vma_file_offset(vma);
+	offset = vma_addr_file_offset(vma, start);
 
 	/*
 	 * Filesystem's fallocate may need to take i_rwsem.  We need to
@@ -2080,29 +2042,6 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	if (madvise_should_skip(mm, start, len_in, behavior, &error))
 		return error;
 
-	/*
-	 * Depack established boundary tuples under mmap_lock for writing, then
-	 * retain the native madvise locking protocol. The walkers skip any
-	 * partial tuple created by a concurrent fault after this pre-pass.
-	 */
-	if (ppps_mm_is_compat(mm) &&
-	    (behavior == MADV_FREE || behavior == MADV_DONTNEED ||
-	     behavior == MADV_DONTNEED_LOCKED ||
-	     behavior == MADV_GUARD_INSTALL)) {
-		unsigned long depack_start;
-		unsigned long depack_len = MM_UAPI_PAGE_ALIGN(mm, len_in);
-
-		if (mmap_write_lock_killable(mm))
-			return -EINTR;
-		depack_start = current->mm == mm ? untagged_addr(start) :
-			untagged_addr_remote(mm, start);
-		error = ppps_depack_anon_range(mm, depack_start,
-					       depack_start + depack_len,
-					       false);
-		mmap_write_unlock(mm);
-		if (error)
-			return error;
-	}
 	error = madvise_lock(&madv_behavior);
 	if (error)
 		return error;

@@ -53,8 +53,7 @@ struct mmap_state {
 		.vmi = vmi_,						\
 		.addr = addr_,						\
 		.end = (addr_) + (len_),				\
-		.pgoff = mmap_pgoff_offset(mm_, pgoff_, vm_flags_, file_), \
-		.slice_off = mmap_slice_offset(mm_, pgoff_, vm_flags_, file_), \
+		.pgoff = pgoff_, \
 		.pglen = MM_PHYS_PFN(mm_, len_),			\
 		.vm_flags = vm_flags_,					\
 		.file = file_,						\
@@ -531,19 +530,6 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 			return err;
 	}
 
-	/*
-	 * This is the final common gate for VMA splitting.  A packed-anon
-	 * mapping instance may not straddle two VMAs, so convert the native
-	 * folio at a process-page-only boundary to singleton folios first.
-	 * Callers normally do this before reaching __split_vma(), but keeping
-	 * the invariant here also covers direct split users.
-	 */
-	if (!IS_ALIGNED(addr, PAGE_SIZE)) {
-		err = ppps_depack_anon_range(vma->vm_mm, addr, addr + 1, false);
-		if (err)
-			return err;
-	}
-
 	new = vm_area_dup(vma);
 	if (!new)
 		return -ENOMEM;
@@ -552,8 +538,7 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		new->vm_end = addr;
 	} else {
 		new->vm_start = addr;
-		new->vm_pgoff = vma_pgoff_offset(vma, addr);
-		vma_set_slice_off(new, vma_address_to_slice(vma, addr));
+		vma_set_offset(new, vma_offset_at(vma, addr));
 	}
 
 	err = -ENOMEM;
@@ -600,8 +585,7 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 
 	if (new_below) {
 		vma->vm_start = addr;
-		vma->vm_pgoff = vma_pgoff_offset(new, addr);
-		vma_set_slice_off(vma, vma_address_to_slice(new, addr));
+		vma_set_offset(vma, vma_offset_at(new, addr));
 	} else {
 		vma->vm_end = addr;
 	}
@@ -747,23 +731,20 @@ void validate_mm(struct mm_struct *mm)
 static void vmg_adjust_set_range(struct vma_merge_struct *vmg)
 {
 	struct vm_area_struct *adjust;
-	pgoff_t pgoff;
-	unsigned int slice_off;
+	struct vma_offset offset;
 
 	if (vmg->__adjust_middle_start) {
 		adjust = vmg->middle;
-		pgoff = vma_pgoff_offset(adjust, vmg->end);
-		slice_off = vma_address_to_slice(adjust, vmg->end);
+		offset = vma_offset_at(adjust, vmg->end);
 	} else if (vmg->__adjust_next_start) {
 		adjust = vmg->next;
-		pgoff = vma_pgoff_offset(vmg->middle, vmg->end);
-		slice_off = vma_address_to_slice(vmg->middle, vmg->end);
+		offset = vma_offset_at(vmg->middle, vmg->end);
 	} else {
 		return;
 	}
 
-	vma_set_range(adjust, vmg->end, adjust->vm_end, pgoff);
-	vma_set_slice_off(adjust, slice_off);
+	vma_set_range(adjust, vmg->end, adjust->vm_end, offset.pgoff);
+	vma_set_offset(adjust, offset);
 }
 
 /*
@@ -808,7 +789,8 @@ static int commit_merge(struct vma_merge_struct *vmg)
 	vma_adjust_trans_huge(vma, vmg->start, vmg->end,
 			      vmg->__adjust_middle_start ? vmg->middle : NULL);
 	vma_set_range(vma, vmg->start, vmg->end, vmg->pgoff);
-	vma_set_slice_off(vma, vmg->slice_off);
+	vma_set_offset(vma, (struct vma_offset){
+		vmg->pgoff, vmg->slice_off });
 	vmg_adjust_set_range(vmg);
 	vma_iter_store_overwrite(vmg->vmi, vmg->target);
 
@@ -1610,10 +1592,6 @@ int do_vmi_align_munmap(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	struct vma_munmap_struct vms;
 	int error;
 
-	error = ppps_depack_anon_range(mm, start, end, false);
-	if (error)
-		goto gather_failed;
-
 	init_vma_munmap(&vms, vmi, vma, start, end, uf, unlock);
 	error = vms_gather_munmap_vmas(&vms, &mas_detach);
 	if (error)
@@ -1694,20 +1672,6 @@ static struct vm_area_struct *vma_modify(struct vma_merge_struct *vmg)
 	unsigned long start = vmg->start;
 	unsigned long end = vmg->end;
 	struct vm_area_struct *merged;
-	bool depack_all;
-	int err;
-
-	/*
-	 * A packed anonymous tuple must never straddle VMAs.  Depack tuples at
-	 * prospective VMA boundaries before merge/split changes the topology.
-	 * Facilities with per-process-page state need singleton folios across
-	 * the complete modified range.
-	 */
-	depack_all = vmg->vm_flags &
-		(VM_LOCKED | VM_MERGEABLE | VM_MTE | __VM_UFFD_FLAGS);
-	err = ppps_depack_anon_range(vma->vm_mm, start, end, depack_all);
-	if (err)
-		return ERR_PTR(err);
 
 	/* First, try to merge. */
 	merged = vma_merge_existing_range(vmg);
@@ -1910,10 +1874,12 @@ int vma_link(struct mm_struct *mm, struct vm_area_struct *vma)
  * prior to moving page table entries, to effect an mremap move.
  */
 struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
-	unsigned long addr, unsigned long len, pgoff_t pgoff,
-	unsigned int slice_off, bool *need_rmap_locks)
+				unsigned long addr, unsigned long len,
+				unsigned long source_addr,
+				bool *need_rmap_locks)
 {
 	struct vm_area_struct *vma = *vmap;
+	struct vma_offset offset = vma_offset_at(vma, source_addr);
 	unsigned long vma_start = vma->vm_start;
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_area_struct *new_vma;
@@ -1927,8 +1893,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	 * to match new location, to increase its chance of merging.
 	 */
 	if (unlikely(vma_is_anonymous(vma) && !vma->anon_vma)) {
-		pgoff = addr >> MM_PAGE_SHIFT(mm);
-		slice_off = 0;
+		offset = (struct vma_offset){ addr >> MM_PAGE_SHIFT(mm), 0 };
 		faulted_in_anon_vma = false;
 	}
 
@@ -1944,8 +1909,8 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 	if (new_vma && new_vma->vm_start < addr + len)
 		return NULL;	/* should never get here */
 
-	vmg.pgoff = pgoff;
-	vmg.slice_off = slice_off;
+	vmg.pgoff = offset.pgoff;
+	vmg.slice_off = offset.slice;
 	vmg.next = vma_iter_next_rewind(&vmi, NULL);
 	new_vma = vma_merge_copied_range(&vmg);
 
@@ -1977,8 +1942,8 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 			goto out;
 		/* Do not preserve padding flags on the new VMA */
 		vm_flags_clear(new_vma, VM_PAD_MASK);
-		vma_set_range(new_vma, addr, addr + len, pgoff);
-		vma_set_slice_off(new_vma, slice_off);
+		vma_set_range(new_vma, addr, addr + len, offset.pgoff);
+		vma_set_offset(new_vma, offset);
 		if (vma_dup_policy(vma, new_vma))
 			goto out_free_vma;
 		if (anon_vma_clone(new_vma, vma))
@@ -2036,12 +2001,14 @@ out:
  */
 static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *b)
 {
+	struct vma_offset end = vma_offset_at(a, b->vm_start);
+
 	return a->vm_end == b->vm_start &&
 		mpol_equal(vma_policy(a), vma_policy(b)) &&
 		a->vm_file == b->vm_file &&
 		!((a->vm_flags ^ b->vm_flags) & ~(VM_ACCESS_FLAGS | VM_SOFTDIRTY)) &&
-		b->vm_pgoff == a->vm_pgoff +
-			((b->vm_start - a->vm_start) >> MM_PAGE_SHIFT(a->vm_mm));
+		b->vm_pgoff == end.pgoff &&
+		(!ppps_vma_has_slices(a) || vma_slice_off(b) == end.slice);
 }
 
 /*
@@ -2587,7 +2554,8 @@ static int __mmap_new_vma(struct mmap_state *map, struct vm_area_struct **vmap)
 
 	vma_iter_config(vmi, map->addr, map->end);
 	vma_set_range(vma, map->addr, map->end, map->pgoff);
-	vma_set_slice_off(vma, map->slice_off);
+	vma_set_offset(vma, (struct vma_offset){
+		map->pgoff, map->slice_off });
 	vm_flags_init(vma, map->vm_flags);
 	vma->vm_page_prot = map->page_prot;
 
@@ -2768,6 +2736,9 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
 	bool have_mmap_prepare = file && file->f_op->mmap_prepare;
 	VMA_ITERATOR(vmi, mm, addr);
 	MMAP_STATE(map, mm, &vmi, addr, len, pgoff, vm_flags, file);
+
+	map.pgoff = ppps_split_mmap_pgoff(mm, pgoff, vm_flags, file,
+					 &map.slice_off);
 
 	map.check_ksm_early = can_set_ksm_flags_early(&map);
 

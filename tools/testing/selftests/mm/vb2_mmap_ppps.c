@@ -1,26 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * videobuf2 mmap of a 6K plane through the vb2_mmap_ppps fixture: a 4K compat
+ * process maps it rounded to two 4K pages, oversized or wrong-cookie mappings
+ * fail with EINVAL, and the exported DMA-BUF retains its native-page allocation.
+ * The --native role checks the same device in native page units.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define TEST_PLANE_SIZE (6 * 1024UL)
-#define VALID_MAP_SIZE (2 * USER_PAGE_SIZE)
-#define OVERSIZED_MAP_SIZE (3 * USER_PAGE_SIZE)
+#define VALID_MAP_SIZE (2 * PROCESS_PAGE_SIZE)
+#define OVERSIZED_MAP_SIZE (3 * PROCESS_PAGE_SIZE)
 #define VB2_MMAP_PPPS_EXPBUF _IO('v', 0x70)
 
 static int run_native_test(void)
@@ -35,19 +30,17 @@ static int run_native_test(void)
 
 	ksft_print_header();
 	ksft_set_plan(6);
-	ksft_test_result(page_size == USER_PAGE_SIZE || page_size == 16384,
+	ksft_test_result(page_size == PROCESS_PAGE_SIZE ||
+			 page_size == NATIVE_PAGE_SIZE,
 			 "native process uses a supported page size (%ld)\n",
 			 page_size);
-	if (page_size != USER_PAGE_SIZE && page_size != 16384)
+	if (page_size != PROCESS_PAGE_SIZE && page_size != NATIVE_PAGE_SIZE)
 		ksft_exit_fail_msg("unsupported native page size: %ld\n",
 				   page_size);
 	valid_map_size = (TEST_PLANE_SIZE + page_size - 1) & ~(page_size - 1);
 
-	fd = open("/dev/vb2_mmap_ppps", O_RDWR | O_CLOEXEC);
+	fd = ppps_open_fixture_or_skip("/dev/vb2_mmap_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the videobuf2 mmap test device\n");
-	if (fd < 0)
-		ksft_exit_fail_msg("open test device failed: %s\n",
-				   strerror(errno));
 	dmabuf_fd = ioctl(fd, VB2_MMAP_PPPS_EXPBUF);
 	ksft_test_result(dmabuf_fd >= 0, "export the plane as a DMA-BUF\n");
 	if (dmabuf_fd < 0)
@@ -87,15 +80,11 @@ static int run_test(void)
 	int dmabuf_fd;
 	int fd;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(9);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
-	fd = open("/dev/vb2_mmap_ppps", O_RDWR | O_CLOEXEC);
+	ksft_set_plan(8);
+	fd = ppps_open_fixture_or_skip("/dev/vb2_mmap_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the videobuf2 mmap test device\n");
-	if (fd < 0)
-		ksft_exit_fail_msg("open test device failed: %s\n",
-				   strerror(errno));
 
 	mapping = mmap(NULL, VALID_MAP_SIZE, PROT_READ, MAP_SHARED, fd, 0);
 	ksft_test_result(mapping != MAP_FAILED,
@@ -104,14 +93,14 @@ static int run_test(void)
 		munmap(mapping, VALID_MAP_SIZE);
 
 	errno = 0;
-	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
-		       USER_PAGE_SIZE);
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
+		       PROCESS_PAGE_SIZE);
 	saved_errno = errno;
 	ksft_test_result(mapping == MAP_FAILED && saved_errno == EINVAL,
 			 "reject a cookie selecting a nonexistent plane (errno=%d)\n",
 			 saved_errno);
 	if (mapping != MAP_FAILED)
-		munmap(mapping, USER_PAGE_SIZE);
+		munmap(mapping, PROCESS_PAGE_SIZE);
 
 	errno = 0;
 	mapping = mmap(NULL, OVERSIZED_MAP_SIZE, PROT_READ, MAP_SHARED, fd, 0);
@@ -128,7 +117,7 @@ static int run_test(void)
 		ksft_exit_fail_msg("export DMA-BUF failed: %s\n",
 				   strerror(errno));
 	ksft_test_result(fstat(dmabuf_fd, &st) == 0 &&
-			 st.st_size == (off_t)16384UL,
+			 st.st_size == (off_t)NATIVE_PAGE_SIZE,
 			 "DMA-BUF retains its native-page-aligned allocation (%lld)\n",
 			 (long long)st.st_size);
 	mapping = mmap(NULL, VALID_MAP_SIZE, PROT_READ, MAP_SHARED,
@@ -139,56 +128,30 @@ static int run_test(void)
 		munmap(mapping, VALID_MAP_SIZE);
 
 	errno = 0;
-	mapping = mmap(NULL, (16384UL + USER_PAGE_SIZE), PROT_READ, MAP_SHARED,
+	mapping = mmap(NULL, (NATIVE_PAGE_SIZE + PROCESS_PAGE_SIZE), PROT_READ, MAP_SHARED,
 		       dmabuf_fd, 0);
 	saved_errno = errno;
 	ksft_test_result(mapping == MAP_FAILED && saved_errno == EINVAL,
 			 "reject a DMA-BUF mapping beyond its allocation (errno=%d)\n",
 			 saved_errno);
 	if (mapping != MAP_FAILED)
-		munmap(mapping, (16384UL + USER_PAGE_SIZE));
+		munmap(mapping, (NATIVE_PAGE_SIZE + PROCESS_PAGE_SIZE));
 	close(dmabuf_fd);
 	close(fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "vb2_mmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-static int exec_native(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality clear failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "vb2_mmap_ppps", "--native-run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_compat(argv[0], "--run", NULL);
+	if (argc == 2 && !strcmp(mode, "--run"))
 		return run_test();
-	if (argc == 2 && !strcmp(argv[1], "--native"))
-		return exec_native();
-	if (argc == 2 && !strcmp(argv[1], "--native-run"))
+	if (argc == 2 && !strcmp(mode, "--native"))
+		exec_native(argv[0], "--native-run", NULL);
+	if (argc == 2 && !strcmp(mode, "--native-run"))
 		return run_native_test();
 	return EXIT_FAILURE;
 }

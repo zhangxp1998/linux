@@ -795,17 +795,6 @@ err_retries:
 	return -ENOMEM;
 }
 
-static int dma_buf_mmap_size(struct dma_buf *dmabuf,
-			     struct vm_area_struct *vma, u64 *mmap_size)
-{
-	u64 page_size = ppps_mm_is_compat(vma->vm_mm) ?
-			MM_PAGE_SIZE(vma->vm_mm) : __PAGE_SIZE;
-
-	/* Like the native check this replaces, only whole pages are mappable. */
-	*mmap_size = (u64)dmabuf->size & ~(page_size - 1);
-	return 0;
-}
-
 static int dma_buf_mmap_internal(struct file *file, struct vm_area_struct *vma)
 {
 	struct dma_buf *dmabuf;
@@ -821,9 +810,7 @@ static int dma_buf_mmap_internal(struct file *file, struct vm_area_struct *vma)
 	/* check if buffer supports mmap */
 	if (!dmabuf->ops->mmap)
 		return -EINVAL;
-	ret = dma_buf_mmap_size(dmabuf, vma, &mmap_size);
-	if (ret)
-		return ret;
+	mmap_size = dmabuf->size;
 
 	offset = vma_file_offset(vma);
 	/* check for overflowing the buffer's size */
@@ -2152,24 +2139,15 @@ int dma_buf_mmap_offset(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 			u64 offset)
 {
 	u64 mmap_size;
-	unsigned int slice;
-	unsigned long pgoff;
 	int ret;
 
 	if (WARN_ON(!dmabuf || !vma))
 		return -EINVAL;
 
-	if (!IS_ALIGNED(offset, MM_PAGE_SIZE(vma->vm_mm)))
-		return -EINVAL;
-	if (offset >> PAGE_SHIFT > ULONG_MAX)
-		return -EOVERFLOW;
-
 	/* check if buffer supports mmap */
 	if (!dmabuf->ops->mmap)
 		return -EINVAL;
-	ret = dma_buf_mmap_size(dmabuf, vma, &mmap_size);
-	if (ret)
-		return ret;
+	mmap_size = dmabuf->size;
 
 	/* check for overflowing the buffer's size */
 	if (offset > mmap_size ||
@@ -2177,11 +2155,10 @@ int dma_buf_mmap_offset(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 		return -EINVAL;
 
 	/* readjust the vma */
-	pgoff = offset >> PAGE_SHIFT;
-	slice = (offset & ~PAGE_MASK) >> MM_PAGE_SHIFT(vma->vm_mm);
+	ret = vma_set_file_offset(vma, offset);
+	if (ret)
+		return ret;
 	vma_set_file(vma, dmabuf->file);
-	vma->vm_pgoff = pgoff;
-	vma_set_slice_off(vma, slice);
 
 	ret = dmabuf->ops->mmap(dmabuf, vma);
 	if (!ret && vma->vm_file == dmabuf->file) {

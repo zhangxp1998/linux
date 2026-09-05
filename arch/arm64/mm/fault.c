@@ -244,7 +244,7 @@ int __ptep_set_access_flags_anysz(struct vm_area_struct *vma,
 	 * may still cause page faults and be invalidated via
 	 * flush_tlb_fix_spurious_fault().
 	 */
-	/* Block mappings also use this helper; omit the TTL level hint. */
+	/* This helper also updates block entries: do not guess their level. */
 	if (dirty)
 		flush_tlb_page(vma, address);
 	return 1;

@@ -67,9 +67,9 @@
 #define TLBI_TTL_TG_16K		2
 #define TLBI_TTL_TG_64K		3
 
-static inline unsigned long get_trans_granule(void)
+static inline unsigned long __trans_granule(unsigned long page_size)
 {
-	switch (PAGE_SIZE) {
+	switch (page_size) {
 	case SZ_4K:
 		return TLBI_TTL_TG_4K;
 	case SZ_16K:
@@ -81,18 +81,15 @@ static inline unsigned long get_trans_granule(void)
 	}
 }
 
+static inline unsigned long get_trans_granule(void)
+{
+	return __trans_granule(PAGE_SIZE);
+}
+
+/* Granule of @mm's page tables; NULL means the kernel's native granule. */
 static inline unsigned long mm_get_trans_granule(struct mm_struct *mm)
 {
-	switch (MM_PAGE_SIZE(mm)) {
-	case SZ_4K:
-		return TLBI_TTL_TG_4K;
-	case SZ_16K:
-		return TLBI_TTL_TG_16K;
-	case SZ_64K:
-		return TLBI_TTL_TG_64K;
-	default:
-		return 0;
-	}
+	return __trans_granule(MM_PAGE_SIZE(mm));
 }
 
 #ifdef CONFIG_ARM64_ERRATUM_4193714
@@ -144,7 +141,7 @@ static inline void sme_dvmsync_batch(void)
 
 #define TLBI_TTL_UNKNOWN	INT_MAX
 
-#define __tlbi_level_mm(op, addr, level, mm) do {			\
+#define __tlbi_level_mm(mm, op, addr, level) do {			\
 	u64 arg = addr;							\
 									\
 	if (alternative_has_cap_unlikely(ARM64_HAS_ARMv8_4_TTL) &&	\
@@ -159,11 +156,11 @@ static inline void sme_dvmsync_batch(void)
 } while(0)
 
 #define __tlbi_level(op, addr, level)					\
-	__tlbi_level_mm(op, addr, level, NULL)
+	__tlbi_level_mm(NULL, op, addr, level)
 
 #define __tlbi_user_level_mm(op, arg, level, mm) do {			\
 	if (arm64_kernel_unmapped_at_el0())				\
-		__tlbi_level_mm(op, (arg | USER_ASID_FLAG), level, mm);	\
+		__tlbi_level_mm(mm, op, (arg | USER_ASID_FLAG), level);	\
 } while (0)
 
 /*
@@ -469,7 +466,7 @@ do {									\
 		    __flush_pages == 1 ||				\
 		    (lpa2 && __flush_start != ALIGN(__flush_start, SZ_64K))) {	\
 			addr = __TLBI_VADDR(__flush_start, asid);	\
-			__tlbi_level_mm(op, addr, tlb_level, __flush_mm); \
+			__tlbi_level_mm(__flush_mm, op, addr, tlb_level); \
 			if (tlbi_user)					\
 				__tlbi_user_level_mm(op, addr, tlb_level, \
 						     __flush_mm);	\

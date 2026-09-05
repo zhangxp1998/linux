@@ -264,18 +264,6 @@ int do_vmi_munmap(struct vma_iterator *vmi, struct mm_struct *mm,
 		  unsigned long start, size_t len, struct list_head *uf,
 		  bool unlock);
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-int ppps_depack_anon_range(struct mm_struct *mm, unsigned long start,
-			   unsigned long end, bool all);
-#else
-static inline int ppps_depack_anon_range(struct mm_struct *mm,
-					 unsigned long start,
-					 unsigned long end, bool all)
-{
-	return 0;
-}
-#endif
-
 void remove_vma(struct vm_area_struct *vma);
 
 void unmap_region(struct ma_state *mas, struct vm_area_struct *vma,
@@ -337,8 +325,9 @@ void vma_link_file(struct vm_area_struct *vma);
 int vma_link(struct mm_struct *mm, struct vm_area_struct *vma);
 
 struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
-	unsigned long addr, unsigned long len, pgoff_t pgoff,
-	unsigned int slice_off, bool *need_rmap_locks);
+				unsigned long addr, unsigned long len,
+				unsigned long source_addr,
+				bool *need_rmap_locks);
 
 struct anon_vma *find_mergeable_anon_vma(struct vm_area_struct *vma);
 

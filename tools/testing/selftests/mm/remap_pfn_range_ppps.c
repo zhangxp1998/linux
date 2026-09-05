@@ -1,26 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process can mmap the multi-page remap_pfn_range() mapping of
+ * /sys/kernel/btf/vmlinux and read every 4K page of it without SIGBUS.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define BTF_PATH "/sys/kernel/btf/vmlinux"
 
 static sigjmp_buf fault_env;
@@ -44,7 +35,7 @@ static bool mapping_is_readable(const unsigned char *mapping, size_t size,
 	unsigned char value;
 	size_t offset;
 
-	for (offset = 0; offset < size; offset += USER_PAGE_SIZE) {
+	for (offset = 0; offset < size; offset += PROCESS_PAGE_SIZE) {
 		if (!read_byte(&mapping[offset], &value)) {
 			*fault_offset = offset;
 			return false;
@@ -73,24 +64,18 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(4);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(3);
 
-	fd = open(BTF_PATH, O_RDONLY | O_CLOEXEC);
-	if (fd < 0) {
-		if (errno == ENOENT)
-			ksft_exit_skip("%s is unavailable\n", BTF_PATH);
-		ksft_exit_fail_msg("open %s failed: %s\n", BTF_PATH,
-				   strerror(errno));
-	}
+	fd = ppps_open_fixture_or_skip(BTF_PATH, O_RDONLY);
 	if (fstat(fd, &status) || status.st_size <= 0)
 		ksft_exit_fail_msg("invalid %s size: %s\n", BTF_PATH,
 				   strerror(errno));
-	ksft_test_result(status.st_size > (off_t)USER_PAGE_SIZE,
+	ksft_test_result(status.st_size > (off_t)PROCESS_PAGE_SIZE,
 			 "BTF exposes a multi-page PFN mapping\n");
 
 	mapping = mmap(NULL, status.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (mapping == MAP_FAILED && errno == ENODEV)
+		ksft_exit_skip("%s is not mappable on this kernel\n", BTF_PATH);
 	ksft_test_result(mapping != MAP_FAILED, "BTF PFN mapping succeeds\n");
 	if (mapping == MAP_FAILED)
 		ksft_exit_fail_msg("mmap %s failed: %s\n", BTF_PATH,
@@ -115,25 +100,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "remap_pfn_range_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

@@ -369,13 +369,8 @@ SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 			memset(res, 0, retval / nr_subpages);
 
 		pages -= retval;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-		vec += retval;
-		start += retval << page_shift;
-#else
 		vec += retval / nr_subpages;
-		start += retval << PAGE_SHIFT;
-#endif
+		start += retval << page_shift;
 		retval = 0;
 	}
 	if (unlikely(nr_subpages > 1))

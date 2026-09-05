@@ -1,25 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * The in-kernel page walker fixture write-protects and cleans only the
+ * requested 4K file slice of a compat process, without touching the
+ * adjacent anonymous pages or the other slices of the native page.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 #include "pagewalk_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
 #define RESERVE_SIZE	(64 * 1024UL)
 #define DEVICE_PATH	"/dev/" PAGEWALK_PPPS_DEVICE_NAME
 
@@ -43,11 +35,11 @@ static unsigned char *reserve_range(void)
 static bool test_write_protect_overrun(int device_fd, unsigned long *count)
 {
 	struct pagewalk_ppps_args request = {
-		.offset = 4 * USER_PAGE_SIZE,
-		.length = USER_PAGE_SIZE,
+		.offset = 4 * PROCESS_PAGE_SIZE,
+		.length = PROCESS_PAGE_SIZE,
 	};
-	const size_t file_len = 5 * USER_PAGE_SIZE;
-	const size_t tail_len = 3 * USER_PAGE_SIZE;
+	const size_t file_len = 5 * PROCESS_PAGE_SIZE;
+	const size_t tail_len = 3 * PROCESS_PAGE_SIZE;
 	unsigned char *base;
 	unsigned char *tail;
 	size_t offset;
@@ -67,10 +59,10 @@ static bool test_write_protect_overrun(int device_fd, unsigned long *count)
 	if (tail == MAP_FAILED)
 		goto unmap;
 
-	for (offset = 0; offset < file_len; offset += USER_PAGE_SIZE)
-		base[offset] = 0x40 + offset / USER_PAGE_SIZE;
-	for (offset = 0; offset < tail_len; offset += USER_PAGE_SIZE)
-		tail[offset] = 0x60 + offset / USER_PAGE_SIZE;
+	for (offset = 0; offset < file_len; offset += PROCESS_PAGE_SIZE)
+		base[offset] = 0x40 + offset / PROCESS_PAGE_SIZE;
+	for (offset = 0; offset < tail_len; offset += PROCESS_PAGE_SIZE)
+		tail[offset] = 0x60 + offset / PROCESS_PAGE_SIZE;
 
 	request.fd = fd;
 	if (ioctl(device_fd, PAGEWALK_PPPS_IOCTL_WRITE_PROTECT, &request))
@@ -91,11 +83,11 @@ static bool test_clean_slice(int device_fd, unsigned long *count,
 			     unsigned long *bitmap_weight)
 {
 	struct pagewalk_ppps_args request = {
-		.offset = 4 * USER_PAGE_SIZE,
-		.length = USER_PAGE_SIZE,
+		.offset = 4 * PROCESS_PAGE_SIZE,
+		.length = PROCESS_PAGE_SIZE,
 	};
-	const size_t file_offset = USER_PAGE_SIZE;
-	const size_t file_len = 4 * USER_PAGE_SIZE;
+	const size_t file_offset = PROCESS_PAGE_SIZE;
+	const size_t file_len = 4 * PROCESS_PAGE_SIZE;
 	unsigned char *base;
 	int fd;
 
@@ -109,7 +101,7 @@ static bool test_clean_slice(int device_fd, unsigned long *count,
 		 MAP_SHARED | MAP_FIXED, fd, file_offset) == MAP_FAILED)
 		goto unmap;
 
-	base[3 * USER_PAGE_SIZE] = 0x7a;
+	base[3 * PROCESS_PAGE_SIZE] = 0x7a;
 	request.fd = fd;
 	if (ioctl(device_fd, PAGEWALK_PPPS_IOCTL_CLEAN, &request))
 		goto unmap;
@@ -136,14 +128,9 @@ static int run_test(void)
 	int device_fd;
 
 	ksft_print_header();
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(6);
 
-	device_fd = open(DEVICE_PATH, O_RDWR | O_CLOEXEC);
-	if (device_fd < 0)
-		ksft_exit_fail_msg("open %s failed: %s\n", DEVICE_PATH,
-				   strerror(errno));
+	device_fd = ppps_open_fixture_or_skip(DEVICE_PATH, O_RDWR);
 	ksft_test_result(true, "open the page-walk test helper\n");
 
 	wp_ok = test_write_protect_overrun(device_fd, &write_protected);
@@ -167,25 +154,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "pagewalk_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

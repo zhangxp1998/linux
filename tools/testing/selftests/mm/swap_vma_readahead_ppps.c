@@ -1,27 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * Swapped-out 4K pages of a compat process fault back in with intact
+ * contents through swap I/O, and a fault in the native page adjacent to the
+ * previous one starts VMA-based swap readahead (swap_ra grows).  Swap
+ * entries and the readahead window are per native page, so the test walks
+ * the mapping in native-page steps.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/resource.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
 #define ADDRESS_ALIGN	(64 * 1024UL)
 #define TEST_PAGES	64
-#define TEST_SIZE	(TEST_PAGES * USER_PAGE_SIZE)
+#define TEST_SIZE	(TEST_PAGES * PROCESS_PAGE_SIZE)
 #define RESERVE_SIZE	(TEST_SIZE + 2 * ADDRESS_ALIGN)
 #define POLL_ATTEMPTS	300
 
@@ -199,7 +193,7 @@ static bool apply_memory_pressure(void)
 	    !read_named_value("/proc/self/smaps", "KernelPageSize:",
 			      &kernel_page_kb))
 		return false;
-	allocation_factor = kernel_page_kb * 1024 / USER_PAGE_SIZE;
+	allocation_factor = kernel_page_kb * 1024 / PROCESS_PAGE_SIZE;
 	if (!allocation_factor)
 		allocation_factor = 1;
 	pressure_size = (available_kb + 32 * 1024) * 1024 /
@@ -211,8 +205,8 @@ static bool apply_memory_pressure(void)
 	if (pressure == MAP_FAILED)
 		return false;
 	madvise((void *)pressure, pressure_size, MADV_NOHUGEPAGE);
-	for (offset = 0; offset < pressure_size; offset += USER_PAGE_SIZE)
-		pressure[offset] = offset / USER_PAGE_SIZE;
+	for (offset = 0; offset < pressure_size; offset += PROCESS_PAGE_SIZE)
+		pressure[offset] = offset / PROCESS_PAGE_SIZE;
 	munmap((void *)pressure, pressure_size);
 	return true;
 }
@@ -230,7 +224,7 @@ static bool fault_and_check(unsigned char *mapping, unsigned int page,
 			    long *major_delta)
 {
 	long before = major_faults();
-	unsigned char value = mapping[page * USER_PAGE_SIZE];
+	unsigned char value = mapping[page * NATIVE_PAGE_SIZE];
 	long after = major_faults();
 
 	if (before < 0 || after < 0)
@@ -258,13 +252,9 @@ static int run_test(void)
 	unsigned int i;
 
 	ksft_print_header();
-	ksft_set_plan(12);
+	ksft_set_plan(11);
 	if (atexit(restore_readahead_config))
 		ksft_exit_fail_msg("could not register configuration cleanup\n");
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
-	if (sysconf(_SC_PAGESIZE) != USER_PAGE_SIZE)
-		ksft_exit_fail_msg("could not enter 4K process mode\n");
 
 	if (!read_named_value("/proc/meminfo", "SwapTotal:",
 			      &total_swap_kb) || !total_swap_kb)
@@ -301,7 +291,7 @@ static int run_test(void)
 		ksft_exit_fail_msg("could not create test mapping\n");
 
 	for (i = 0; i < TEST_PAGES; i++)
-		mapping[i * USER_PAGE_SIZE] = 0x40 + i;
+		mapping[i * PROCESS_PAGE_SIZE] = 0x40 + i / PPPS_SLICES;
 	paged_out = page_out_mapping((void *)mapping, &rss_bytes, &swap_bytes);
 	ksft_test_result(paged_out,
 			 "page out the VMA (Swap: %lu, Rss: %lu bytes)\n",
@@ -313,12 +303,12 @@ static int run_test(void)
 	ksft_print_msg("applied memory pressure to evict swap cache\n");
 
 	preserved[0] = fault_and_check(mapping, 0, &major_delta[0]);
-	ksft_test_result(preserved[0], "fault page 0 with intact contents\n");
+	ksft_test_result(preserved[0], "fault native page 0 with intact contents\n");
 	ksft_test_result(major_delta[0] > 0,
 			 "page 0 requires swap I/O\n");
 
 	preserved[1] = fault_and_check(mapping, 2, &major_delta[1]);
-	ksft_test_result(preserved[1], "fault nonadjacent page 2 with intact contents\n");
+	ksft_test_result(preserved[1], "fault nonadjacent native page 2 with intact contents\n");
 	ksft_test_result(major_delta[1] > 0,
 			 "page 2 requires swap I/O and resets history\n");
 
@@ -327,30 +317,15 @@ static int run_test(void)
 	preserved[2] = fault_and_check(mapping, 3, &major_delta[2]);
 	if (!read_named_value("/proc/vmstat", "swap_ra", &swap_ra_after))
 		ksft_exit_fail_msg("could not read swap_ra after fault\n");
-	ksft_test_result(preserved[2], "fault adjacent page 3 with intact contents\n");
+	ksft_test_result(preserved[2], "fault adjacent native page 3 with intact contents\n");
 	ksft_test_result(major_delta[2] > 0,
 			 "page 3 requires swap I/O\n");
 	ksft_test_result(swap_ra_after > swap_ra_before,
-			 "adjacent 4K fault starts VMA readahead # before %lu after %lu\n",
+			 "adjacent native-page fault starts VMA readahead # before %lu after %lu\n",
 			 swap_ra_before, swap_ra_after);
 
 	munmap(reservation, RESERVE_SIZE);
 	ksft_finished();
 }
 
-int main(int argc, char **argv)
-{
-	int persona;
-
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	if (argc != 1)
-		return EXIT_FAILURE;
-
-	persona = personality(0xffffffffUL);
-	if (persona < 0 ||
-	    personality((unsigned long)persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality failed: %s\n", strerror(errno));
-	execl("/proc/self/exe", "swap_vma_readahead_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
+PPPS_COMPAT_MAIN(run_test)

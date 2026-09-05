@@ -1,32 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * mremap() of a userfaultfd-registered 4K page to a 4K-only-aligned address
+ * in a compat process delivers an exact UFFD_EVENT_REMAP and preserves the
+ * moved contents.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/userfaultfd.h>
 #include <poll.h>
 #include <pthread.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE	0x10000000
-#endif
-
-#define USER_PAGE_SIZE		4096UL
-#define NATIVE_PAGE_SIZE	16384UL
 #define SOURCE_ADDRESS		0x20000000UL
-#define DESTINATION_ADDRESS	(0x30000000UL + USER_PAGE_SIZE)
+#define DESTINATION_ADDRESS	(0x30000000UL + PROCESS_PAGE_SIZE)
 #define TEST_VALUE		0x5a
 
 struct monitor_result {
@@ -62,7 +52,7 @@ static int run_test(void)
 	struct uffdio_register registration = {
 		.range = {
 			.start = SOURCE_ADDRESS,
-			.len = USER_PAGE_SIZE,
+			.len = PROCESS_PAGE_SIZE,
 		},
 		.mode = UFFDIO_REGISTER_MODE_MISSING,
 	};
@@ -78,23 +68,21 @@ static int run_test(void)
 	int uffd;
 
 	ksft_print_header();
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "test process uses 4K pages\n");
+	ksft_set_plan(5);
 	ksft_test_result(!(SOURCE_ADDRESS & (NATIVE_PAGE_SIZE - 1)) &&
-			 !(DESTINATION_ADDRESS & (USER_PAGE_SIZE - 1)) &&
+			 !(DESTINATION_ADDRESS & (PROCESS_PAGE_SIZE - 1)) &&
 			 (DESTINATION_ADDRESS & (NATIVE_PAGE_SIZE - 1)),
 			 "destination is 4K-only aligned\n");
 
-	source = mmap((void *)SOURCE_ADDRESS, USER_PAGE_SIZE,
+	source = mmap((void *)SOURCE_ADDRESS, PROCESS_PAGE_SIZE,
 		      PROT_READ | PROT_WRITE,
 		      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-	destination = mmap((void *)DESTINATION_ADDRESS, USER_PAGE_SIZE, PROT_NONE,
+	destination = mmap((void *)DESTINATION_ADDRESS, PROCESS_PAGE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
 			   -1, 0);
 	if (source == MAP_FAILED || destination == MAP_FAILED)
 		ksft_exit_fail_msg("fixed mmap failed: %s\n", strerror(errno));
-	memset(source, TEST_VALUE, USER_PAGE_SIZE);
+	memset(source, TEST_VALUE, PROCESS_PAGE_SIZE);
 
 	uffd = syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK |
 		       UFFD_USER_MODE_ONLY);
@@ -115,7 +103,7 @@ static int run_test(void)
 	monitor.uffd = uffd;
 	if (pthread_create(&thread, NULL, monitor_remap, &monitor))
 		ksft_exit_fail_msg("pthread_create failed\n");
-	moved = mremap(source, USER_PAGE_SIZE, USER_PAGE_SIZE,
+	moved = mremap(source, PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
 		       MREMAP_MAYMOVE | MREMAP_FIXED, destination);
 	ksft_test_result(moved == destination,
 			 "move registered VMA to 4K-only address\n");
@@ -125,37 +113,19 @@ static int run_test(void)
 			 monitor.message.event == UFFD_EVENT_REMAP &&
 			 monitor.message.arg.remap.from == SOURCE_ADDRESS &&
 			 monitor.message.arg.remap.to == DESTINATION_ADDRESS &&
-			 monitor.message.arg.remap.len == USER_PAGE_SIZE,
+			 monitor.message.arg.remap.len == PROCESS_PAGE_SIZE,
 			 "receive exact remap event (poll=%d read=%d event=%u error=%s)\n",
 			 monitor.poll_result, monitor.read_result,
 			 monitor.message.event,
 			 monitor.error ? strerror(monitor.error) : "none");
 	ksft_test_result(moved == destination &&
 			 destination[0] == TEST_VALUE &&
-			 destination[USER_PAGE_SIZE - 1] == TEST_VALUE,
+			 destination[PROCESS_PAGE_SIZE - 1] == TEST_VALUE,
 			 "moved mapping preserves contents\n");
 
 	close(uffd);
-	munmap(destination, USER_PAGE_SIZE);
+	munmap(destination, PROCESS_PAGE_SIZE);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
-	execl("/proc/self/exe", "userfaultfd_remap_ppps", "--run", NULL);
-	return EXIT_FAILURE;
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

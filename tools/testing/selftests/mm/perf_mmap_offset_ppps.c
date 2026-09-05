@@ -1,32 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * perf ring buffers of a 4K compat process are laid out, bounds-checked and
+ * wrapped in process-page units, and PERF_RECORD_MMAP reports the 4K file
+ * slice offset of a compat mapping.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <setjmp.h>
 #include <linux/memfd.h>
 #include <linux/perf_event.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define FILE_SIZE	(4 * USER_PAGE_SIZE)
-#define FILE_OFFSET	USER_PAGE_SIZE
+#define FILE_SIZE	(4 * PROCESS_PAGE_SIZE)
+#define FILE_OFFSET	PROCESS_PAGE_SIZE
 #define DATA_PAGES	256
 
 static sigjmp_buf write_fault_jmp;
@@ -111,7 +102,7 @@ static int open_perf_ring(struct perf_event_attr *attr,
 
 	if (fd < 0)
 		return -1;
-	*page_size = USER_PAGE_SIZE;
+	*page_size = PROCESS_PAGE_SIZE;
 	*ring_size = (data_pages + 1) * *page_size;
 	*metadata = mmap(NULL, *ring_size, PROT_READ | PROT_WRITE,
 			 MAP_SHARED, fd, 0);
@@ -174,19 +165,19 @@ static bool exercise_small_ring(struct perf_event_attr *attr)
 		int memfd;
 
 		memfd = memfd_create("perf-mmap-offset-ppps-small", MFD_CLOEXEC);
-		if (memfd < 0 || ftruncate(memfd, USER_PAGE_SIZE)) {
+		if (memfd < 0 || ftruncate(memfd, PROCESS_PAGE_SIZE)) {
 			if (memfd >= 0)
 				close(memfd);
 			success = false;
 			break;
 		}
-		mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_EXEC,
+		mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_EXEC,
 			       MAP_PRIVATE, memfd, 0);
 		if (mapping == MAP_FAILED ||
 		    !find_mmap_offset(metadata, page_size, &recorded_offset))
 			success = false;
 		if (mapping != MAP_FAILED)
-			munmap(mapping, USER_PAGE_SIZE);
+			munmap(mapping, PROCESS_PAGE_SIZE);
 		close(memfd);
 		if (!success)
 			break;
@@ -207,13 +198,13 @@ static bool map_metadata_only(struct perf_event_attr *attr)
 	fd = perf_event_open(attr);
 	if (fd < 0)
 		return false;
-	metadata = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	metadata = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			MAP_SHARED, fd, 0);
 	if (metadata == MAP_FAILED) {
 		close(fd);
 		return false;
 	}
-	munmap(metadata, USER_PAGE_SIZE);
+	munmap(metadata, PROCESS_PAGE_SIZE);
 	close(fd);
 	return true;
 }
@@ -228,11 +219,11 @@ static bool reject_subpage_ring_offset(struct perf_event_attr *attr,
 	if (fd < 0)
 		return false;
 	errno = 0;
-	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
-		       MAP_SHARED, fd, USER_PAGE_SIZE);
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, PROCESS_PAGE_SIZE);
 	*saved_errno = errno;
 	if (mapping != MAP_FAILED)
-		munmap(mapping, USER_PAGE_SIZE);
+		munmap(mapping, PROCESS_PAGE_SIZE);
 	close(fd);
 	return mapping == MAP_FAILED;
 }
@@ -260,9 +251,7 @@ static int run_test(void)
 	int perf_fd;
 
 	ksft_print_header();
-	ksft_set_plan(11);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(10);
 	ksft_test_result(map_metadata_only(&attr),
 			 "map a metadata-only perf event with one process page\n");
 	ksft_test_result(reject_subpage_ring_offset(&attr, &offset_errno),
@@ -294,7 +283,7 @@ static int run_test(void)
 	memfd = memfd_create("perf-mmap-offset-ppps", MFD_CLOEXEC);
 	if (memfd < 0 || ftruncate(memfd, FILE_SIZE))
 		ksft_exit_fail_msg("memfd setup failed: %s\n", strerror(errno));
-	file_mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_EXEC,
+	file_mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_EXEC,
 			    MAP_PRIVATE, memfd, FILE_OFFSET);
 	ksft_test_result(file_mapping != MAP_FAILED,
 			 "map one 4K page at file offset 4K\n");
@@ -311,32 +300,11 @@ static int run_test(void)
 	ksft_test_result(exercise_small_ring(&attr),
 			 "wrap a one-process-page perf data ring\n");
 
-	munmap(file_mapping, USER_PAGE_SIZE);
+	munmap(file_mapping, PROCESS_PAGE_SIZE);
 	close(memfd);
 	munmap(metadata, ring_size);
 	close(perf_fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "perf_mmap_offset_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

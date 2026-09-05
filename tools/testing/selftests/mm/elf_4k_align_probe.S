@@ -11,8 +11,11 @@ _start:
 	cmp	w10, w11
 	b.ne	.Lfail
 
+	/* The first 4K page past the BSS must still be unmapped. */
 	adrp	x0, bss_probe_end
 	add	x0, x0, :lo12:bss_probe_end
+	add	x0, x0, #0xfff
+	and	x0, x0, #~0xfff
 	mov	x9, x0
 	mov	x1, #4096
 	mov	x2, #3

@@ -26,8 +26,8 @@
  *         baseline (buggy) kernel-> 0        (sub-native alignment accepted)
  *
  * The bug is only observable from a compat (4K) process; on a native process
- * MM_PAGE_ALIGNED already means 16K and both kernels reject.  The test SKIPs
- * when it is not running as a compat process.
+ * MM_PAGE_ALIGNED already means 16K and both kernels reject.  The test
+ * re-execs itself as a compat process before probing.
  *
  * This binary is self-validating as an A/B: run it on the audited (fixed)
  * kernel to see the PASS, and on the pre-fix kernel to see it report the
@@ -36,44 +36,11 @@
 #define _GNU_SOURCE
 
 #include <arpa/inet.h>
-#include <errno.h>
 #include <netinet/in.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
-#include "kselftest.h"
-
-#define PROCESS_PAGE	4096UL		/* compat page size */
-#define NATIVE_PAGE	16384UL		/* 16K-native kernel PAGE_SIZE */
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-/*
- * The bug is only observable from a compat (4K) process.  A process only runs
- * compat if it (or an ancestor) set the ADDR_4KB_COMPAT_PAGE_SIZE personality
- * before exec -- otherwise a 4K-aligned binary launched from a native (16K)
- * shell is loaded native and its segments are mismapped.  Match the other mm
- * ppps selftests: set the personality bit and re-exec ourselves.
- */
-static void reexec_compat(char **argv)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_skip("personality get failed: %s\n", strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_skip("personality set failed: %s\n", strerror(errno));
-	execl("/proc/self/exe", argv[0], "--compat", (char *)NULL);
-	ksft_exit_skip("re-exec for compat failed: %s\n", strerror(errno));
-}
+#include "kselftest_ppps.h"
 
 #ifndef TCP_ZEROCOPY_RECEIVE
 #define TCP_ZEROCOPY_RECEIVE	35
@@ -148,38 +115,30 @@ static int zc_probe(int fd, unsigned long address)
 
 	memset(&zc, 0, sizeof(zc));
 	zc.address = address;
-	zc.length = NATIVE_PAGE;
+	zc.length = NATIVE_PAGE_SIZE;
 
 	if (getsockopt(fd, IPPROTO_TCP, TCP_ZEROCOPY_RECEIVE, &zc, &len))
 		return -errno;
 	return 0;
 }
 
-int main(int argc, char **argv)
+static int run_test(void)
 {
 	unsigned char *region, *base16k, *probe4k;
 	int fd, r_aligned, r_misaligned;
-	size_t maplen = NATIVE_PAGE * 4;
-
-	/* Become a compat (4K) process if we are not already one. */
-	if (sysconf(_SC_PAGESIZE) != (long)PROCESS_PAGE)
-		reexec_compat(argv);
+	size_t maplen = NATIVE_PAGE_SIZE * 4;
 
 	ksft_print_header();
 	ksft_set_plan(1);
-
-	if (sysconf(_SC_PAGESIZE) != (long)PROCESS_PAGE)
-		ksft_exit_skip("need a compat (4K) process; _SC_PAGESIZE=%ld\n",
-			       sysconf(_SC_PAGESIZE));
 
 	/* A 16K-aligned window, and a 4K-aligned probe one compat page inside. */
 	region = mmap(NULL, maplen, PROT_READ,
 		      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (region == MAP_FAILED)
 		ksft_exit_fail_perror("mmap");
-	base16k = (unsigned char *)(((uintptr_t)region + NATIVE_PAGE - 1) &
-				    ~(uintptr_t)(NATIVE_PAGE - 1));
-	probe4k = base16k + PROCESS_PAGE;	/* 4K-aligned, not 16K-aligned */
+	base16k = (unsigned char *)(((uintptr_t)region + NATIVE_PAGE_SIZE - 1) &
+				    ~(uintptr_t)(NATIVE_PAGE_SIZE - 1));
+	probe4k = base16k + PROCESS_PAGE_SIZE;	/* 4K-aligned, not 16K-aligned */
 
 	fd = connected_loopback_fd();
 
@@ -211,3 +170,5 @@ int main(int argc, char **argv)
 	munmap(region, maplen);
 	ksft_finished();
 }
+
+PPPS_COMPAT_MAIN(run_test)

@@ -2225,9 +2225,25 @@ config AS_HAS_MOPS
 
 menu "ARMv8.9 architectural features"
 
+config ARM64_S1PIE
+	bool "Use the Stage-1 Permission Indirection Extension when available"
+	default y
+	help
+	  Program PIR_EL1/PIRE0_EL1 and set TCR2_EL1.PIE on CPUs that
+	  implement FEAT_S1PIE, so that descriptor permissions are looked up
+	  indirectly.  The page table encodings used by the kernel are the
+	  same with and without indirection, so this only changes how the
+	  hardware decodes them.
+
+	  Say N to keep the direct AP[2:1]/XN decoding even when FEAT_S1PIE
+	  is present, for example on emulators whose PIE implementation does
+	  not honour the nDirty bit and therefore breaks hardware dirty state
+	  tracking.  If unsure, say Y.
+
 config ARM64_POE
 	prompt "Permission Overlay Extension"
 	def_bool y
+	depends on ARM64_S1PIE
 	select ARCH_USES_HIGH_VMA_FLAGS
 	select ARCH_HAS_PKEYS
 	help

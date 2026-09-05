@@ -77,7 +77,8 @@ unsigned long vm_memory_committed_kb(void);
 /*
  * vm_committed_as is shared by native and PPPS-compatible processes. Keep it
  * in PAGE_SIZE_COMPAT units so that both process page sizes can be represented
- * without rounding.
+ * without rounding.  A "commit unit" is therefore one PAGE_SIZE_COMPAT-sized
+ * block; the helpers below convert page counts into it.
  */
 static inline long vm_commit_units_from_mm_pages(const struct mm_struct *mm,
 						 long pages)
@@ -88,12 +89,6 @@ static inline long vm_commit_units_from_mm_pages(const struct mm_struct *mm,
 static inline long vm_commit_units_from_native_pages(long pages)
 {
 	return pages * (long)(PAGE_SIZE / PAGE_SIZE_COMPAT);
-}
-
-static inline long vm_native_pages_to_mm_pages(const struct mm_struct *mm,
-					       long pages)
-{
-	return pages * (long)(PAGE_SIZE / MM_PAGE_SIZE(mm));
 }
 
 static inline void vm_acct_memory_units(long units)

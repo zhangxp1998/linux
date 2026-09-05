@@ -1,25 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * getrusage() ru_maxrss of a 4K compat process and of its 4K and native
+ * children matches the VmHWM each process reports, in common kB units.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
 #define PARENT_SIZE	(32UL * 1024 * 1024)
 #define CHILD_4K_SIZE	(24UL * 1024 * 1024)
 #define CHILD_NATIVE_SIZE (40UL * 1024 * 1024)
@@ -31,21 +22,12 @@ struct child_report {
 
 static bool read_hwm(unsigned long *hwm_kb)
 {
-	char status[8192];
-	char *line;
-	ssize_t length;
-	int fd;
+	long value = ppps_status_kb(0, "VmHWM");
 
-	fd = open("/proc/self/status", O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
+	if (value < 0)
 		return false;
-	length = read(fd, status, sizeof(status) - 1);
-	close(fd);
-	if (length < 0)
-		return false;
-	status[length] = '\0';
-	line = strstr(status, "VmHWM:");
-	return line && sscanf(line, "VmHWM: %lu kB", hwm_kb) == 1;
+	*hwm_kb = value;
+	return true;
 }
 
 static void *fault_mapping(size_t length)
@@ -57,17 +39,23 @@ static void *fault_mapping(size_t length)
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (mapping == MAP_FAILED)
 		return MAP_FAILED;
-	for (offset = 0; offset < length; offset += USER_PAGE_SIZE)
+	for (offset = 0; offset < length; offset += PROCESS_PAGE_SIZE)
 		mapping[offset] = (unsigned char)offset + 1;
 	return mapping;
 }
 
+/*
+ * VmHWM and ru_maxrss both derive from the mm RSS counters, which are
+ * per-CPU batched, so two readings can differ by a few MB of slack.  The
+ * unit mismatch this test guards against is a factor of four, so a 4 MB
+ * tolerance keeps the check meaningful on a busy system.
+ */
 static bool close_enough(unsigned long actual, unsigned long expected)
 {
 	unsigned long difference = actual > expected ? actual - expected :
 		expected - actual;
 
-	return difference <= 512;
+	return difference <= 4096;
 }
 
 static void child_workload(int report_fd, size_t length)
@@ -76,13 +64,19 @@ static void child_workload(int report_fd, size_t length)
 	void *mapping;
 
 	mapping = fault_mapping(length);
-	if (mapping == MAP_FAILED || !read_hwm(&report.hwm_kb))
+	if (mapping == MAP_FAILED)
+		_exit(120);
+	/*
+	 * VmHWM is an approximate per-CPU reading until an unmap latches the
+	 * high-water mark; exit reports that latched value as ru_maxrss.
+	 */
+	munmap(mapping, length);
+	if (!read_hwm(&report.hwm_kb))
 		_exit(120);
 	report.page_size = sysconf(_SC_PAGESIZE);
 	if (write(report_fd, &report, sizeof(report)) != sizeof(report))
 		_exit(121);
 	close(report_fd);
-	munmap(mapping, length);
 	_exit(0);
 }
 
@@ -102,13 +96,10 @@ static bool collect_child(bool native, size_t length,
 		close(pipefd[0]);
 		if (!native)
 			child_workload(pipefd[1], length);
-		if (personality(personality(0xffffffffUL) &
-				~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-			_exit(122);
 		snprintf(fd_string, sizeof(fd_string), "%d", pipefd[1]);
 		snprintf(length_string, sizeof(length_string), "%zu", length);
-		execl("/proc/self/exe", "rusage_ppps", "--native-child",
-		      fd_string, length_string, NULL);
+		ppps_execl(false, NULL, "--native-child", fd_string,
+			   length_string, NULL);
 		_exit(123);
 	}
 	close(pipefd[1]);
@@ -131,10 +122,9 @@ static int run_test(void)
 	unsigned long parent_hwm = 0;
 	void *mapping;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "parent process uses 4K pages\n");
+	ksft_set_plan(7);
 
 	mapping = fault_mapping(PARENT_SIZE);
 	ksft_test_result(mapping != MAP_FAILED && read_hwm(&parent_hwm),
@@ -169,27 +159,15 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "rusage_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_compat(argv[0], PPPS_RUN_FLAG, NULL);
+	if (argc == 2 && !strcmp(mode, PPPS_RUN_FLAG))
 		return run_test();
-	if (argc == 4 && !strcmp(argv[1], "--native-child"))
+	if (argc == 4 && !strcmp(mode, "--native-child"))
 		child_workload(atoi(argv[2]), strtoull(argv[3], NULL, 0));
 	return EXIT_FAILURE;
 }

@@ -1,32 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * An unlockable GUP over two 4K pages of a compat process, the second one
+ * userfaultfd-missing, retries at the missing 4K page (not the native-page
+ * shifted address) and ends up pinning both pages.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/userfaultfd.h>
 #include <poll.h>
 #include <pthread.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "gup_retry_ppps.h"
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define NATIVE_PAGE_SIZE 16384UL
 #define RESERVE_SIZE	(4 * NATIVE_PAGE_SIZE)
 
 struct ioctl_thread_args {
@@ -72,7 +62,7 @@ static bool register_missing(int uffd, void *address)
 	struct uffdio_register registration = {
 		.range = {
 			.start = (unsigned long)address,
-			.len = USER_PAGE_SIZE,
+			.len = PROCESS_PAGE_SIZE,
 		},
 		.mode = UFFDIO_REGISTER_MODE_MISSING,
 	};
@@ -93,7 +83,7 @@ static bool wait_for_fault(int uffd, void *address)
 	if (read(uffd, &message, sizeof(message)) != sizeof(message))
 		return false;
 	return message.event == UFFD_EVENT_PAGEFAULT &&
-	       (message.arg.pagefault.address & ~(USER_PAGE_SIZE - 1)) ==
+	       (message.arg.pagefault.address & ~(PROCESS_PAGE_SIZE - 1)) ==
 	       (unsigned long)address;
 }
 
@@ -102,7 +92,7 @@ static bool resolve_fault(int uffd, void *address, void *source)
 	struct uffdio_copy copy = {
 		.src = (unsigned long)source,
 		.dst = (unsigned long)address,
-		.len = USER_PAGE_SIZE,
+		.len = PROCESS_PAGE_SIZE,
 	};
 
 	return !ioctl(uffd, UFFDIO_COPY, &copy);
@@ -124,11 +114,9 @@ static int run_test(void)
 	int uffd;
 
 	ksft_print_header();
-	ksft_set_plan(9);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(8);
 
-	device_fd = open("/dev/gup_retry_ppps", O_RDWR | O_CLOEXEC);
+	device_fd = ppps_open_fixture_or_skip("/dev/gup_retry_ppps", O_RDWR);
 	uffd = open_userfaultfd();
 	ksft_test_result(device_fd >= 0 && uffd >= 0,
 			 "enable GUP test device and userfaultfd\n");
@@ -138,20 +126,20 @@ static int run_test(void)
 
 	reserve = mmap(NULL, RESERVE_SIZE, PROT_READ | PROT_WRITE,
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	source = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	source = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reserve == MAP_FAILED || source == MAP_FAILED)
 		ksft_exit_fail_msg("mmap failed: %s\n", strerror(errno));
 	target = (void *)align_up((uintptr_t)reserve, NATIVE_PAGE_SIZE);
-	ksft_test_result(target + NATIVE_PAGE_SIZE + USER_PAGE_SIZE <=
+	ksft_test_result(target + NATIVE_PAGE_SIZE + PROCESS_PAGE_SIZE <=
 			 reserve + RESERVE_SIZE,
 			 "reserve the correct and native-shift retry targets\n");
 
-	memset(source, 0x22, USER_PAGE_SIZE);
-	ksft_test_result(register_missing(uffd, target + USER_PAGE_SIZE),
+	memset(source, 0x22, PROCESS_PAGE_SIZE);
+	ksft_test_result(register_missing(uffd, target + PROCESS_PAGE_SIZE),
 			 "register the second 4K page as missing\n");
-	memset(target, 0x11, USER_PAGE_SIZE);
-	memset(target + NATIVE_PAGE_SIZE, 0x33, USER_PAGE_SIZE);
+	memset(target, 0x11, PROCESS_PAGE_SIZE);
+	memset(target + NATIVE_PAGE_SIZE, 0x33, PROCESS_PAGE_SIZE);
 
 	args.fd = device_fd;
 	args.request.address = (uintptr_t)target;
@@ -160,12 +148,12 @@ static int run_test(void)
 	if (!started)
 		ksft_exit_fail_msg("pthread_create failed\n");
 
-	faulted = wait_for_fault(uffd, target + USER_PAGE_SIZE);
+	faulted = wait_for_fault(uffd, target + PROCESS_PAGE_SIZE);
 	ksft_test_result(faulted, "observe GUP retry on the second 4K page\n");
 	if (!faulted)
 		ksft_exit_fail_msg("did not observe the expected fault\n");
 
-	resolved = resolve_fault(uffd, target + USER_PAGE_SIZE, source);
+	resolved = resolve_fault(uffd, target + PROCESS_PAGE_SIZE, source);
 	ksft_test_result(resolved, "resolve the second 4K page fault\n");
 	if (!resolved)
 		ksft_exit_fail_msg("UFFDIO_COPY failed: %s\n", strerror(errno));
@@ -185,32 +173,11 @@ static int run_test(void)
 	ksft_test_result(joined && args.request.second_matches_expected,
 			 "GUP retry resumes at the missing 4K page\n");
 
-	munmap(source, USER_PAGE_SIZE);
+	munmap(source, PROCESS_PAGE_SIZE);
 	munmap(reserve, RESERVE_SIZE);
 	close(uffd);
 	close(device_fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "gup_retry_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

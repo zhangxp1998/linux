@@ -60,11 +60,7 @@ static struct page_table_check *get_page_table_check(struct page_ext *page_ext)
 
 static unsigned int page_table_check_pte_slice(pte_t pte)
 {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	return (pte_val(pte) >> PAGE_SHIFT_COMPAT) & PPPS_SLICE_MASK;
-#else
-	return 0;
-#endif
+	return pte_page_offset(pte) >> PAGE_SHIFT_COMPAT;
 }
 
 /*

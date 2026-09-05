@@ -75,11 +75,6 @@ struct uio_port {
 
 #define MAX_UIO_PORT_REGIONS	5
 
-struct uio_vma_data {
-	struct uio_device	*idev;
-	unsigned int		index;
-};
-
 struct uio_device {
 	struct module           *owner;
 	struct device		dev;
@@ -91,11 +86,7 @@ struct uio_device {
 	struct mutex		info_lock;
 	struct kobject          *map_dir;
 	struct kobject          *portio_dir;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	ANDROID_KABI_USE(1, struct uio_vma_data *vma_data);
-#else
 	ANDROID_KABI_RESERVE(1);
-#endif
 };
 
 /**

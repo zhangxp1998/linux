@@ -1,35 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * vhost dirty logging for a 4K compat process: a consumed descriptor sets the
+ * dirty bit in a 4K log page mapped at a 4K offset inside a native page, and
+ * the adjacent file data of the log stays untouched.
+ */
 #define _GNU_SOURCE
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/vhost.h>
 #include <linux/virtio_config.h>
 #include <linux/virtio_ring.h>
 #include <poll.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
-#include <sys/types.h>
-#include <unistd.h>
 
+#include "kselftest_ppps.h"
 #include "../../../../drivers/vhost/test.h"
 
 #ifndef VHOST_F_LOG_ALL
 #define VHOST_F_LOG_ALL 26
 #endif
 
-#define KSFT_PASS 0
-#define KSFT_FAIL 1
-#define KSFT_SKIP 4
-
-#define PROCESS_PAGE_SIZE 4096UL
-#define NATIVE_PAGE_SIZE 16384UL
 #define VRING_NUM 8
 #define DATA_SIZE (4 * PROCESS_PAGE_SIZE)
 #define BUFFER_OFFSET (2 * PROCESS_PAGE_SIZE)
@@ -92,7 +84,7 @@ err:
 	return MAP_FAILED;
 }
 
-int main(void)
+static int run_test(void)
 {
 	struct vhost_memory *mem = NULL;
 	struct vhost_vring_state state = { .index = 0 };
@@ -116,11 +108,6 @@ int main(void)
 	int ret = KSFT_FAIL;
 
 	printf("TAP version 13\n");
-
-	if (sysconf(_SC_PAGESIZE) != PROCESS_PAGE_SIZE) {
-		printf("1..0 # SKIP test requires a 4K process\n");
-		return KSFT_SKIP;
-	}
 
 	control = open("/dev/vhost-test", O_RDWR | O_CLOEXEC);
 	if (control < 0) {
@@ -232,3 +219,5 @@ out:
 		close(log_fd);
 	return ret;
 }
+
+PPPS_COMPAT_MAIN(run_test)

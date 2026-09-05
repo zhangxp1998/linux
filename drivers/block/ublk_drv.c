@@ -797,19 +797,19 @@ ublk_queue_cmd_buf(struct ublk_device *ub, int q_id)
 	return ublk_get_queue(ub, q_id)->io_cmd_buf;
 }
 
-static inline int __ublk_queue_cmd_buf_size(int depth)
+static inline int __ublk_queue_cmd_buf_size(int depth, size_t page_size)
 {
-	return round_up(depth * sizeof(struct ublksrv_io_desc), __PAGE_SIZE);
+	return round_up(depth * sizeof(struct ublksrv_io_desc), page_size);
 }
 
 static inline int ublk_queue_cmd_buf_size(struct ublk_device *ub)
 {
-	return __ublk_queue_cmd_buf_size(ub->dev_info.queue_depth);
+	return __ublk_queue_cmd_buf_size(ub->dev_info.queue_depth, PAGE_SIZE);
 }
 
 static int ublk_max_cmd_buf_size(void)
 {
-	return __ublk_queue_cmd_buf_size(UBLK_MAX_QUEUE_DEPTH);
+	return __ublk_queue_cmd_buf_size(UBLK_MAX_QUEUE_DEPTH, PAGE_SIZE);
 }
 
 /*
@@ -1844,10 +1844,8 @@ static int ublk_ch_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct ublk_device *ub = filp->private_data;
 	size_t sz = vma->vm_end - vma->vm_start;
-	size_t page_size = ppps_mm_is_compat(vma->vm_mm) ?
-			   MM_PAGE_SIZE(vma->vm_mm) : PAGE_SIZE;
-	size_t mmap_sz = round_up(ub->dev_info.queue_depth *
-				  sizeof(struct ublksrv_io_desc), page_size);
+	size_t mmap_sz = __ublk_queue_cmd_buf_size(ub->dev_info.queue_depth,
+						   MM_PAGE_SIZE(vma->vm_mm));
 	unsigned max_sz = ublk_max_cmd_buf_size();
 	unsigned long pfn;
 	loff_t end, phys_off = vma_file_offset(vma);

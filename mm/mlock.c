@@ -311,28 +311,14 @@ static inline unsigned int folio_mlock_step(struct folio *folio,
 		struct vm_area_struct *vma, pte_t *pte, unsigned long addr,
 		unsigned long end)
 {
-	unsigned int page_shift = MM_PAGE_SHIFT(vma->vm_mm);
-	unsigned int count = (end - addr) >> page_shift;
+	unsigned int count = (end - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
 	pte_t ptent = ptep_get(pte);
-	unsigned int step;
 
 	if (!folio_test_large(folio))
 		return 1;
 
-	if (ppps_mm_is_compat(vma->vm_mm)) {
-		count = min_t(unsigned int, count,
-			      folio_size(folio) >> page_shift);
-		for (step = 1; step < count; step++) {
-			ptent = ptep_get(pte + step);
-			if (!pte_present(ptent) ||
-			    vm_normal_folio(vma, addr + (step << page_shift),
-					    ptent) != folio)
-				break;
-		}
-		return step;
-	}
-
-	return folio_pte_batch(folio, pte, ptent, count);
+	count = min_t(unsigned int, count, folio_nr_ptes(folio, vma));
+	return vma_folio_pte_batch(vma, folio, addr, pte, &ptent, count, 0);
 }
 
 static inline bool allow_mlock_munlock(struct folio *folio,
@@ -360,7 +346,7 @@ static inline bool allow_mlock_munlock(struct folio *folio,
 		return false;
 
 	/* folio is not fully mapped, skip mlock */
-	if (step != folio_size(folio) >> MM_PAGE_SHIFT(vma->vm_mm))
+	if (step != folio_nr_ptes(folio, vma))
 		return false;
 
 	return true;
@@ -542,15 +528,8 @@ static int apply_vma_lock_flags(unsigned long start, size_t len,
 	struct vm_area_struct *vma, *prev;
 	VMA_ITERATOR(vmi, current->mm, start);
 
-	unsigned long align_shift = MM_UAPI_PAGE_SHIFT(current->mm);
-	unsigned long page_size = 1UL << align_shift;
-
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	VM_BUG_ON(start & (page_size - 1));
-#else
-	VM_BUG_ON(__offset_in_page_log(start));
-#endif
-	VM_BUG_ON(len != ALIGN(len, page_size));
+	VM_BUG_ON(mm_uapi_offset_in_page_log(current->mm, start));
+	VM_BUG_ON(len != MM_UAPI_PAGE_ALIGN(current->mm, len));
 	end = start + len;
 	if (end < start)
 		return -EINVAL;
@@ -646,17 +625,13 @@ static __must_check int do_mlock(unsigned long start, size_t len, vm_flags_t fla
 	unsigned long lock_limit;
 	int error = -ENOMEM;
 
-	unsigned long page_shift = MM_UAPI_PAGE_SHIFT(current->mm);
-	unsigned long page_size = 1UL << page_shift;
-	unsigned long page_mask = ~(page_size - 1);
-
 	start = untagged_addr(start);
 
 	if (!can_do_mlock())
 		return -EPERM;
 
-	len = ALIGN(len + (start & (page_size - 1)), page_size);
-	start &= page_mask;
+	len = MM_UAPI_PAGE_ALIGN(current->mm, len + mm_uapi_offset_in_page(current->mm, start));
+	start &= MM_UAPI_PAGE_MASK(current->mm);
 
 	lock_limit = rlimit(RLIMIT_MEMLOCK);
 	lock_limit >>= MM_PAGE_SHIFT(current->mm);
@@ -713,14 +688,10 @@ SYSCALL_DEFINE2(munlock, unsigned long, start, size_t, len)
 {
 	int ret;
 
-	unsigned long page_shift = MM_UAPI_PAGE_SHIFT(current->mm);
-	unsigned long page_size = 1UL << page_shift;
-	unsigned long page_mask = ~(page_size - 1);
-
 	start = untagged_addr(start);
 
-	len = ALIGN(len + (start & (page_size - 1)), page_size);
-	start &= page_mask;
+	len = MM_UAPI_PAGE_ALIGN(current->mm, len + mm_uapi_offset_in_page(current->mm, start));
+	start &= MM_UAPI_PAGE_MASK(current->mm);
 
 	if (mmap_write_lock_killable(current->mm))
 		return -EINTR;

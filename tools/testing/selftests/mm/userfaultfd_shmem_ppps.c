@@ -1,33 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * userfaultfd on a shmem mapping of a 4K compat process: missing faults and
+ * UFFDIO_COPY work per 4K slice (also for slices of a folio that already
+ * exists), concurrent slice copies into one native folio retry insertion
+ * races, and untouched sibling slices of a UFFD-allocated folio read as zero.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/memfd.h>
 #include <linux/userfaultfd.h>
 #include <poll.h>
 #include <pthread.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define SLICES_PER_NATIVE_PAGE	4UL
 #define RACE_ITERATIONS		128UL
-#define NATIVE_PAGE_SIZE	(SLICES_PER_NATIVE_PAGE * USER_PAGE_SIZE)
-#define MAPPING_SIZE		((2 + RACE_ITERATIONS) * NATIVE_PAGE_SIZE)
+#define MAPPING_SIZE		((3 + RACE_ITERATIONS) * NATIVE_PAGE_SIZE)
 
 struct read_args {
 	unsigned char *address;
@@ -63,7 +54,7 @@ static bool wait_for_fault(int uffd, void *address)
 	if (read(uffd, &message, sizeof(message)) != sizeof(message))
 		return false;
 	return message.event == UFFD_EVENT_PAGEFAULT &&
-	       (message.arg.pagefault.address & ~(USER_PAGE_SIZE - 1)) ==
+	       (message.arg.pagefault.address & ~(PROCESS_PAGE_SIZE - 1)) ==
 	       (unsigned long)address;
 }
 
@@ -72,7 +63,7 @@ static bool copy_page(int uffd, void *destination, const void *source)
 	struct uffdio_copy copy = {
 		.src = (unsigned long)source,
 		.dst = (unsigned long)destination,
-		.len = USER_PAGE_SIZE,
+		.len = PROCESS_PAGE_SIZE,
 	};
 
 	if (!ioctl(uffd, UFFDIO_COPY, &copy))
@@ -97,21 +88,19 @@ static bool race_folio_insertion(int uffd, unsigned char *mapping,
 	for (unsigned long iteration = 0; iteration < RACE_ITERATIONS;
 	     iteration++) {
 		unsigned long offset = (2 + iteration) * NATIVE_PAGE_SIZE;
-		struct copy_args args[SLICES_PER_NATIVE_PAGE];
-		pthread_t threads[SLICES_PER_NATIVE_PAGE];
+		struct copy_args args[PPPS_SLICES];
+		pthread_t threads[PPPS_SLICES];
 		pthread_barrier_t barrier;
 		bool success = true;
 
-		if (pthread_barrier_init(&barrier, NULL,
-					 SLICES_PER_NATIVE_PAGE + 1))
+		if (pthread_barrier_init(&barrier, NULL, PPPS_SLICES + 1))
 			return false;
-		for (unsigned long slice = 0; slice < SLICES_PER_NATIVE_PAGE;
-		     slice++) {
+		for (unsigned long slice = 0; slice < PPPS_SLICES; slice++) {
 			args[slice].uffd = uffd;
 			args[slice].destination = mapping + offset +
-				slice * USER_PAGE_SIZE;
+				slice * PROCESS_PAGE_SIZE;
 			args[slice].source = source + offset +
-				slice * USER_PAGE_SIZE;
+				slice * PROCESS_PAGE_SIZE;
 			args[slice].barrier = &barrier;
 			args[slice].result = false;
 			if (pthread_create(&threads[slice], NULL,
@@ -119,12 +108,11 @@ static bool race_folio_insertion(int uffd, unsigned char *mapping,
 				ksft_exit_fail_msg("copy thread creation failed\n");
 		}
 		pthread_barrier_wait(&barrier);
-		for (unsigned long slice = 0; slice < SLICES_PER_NATIVE_PAGE;
-		     slice++) {
+		for (unsigned long slice = 0; slice < PPPS_SLICES; slice++) {
 			if (pthread_join(threads[slice], NULL) ||
 			    !args[slice].result ||
-			    mapping[offset + slice * USER_PAGE_SIZE] !=
-			    source[offset + slice * USER_PAGE_SIZE])
+			    mapping[offset + slice * PROCESS_PAGE_SIZE] !=
+			    source[offset + slice * PROCESS_PAGE_SIZE])
 				success = false;
 		}
 		pthread_barrier_destroy(&barrier);
@@ -165,9 +153,7 @@ static int run_test(void)
 	int uffd;
 
 	ksft_print_header();
-	ksft_set_plan(13);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(16);
 
 	uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
 	if (uffd < 0) {
@@ -190,7 +176,7 @@ static int run_test(void)
 		ksft_exit_fail_msg("shmem alias mmap failed: %s\n",
 				   strerror(errno));
 	/* Populate the second native folio without creating a UFFD slice mask. */
-	alias[SLICES_PER_NATIVE_PAGE * USER_PAGE_SIZE] = 0x55;
+	alias[PPPS_SLICES * PROCESS_PAGE_SIZE] = 0x55;
 	mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
 		       memfd, 0);
 	if (mapping == MAP_FAILED)
@@ -199,8 +185,8 @@ static int run_test(void)
 		      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (source == MAP_FAILED)
 		ksft_exit_fail_msg("source mmap failed: %s\n", strerror(errno));
-	for (unsigned long i = 0; i < MAPPING_SIZE / USER_PAGE_SIZE; i++)
-		memset(source + i * USER_PAGE_SIZE, 0x41 + i, USER_PAGE_SIZE);
+	for (unsigned long i = 0; i < MAPPING_SIZE / PROCESS_PAGE_SIZE; i++)
+		memset(source + i * PROCESS_PAGE_SIZE, 0x41 + i, PROCESS_PAGE_SIZE);
 
 	registration.range.start = (unsigned long)mapping;
 	registration.range.len = MAPPING_SIZE;
@@ -213,14 +199,14 @@ static int run_test(void)
 	first_copy = copy_page(uffd, mapping, source);
 	ksft_test_result(first_copy, "copy into the first 4K shmem slice\n");
 
-	tracked_read.address = mapping + USER_PAGE_SIZE;
+	tracked_read.address = mapping + PROCESS_PAGE_SIZE;
 	if (pthread_create(&tracked_thread, NULL, read_page, &tracked_read))
 		ksft_exit_fail_msg("tracked reader creation failed\n");
-	tracked_fault = wait_for_fault(uffd, mapping + USER_PAGE_SIZE);
+	tracked_fault = wait_for_fault(uffd, mapping + PROCESS_PAGE_SIZE);
 	ksft_test_result(tracked_fault,
 			 "unpopulated tracked sibling raises UFFD missing\n");
-	second_copy = copy_page(uffd, mapping + USER_PAGE_SIZE,
-				source + USER_PAGE_SIZE);
+	second_copy = copy_page(uffd, mapping + PROCESS_PAGE_SIZE,
+				source + PROCESS_PAGE_SIZE);
 	ksft_test_result(second_copy,
 			 "resolve the tracked sibling with UFFDIO_COPY\n");
 	tracked_joined = !pthread_join(tracked_thread, NULL);
@@ -228,11 +214,11 @@ static int run_test(void)
 			 mapping[0] == 0x41,
 			 "both copied shmem slices retain their contents\n");
 
-	untracked_read.address = mapping + (SLICES_PER_NATIVE_PAGE + 1) * USER_PAGE_SIZE;
+	untracked_read.address = mapping + (PPPS_SLICES + 1) * PROCESS_PAGE_SIZE;
 	rejected = (struct uffdio_copy) {
 		.src = (unsigned long)source,
 		.dst = (unsigned long)untracked_read.address,
-		.len = USER_PAGE_SIZE,
+		.len = PROCESS_PAGE_SIZE,
 	};
 	errno = 0;
 	untracked_copy = ioctl(uffd, UFFDIO_COPY, &rejected) == -1 &&
@@ -241,25 +227,61 @@ static int run_test(void)
 			 "COPY rejects an ordinary populated cache folio\n");
 	if (pthread_create(&untracked_thread, NULL, read_page, &untracked_read))
 		ksft_exit_fail_msg("untracked reader creation failed\n");
-	untracked_fault = wait_for_fault(uffd, (void *)untracked_read.address);
+	untracked_fault = wait_for_fault(uffd, untracked_read.address);
 	ksft_test_result(!untracked_fault,
 			 "populated folio without a slice mask is not missing\n");
 	if (untracked_fault)
-		copy_page(uffd, (void *)untracked_read.address, source);
+		copy_page(uffd, untracked_read.address, source);
 	untracked_joined = !pthread_join(untracked_thread, NULL);
 	ksft_test_result(untracked_joined && untracked_read.value == 0 &&
-			 alias[SLICES_PER_NATIVE_PAGE * USER_PAGE_SIZE] == 0x55,
+			 alias[PPPS_SLICES * PROCESS_PAGE_SIZE] == 0x55,
 			 "rejected COPY leaves existing shared contents unchanged\n");
 
 	ksft_test_result(race_folio_insertion(uffd, mapping, source),
 			 "concurrent slice copies retry shmem folio insertion races\n");
 
+	/* A populated destination PTE can exist while its slice mask is empty. */
+	{
+		unsigned long off = (2 + RACE_ITERATIONS) * NATIVE_PAGE_SIZE;
+		struct uffdio_register alias_reg = {
+			.range = { (unsigned long)alias + off + PROCESS_PAGE_SIZE,
+				   PROCESS_PAGE_SIZE },
+			.mode = UFFDIO_REGISTER_MODE_MISSING,
+		};
+		unsigned char resident = 1;
+		bool ok = copy_page(uffd, mapping + off, source);
+
+		alias[off + PROCESS_PAGE_SIZE] = 0x9d;
+		ok = ok && !ioctl(uffd, UFFDIO_REGISTER, &alias_reg);
+		ksft_test_result(ok, "prepare present PTE in an unfilled tracked slice\n");
+		rejected = (struct uffdio_copy) {
+			.src = (unsigned long)source,
+			.dst = (unsigned long)alias + off + PROCESS_PAGE_SIZE,
+			.len = PROCESS_PAGE_SIZE,
+		};
+		errno = 0;
+		ok = ok && ioctl(uffd, UFFDIO_COPY, &rejected) == -1 &&
+			errno == EEXIST && rejected.copy == -EEXIST;
+		ksft_test_result(ok && alias[off + PROCESS_PAGE_SIZE] == 0x9d,
+				 "failed PTE installation does not alter shared data\n");
+		ioctl(uffd, UFFDIO_UNREGISTER, &alias_reg.range);
+
+		ok = !madvise(source + off, PROCESS_PAGE_SIZE, MADV_DONTNEED) &&
+			!mincore(source + off, PROCESS_PAGE_SIZE, &resident) &&
+			!(resident & 1);
+		ksft_test_result(ok, "COPY source is verified nonresident\n");
+		ok = ok && copy_page(uffd, mapping + off + 2 * PROCESS_PAGE_SIZE,
+				      source + off);
+		ksft_test_result(ok && mapping[off + 2 * PROCESS_PAGE_SIZE] == 0,
+				 "existing-folio COPY retries a faulting source\n");
+	}
+
 	unregister_range.start = (unsigned long)mapping;
 	unregister_range.len = MAPPING_SIZE;
 	ksft_test_result(!ioctl(uffd, UFFDIO_UNREGISTER, &unregister_range),
 			 "unregister the shmem range\n");
-	untouched_zero = mapping[2 * USER_PAGE_SIZE] == 0 &&
-		mapping[3 * USER_PAGE_SIZE] == 0;
+	untouched_zero = mapping[2 * PROCESS_PAGE_SIZE] == 0 &&
+		mapping[3 * PROCESS_PAGE_SIZE] == 0;
 	ksft_test_result(untouched_zero,
 			 "untouched siblings of a UFFD-allocated folio are zero\n");
 
@@ -271,25 +293,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "userfaultfd_shmem_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

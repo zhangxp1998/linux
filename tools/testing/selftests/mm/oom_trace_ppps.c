@@ -1,29 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * The oom:mark_victim trace record for a forced-OOM 4K compat victim reports
+ * total-vm, file RSS and shmem RSS in process-page bytes matching its
+ * /proc status, and anonymous RSS in native physical bytes.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define CHILD_MAP_SIZE (32UL * 1024 * 1024)
 #define TRACE_ENABLE "/sys/kernel/tracing/events/oom/mark_victim/enable"
 #define TRACE_FILE "/sys/kernel/tracing/trace"
+#define TRACING_ON "/sys/kernel/tracing/tracing_on"
 
 struct victim_stats {
 	long total_vm;
@@ -58,58 +50,6 @@ static int clear_trace(void)
 		return -1;
 	close(fd);
 	return 0;
-}
-
-static long read_status_kb(pid_t pid, const char *name)
-{
-	char path[64];
-	char line[256];
-	FILE *file;
-	long value = -1;
-
-	snprintf(path, sizeof(path), "/proc/%d/status", pid);
-	file = fopen(path, "re");
-	if (!file)
-		return -1;
-	while (fgets(line, sizeof(line), file)) {
-		if (!strncmp(line, name, strlen(name)) &&
-		    sscanf(line, "%*[^:]: %ld kB", &value) == 1)
-			break;
-		value = -1;
-	}
-	fclose(file);
-	return value;
-}
-
-static unsigned long mapping_kernel_page_size(pid_t pid, uintptr_t address)
-{
-	char path[64];
-	char *line = NULL;
-	size_t line_size = 0;
-	unsigned long page_size = 0;
-	bool in_mapping = false;
-	FILE *file;
-
-	snprintf(path, sizeof(path), "/proc/%d/smaps", pid);
-	file = fopen(path, "re");
-	if (!file)
-		return 0;
-	while (getline(&line, &line_size, file) >= 0) {
-		unsigned long start, end, size_kb;
-
-		if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
-			in_mapping = address >= start && address < end;
-			continue;
-		}
-		if (in_mapping &&
-		    sscanf(line, "KernelPageSize: %lu kB", &size_kb) == 1) {
-			page_size = size_kb * 1024;
-			break;
-		}
-	}
-	free(line);
-	fclose(file);
-	return page_size;
 }
 
 static char *read_trace(void)
@@ -192,7 +132,7 @@ static void run_victim(int ready_fd)
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (mapping == MAP_FAILED)
 		_exit(3);
-	for (offset = 0; offset < CHILD_MAP_SIZE; offset += USER_PAGE_SIZE)
+	for (offset = 0; offset < CHILD_MAP_SIZE; offset += PROCESS_PAGE_SIZE)
 		mapping[offset] = (unsigned char)offset;
 	ready.mapping = (uintptr_t)mapping;
 	if (write(ready_fd, &ready, sizeof(ready)) != sizeof(ready))
@@ -215,10 +155,11 @@ static int run_test(void)
 {
 	struct victim_ready ready = { 0 };
 	struct victim_stats trace_stats = { 0 };
-	long expected_anon_physical;
 	long expected_anon, expected_file, expected_shmem, expected_total;
 	unsigned long kernel_page_size;
 	char *trace = NULL;
+	char saved_tracing_on[2] = { 0 };
+	int trace_fd;
 	bool anon_matches;
 	bool child_ready;
 	bool trace_ready;
@@ -226,18 +167,25 @@ static int run_test(void)
 	bool shared_matches;
 	int pipefd[2];
 	int status = 0;
+	int attempts;
+	bool victim_killed = false;
 	pid_t child;
 
 	ksft_print_header();
-	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(7);
 
+	trace_fd = open(TRACING_ON, O_RDONLY | O_CLOEXEC);
+	if (trace_fd < 0 || read(trace_fd, saved_tracing_on, 1) != 1)
+		ksft_exit_fail_msg("cannot read tracing state: %s\n", strerror(errno));
+	close(trace_fd);
 	trace_ready = !write_text("/proc/self/oom_score_adj", "-1000") &&
+		!write_text(TRACING_ON, "1") &&
 		!write_text(TRACE_ENABLE, "1") && !clear_trace();
 	ksft_test_result(trace_ready, "enable OOM victim tracing\n");
-	if (!trace_ready)
+	if (!trace_ready) {
+		write_text(TRACING_ON, saved_tracing_on);
 		ksft_exit_fail_msg("trace setup failed: %s\n", strerror(errno));
+	}
 	if (pipe(pipefd))
 		ksft_exit_fail_msg("pipe failed: %s\n", strerror(errno));
 
@@ -251,29 +199,46 @@ static int run_test(void)
 	close(pipefd[1]);
 	child_ready = read(pipefd[0], &ready, sizeof(ready)) == sizeof(ready);
 	close(pipefd[0]);
-	kernel_page_size = mapping_kernel_page_size(child, ready.mapping);
-	expected_total = read_status_kb(child, "VmSize");
-	expected_anon = read_status_kb(child, "RssAnon");
-	expected_file = read_status_kb(child, "RssFile");
-	expected_shmem = read_status_kb(child, "RssShmem");
-	child_ready = child_ready && kernel_page_size >= USER_PAGE_SIZE &&
-		!(kernel_page_size % USER_PAGE_SIZE) && expected_total > 0 &&
+	if (!ppps_smaps_sum(child, ready.mapping, 1, "KernelPageSize",
+			    &kernel_page_size))
+		kernel_page_size = 0;
+	expected_total = ppps_status_kb(child, "VmSize");
+	expected_anon = ppps_status_kb(child, "RssAnon");
+	expected_file = ppps_status_kb(child, "RssFile");
+	expected_shmem = ppps_status_kb(child, "RssShmem");
+	child_ready = child_ready && kernel_page_size >= PROCESS_PAGE_SIZE &&
+		!(kernel_page_size % PROCESS_PAGE_SIZE) && expected_total > 0 &&
 		expected_anon > 0 && expected_file >= 0 && expected_shmem >= 0;
 	ksft_test_result(child_ready, "prepare a stable OOM victim\n");
 
 	errno = 0;
 	if (write_text("/proc/sysrq-trigger", "f"))
 		kill(child, SIGKILL);
-	waitpid(child, &status, 0);
-	ksft_test_result(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL,
+	/* A busy VM can select a different victim; never hang waiting for ours. */
+	for (attempts = 0; attempts < 50; attempts++) {
+		pid_t reaped = waitpid(child, &status, WNOHANG);
+
+		if (reaped == child) {
+			victim_killed = WIFSIGNALED(status) &&
+				WTERMSIG(status) == SIGKILL;
+			break;
+		}
+		if (reaped < 0 && errno != EINTR)
+			break;
+		usleep(100000);
+	}
+	if (!victim_killed) {
+		kill(child, SIGKILL);
+		waitpid(child, &status, 0);
+	}
+	ksft_test_result(victim_killed,
 			 "force OOM to kill the selected child\n");
 
 	trace = read_trace();
 	if (trace)
 		found = find_victim_stats(trace, child, &trace_stats);
 	ksft_test_result(found, "capture the OOM mark_victim record\n");
-	expected_anon_physical = expected_anon * kernel_page_size /
-		USER_PAGE_SIZE;
+	/* /proc status and trace both already report anonymous bytes in KB. */
 	ksft_print_msg("native_page=%lu; status total=%ld anon=%ld file=%ld shmem=%ld kB; "
 		       "trace total=%ld anon=%ld file=%ld shmem=%ld kB\n",
 		       kernel_page_size, expected_total, expected_anon,
@@ -286,36 +251,20 @@ static int run_test(void)
 		within_tolerance(trace_stats.shmem_rss, expected_shmem);
 	ksft_test_result(found && shared_matches,
 			 "report file and shmem RSS in process-page bytes\n");
-	anon_matches = within_tolerance(trace_stats.anon_rss,
-					expected_anon_physical);
+	anon_matches = within_tolerance(trace_stats.anon_rss, expected_anon);
 	ksft_test_result(found && anon_matches,
 			 "report anonymous RSS in native physical bytes\n");
 
 	free(trace);
 	write_text(TRACE_ENABLE, "0");
+	write_text(TRACING_ON, saved_tracing_on);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n", strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n", strerror(errno));
-	execl("/proc/self/exe", "oom_trace_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
+/* The environment gate precedes the compat re-exec, as it always did. */
 int main(int argc, char **argv)
 {
-	(void)argv;
 	if (!getenv("PPPS_OOM_TRACE_TEST_FORCE"))
 		ksft_exit_skip("forced OOM test requires an isolated VM\n");
-	if (sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE)
-		return run_test();
-	if (argc == 1)
-		return exec_compat();
-	ksft_exit_skip("4K compatibility process is unavailable\n");
+	return ppps_compat_main(argc, argv, run_test);
 }

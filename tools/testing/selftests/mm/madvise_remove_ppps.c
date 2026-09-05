@@ -1,21 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * MADV_REMOVE through a 4K compat process's shared memfd mapping punches
+ * exactly the mapped 4K file range, honouring a 4K slice offset and a range
+ * that crosses a native page.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <linux/memfd.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#define USER_PAGE_SIZE	4096UL
 #define FILE_PAGES	8
-#define FILE_SIZE	(FILE_PAGES * USER_PAGE_SIZE)
+#define FILE_SIZE	(FILE_PAGES * PROCESS_PAGE_SIZE)
 
 static unsigned char page_pattern(unsigned int page)
 {
@@ -24,14 +21,14 @@ static unsigned char page_pattern(unsigned int page)
 
 static bool initialize_file(int fd)
 {
-	unsigned char page[USER_PAGE_SIZE];
+	unsigned char page[PROCESS_PAGE_SIZE];
 	unsigned int i;
 
 	for (i = 0; i < FILE_PAGES; i++) {
 		ssize_t written;
 
 		memset(page, page_pattern(i), sizeof(page));
-		written = pwrite(fd, page, sizeof(page), i * USER_PAGE_SIZE);
+		written = pwrite(fd, page, sizeof(page), i * PROCESS_PAGE_SIZE);
 		if (written != (ssize_t)sizeof(page)) {
 			ksft_print_msg("pwrite page %u returned %zd: %s\n", i,
 				       written, strerror(errno));
@@ -60,7 +57,7 @@ static bool file_matches_removed_range(int fd, size_t removed_offset,
 		if (i >= removed_offset && i < removed_offset + removed_length)
 			expected = 0;
 		else
-			expected = page_pattern(i / USER_PAGE_SIZE);
+			expected = page_pattern(i / PROCESS_PAGE_SIZE);
 		if (contents[i] != expected) {
 			ksft_print_msg("file mismatch at offset %#zx: got %#x, expected %#x\n",
 				       i, contents[i], expected);
@@ -107,21 +104,18 @@ out:
 	return passed;
 }
 
-int main(void)
+static int run_test(void)
 {
-	long page_size;
-
 	ksft_print_header();
-	page_size = sysconf(_SC_PAGESIZE);
-	if (page_size != USER_PAGE_SIZE)
-		ksft_exit_skip("requires a 4K userspace page size\n");
 	ksft_set_plan(2);
 
-	ksft_test_result(test_remove_range(USER_PAGE_SIZE, USER_PAGE_SIZE),
+	ksft_test_result(test_remove_range(PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE),
 			 "MADV_REMOVE honors a file mapping's 4K slice offset\n");
-	ksft_test_result(test_remove_range(3 * USER_PAGE_SIZE,
-					   2 * USER_PAGE_SIZE),
+	ksft_test_result(test_remove_range(3 * PROCESS_PAGE_SIZE,
+					   2 * PROCESS_PAGE_SIZE),
 			 "MADV_REMOVE handles a range crossing a native page\n");
 
 	ksft_finished();
 }
+
+PPPS_COMPAT_MAIN(run_test)

@@ -1,28 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process maps the one-page SELinux status ABI without
+ * populating the adjacent 4K slices of its native page, cannot map past
+ * the status page, and faults when reading a policy mapping beyond EOF.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define NATIVE_16K_SIZE	(4 * USER_PAGE_SIZE)
 #define POLICY_PATH	"/sys/fs/selinux/policy"
 #define STATUS_PATH	"/sys/fs/selinux/status"
 
@@ -68,17 +58,12 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(12);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(11);
 
-	fd = open(STATUS_PATH, O_RDONLY | O_CLOEXEC);
+	fd = ppps_open_fixture_or_skip(STATUS_PATH, O_RDONLY);
 	ksft_test_result(fd >= 0, "open the SELinux status file\n");
-	if (fd < 0)
-		ksft_exit_fail_msg("open %s failed: %s\n", STATUS_PATH,
-				   strerror(errno));
 
-	reservation = mmap(NULL, NATIVE_16K_SIZE, PROT_NONE,
+	reservation = mmap(NULL, NATIVE_PAGE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	ksft_test_result(reservation != MAP_FAILED,
 			 "reserve one native 16K range as PROT_NONE\n");
@@ -86,7 +71,7 @@ static int run_test(void)
 		ksft_exit_fail_msg("guard reservation failed: %s\n",
 				   strerror(errno));
 
-	mapping = mmap(reservation, USER_PAGE_SIZE, PROT_READ,
+	mapping = mmap(reservation, PROCESS_PAGE_SIZE, PROT_READ,
 		       MAP_SHARED | MAP_FIXED, fd, 0);
 	ksft_test_result(mapping == reservation,
 			 "map the 4K SELinux status ABI page\n");
@@ -105,8 +90,8 @@ static int run_test(void)
 	if (sigaction(SIGSEGV, &action, NULL) ||
 	    sigaction(SIGBUS, &action, NULL))
 		ksft_exit_fail_msg("sigaction failed: %s\n", strerror(errno));
-	for (guard = 1; guard < 4; guard++) {
-		if (read_byte(reservation + guard * USER_PAGE_SIZE, &value)) {
+	for (guard = 1; guard < PPPS_SLICES; guard++) {
+		if (read_byte(reservation + guard * PROCESS_PAGE_SIZE, &value)) {
 			ksft_print_msg("guard %u is readable with value %#x\n",
 				       guard, value);
 			guards_fault = false;
@@ -115,30 +100,30 @@ static int run_test(void)
 	ksft_test_result(guards_fault,
 			 "status mmap does not populate adjacent guard slices\n");
 
-	munmap(reservation, NATIVE_16K_SIZE);
-	offset_mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
-			      USER_PAGE_SIZE);
+	munmap(reservation, NATIVE_PAGE_SIZE);
+	offset_mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
+			      PROCESS_PAGE_SIZE);
 	ksft_test_result(offset_mapping == MAP_FAILED,
 			 "reject a mapping beyond the status page head\n");
 	if (offset_mapping != MAP_FAILED)
-		munmap(offset_mapping, USER_PAGE_SIZE);
+		munmap(offset_mapping, PROCESS_PAGE_SIZE);
 
 	close(fd);
-	fd = open(POLICY_PATH, O_RDONLY | O_CLOEXEC);
-	policy_ready = fd >= 0 && !fstat(fd, &policy_stat) && policy_stat.st_size;
+	fd = ppps_open_fixture_or_skip(POLICY_PATH, O_RDONLY);
+	policy_ready = !fstat(fd, &policy_stat) && policy_stat.st_size;
 	ksft_test_result(policy_ready, "open a non-empty SELinux policy snapshot\n");
 	if (!policy_ready)
 		ksft_exit_fail_msg("open %s failed: %s\n", POLICY_PATH,
 				   strerror(errno));
-	policy_end = (policy_stat.st_size + USER_PAGE_SIZE - 1) &
-		     ~(USER_PAGE_SIZE - 1);
-	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
+	policy_end = (policy_stat.st_size + PROCESS_PAGE_SIZE - 1) &
+		     ~(PROCESS_PAGE_SIZE - 1);
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
 		       policy_end);
 	ksft_test_result(mapping != MAP_FAILED,
 			 "map the first 4K process page beyond policy EOF\n");
 	if (mapping != MAP_FAILED) {
 		policy_tail_faults = !read_byte(mapping, &value);
-		munmap(mapping, USER_PAGE_SIZE);
+		munmap(mapping, PROCESS_PAGE_SIZE);
 	}
 	ksft_test_result(policy_tail_faults,
 			 "fault on access beyond policy EOF (size=%lld offset=%lld)\n",
@@ -147,25 +132,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "selinux_status_mmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

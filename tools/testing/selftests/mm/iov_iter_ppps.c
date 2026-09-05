@@ -1,24 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * The in-kernel iov_iter page extraction helpers, driven by the
+ * iov_iter_ppps fixture on a 4K compat process's buffers, return the exact
+ * 4K slices for a file mapping at a mismatched native offset and for a
+ * packed anonymous tuple, and bulk extraction stops at one process page.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 #include "iov_iter_ppps.h"
 
-#define PROCESS_PAGE_SIZE 4096UL
-#define PPPS_NATIVE_PAGE_SIZE 16384UL
 #define FILE_TEST_LENGTH (2 * PROCESS_PAGE_SIZE)
-#define ANON_TEST_LENGTH PPPS_NATIVE_PAGE_SIZE
+#define ANON_TEST_LENGTH NATIVE_PAGE_SIZE
 
 static const unsigned char expected[] = { 0x31, 0x72, 0x93, 0xb4 };
 
@@ -34,19 +30,19 @@ static void *map_test_file(int *fd_out, void **reservation_out)
 	if (fd < 0)
 		return MAP_FAILED;
 	unlink(path);
-	if (ftruncate(fd, PPPS_NATIVE_PAGE_SIZE))
+	if (ftruncate(fd, NATIVE_PAGE_SIZE))
 		goto err;
 
-	reservation = mmap(NULL, 3 * PPPS_NATIVE_PAGE_SIZE, PROT_NONE,
+	reservation = mmap(NULL, 3 * NATIVE_PAGE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reservation == MAP_FAILED)
 		goto err;
-	aligned = ((uintptr_t)reservation + PPPS_NATIVE_PAGE_SIZE - 1) &
-		  ~(PPPS_NATIVE_PAGE_SIZE - 1);
+	aligned = ((uintptr_t)reservation + NATIVE_PAGE_SIZE - 1) &
+		  ~(NATIVE_PAGE_SIZE - 1);
 	mapping = mmap((void *)(aligned + PROCESS_PAGE_SIZE), FILE_TEST_LENGTH,
 		       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
 	if (mapping == MAP_FAILED) {
-		munmap(reservation, 3 * PPPS_NATIVE_PAGE_SIZE);
+		munmap(reservation, 3 * NATIVE_PAGE_SIZE);
 		goto err;
 	}
 
@@ -64,13 +60,13 @@ static unsigned char *map_test_anon(void **reservation_out)
 	uintptr_t aligned;
 	void *reservation;
 
-	reservation = mmap(NULL, 2 * PPPS_NATIVE_PAGE_SIZE,
+	reservation = mmap(NULL, 2 * NATIVE_PAGE_SIZE,
 			   PROT_READ | PROT_WRITE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reservation == MAP_FAILED)
 		return MAP_FAILED;
-	aligned = ((uintptr_t)reservation + PPPS_NATIVE_PAGE_SIZE - 1) &
-		  ~(PPPS_NATIVE_PAGE_SIZE - 1);
+	aligned = ((uintptr_t)reservation + NATIVE_PAGE_SIZE - 1) &
+		  ~(NATIVE_PAGE_SIZE - 1);
 	*reservation_out = reservation;
 	return (unsigned char *)aligned;
 }
@@ -108,7 +104,7 @@ static void run_iov_checks(int device_fd, unsigned char *mapping,
 			 description, request.bulk_first_len);
 }
 
-int main(void)
+static int run_test(void)
 {
 	void *reservation = MAP_FAILED;
 	void *anon_reservation = MAP_FAILED;
@@ -118,15 +114,11 @@ int main(void)
 	int device_fd;
 
 	ksft_print_header();
-	ksft_set_plan(12);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(11);
 
-	device_fd = open("/dev/" IOV_ITER_PPPS_DEVICE_NAME,
-			 O_RDWR | O_CLOEXEC);
+	device_fd = ppps_open_fixture_or_skip("/dev/" IOV_ITER_PPPS_DEVICE_NAME,
+					     O_RDWR);
 	ksft_test_result(device_fd >= 0, "open the iov_iter test device\n");
-	if (device_fd < 0)
-		ksft_exit_fail_msg("open failed: %s\n", strerror(errno));
 
 	mapping = map_test_file(&backing_fd, &reservation);
 	ksft_test_result(mapping != MAP_FAILED,
@@ -146,9 +138,11 @@ int main(void)
 	run_iov_checks(device_fd, anon_mapping, ANON_TEST_LENGTH,
 		       IOV_ITER_PPPS_F_EXPECT_PACKED, "packed anonymous");
 
-	munmap(reservation, 3 * PPPS_NATIVE_PAGE_SIZE);
-	munmap(anon_reservation, 2 * PPPS_NATIVE_PAGE_SIZE);
+	munmap(reservation, 3 * NATIVE_PAGE_SIZE);
+	munmap(anon_reservation, 2 * NATIVE_PAGE_SIZE);
 	close(backing_fd);
 	close(device_fd);
 	ksft_finished();
 }
+
+PPPS_COMPAT_MAIN(run_test)

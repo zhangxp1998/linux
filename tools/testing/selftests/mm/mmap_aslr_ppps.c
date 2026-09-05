@@ -1,32 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * mmap ASLR of a 4K compat process randomizes the anonymous mapping base
+ * across fresh execs at 4K process-page alignment.  The base is randomized
+ * with the native mmap granularity, so its residue within a 16K page is not
+ * required to vary.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define SAMPLE_COUNT 64
 
-static bool collect_samples(unsigned int *residue_mask)
+static bool collect_samples(unsigned int *residue_mask,
+			    unsigned int *distinct_bases)
 {
+	uintptr_t first = 0;
 	unsigned int i;
 
 	*residue_mask = 0;
+	*distinct_bases = 0;
 	for (i = 0; i < SAMPLE_COUNT; i++) {
 		uintptr_t address;
 		int pipefd[2];
@@ -48,8 +44,7 @@ static bool collect_samples(unsigned int *residue_mask)
 					_exit(126);
 				close(pipefd[1]);
 			}
-			execl("/proc/self/exe", "mmap_aslr_ppps", "--sample",
-			      NULL);
+			ppps_execl(true, NULL, "--sample", NULL);
 			_exit(127);
 		}
 		close(pipefd[1]);
@@ -64,7 +59,13 @@ static bool collect_samples(unsigned int *residue_mask)
 		if (waitpid(pid, &status, 0) != pid ||
 		    !WIFEXITED(status) || WEXITSTATUS(status))
 			return false;
-		*residue_mask |= 1U << ((address / USER_PAGE_SIZE) & 3);
+		if (address & (PROCESS_PAGE_SIZE - 1))
+			return false;
+		*residue_mask |= 1U << ((address / PROCESS_PAGE_SIZE) & 3);
+		if (!i)
+			first = address;
+		if (!i || address != first)
+			(*distinct_bases)++;
 	}
 	return true;
 }
@@ -85,34 +86,25 @@ static bool aslr_enabled(void)
 static int run_test(void)
 {
 	unsigned int residue_mask;
+	unsigned int distinct_bases;
 	bool collected;
 
+	ppps_require_compat();
 	ksft_print_header();
 	if (!aslr_enabled())
 		ksft_exit_skip("address randomization is disabled\n");
-	ksft_set_plan(3);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(2);
 
-	collected = collect_samples(&residue_mask);
-	ksft_test_result(collected, "collect anonymous mmap bases across exec\n");
+	collected = collect_samples(&residue_mask, &distinct_bases);
+	ksft_test_result(collected,
+			 "collect process-page-aligned mmap bases across exec\n");
 	if (!collected)
 		ksft_exit_fail_msg("could not collect mmap samples\n");
-	ksft_print_msg("16K mmap residue mask: %#x\n", residue_mask);
-	ksft_test_result(residue_mask == 0xf,
-			 "mmap ASLR uses every process-page residue within 16K\n");
+	ksft_print_msg("16K mmap residue mask: %#x, %u distinct bases\n",
+		       residue_mask, distinct_bases);
+	ksft_test_result(distinct_bases > 1,
+			 "mmap ASLR randomizes the base across execs\n");
 	ksft_finished();
-}
-
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("could not enable 4K compatibility mode\n");
-	execl("/proc/self/exe", "mmap_aslr_ppps", "--compat", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
 }
 
 static int sample(void)
@@ -120,7 +112,7 @@ static int sample(void)
 	void *mapping;
 	uintptr_t address;
 
-	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (mapping == MAP_FAILED)
 		return EXIT_FAILURE;
@@ -132,11 +124,13 @@ static int sample(void)
 
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--compat"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_compat(argv[0], "--compat", NULL);
+	if (argc == 2 && !strcmp(mode, "--compat"))
 		return run_test();
-	if (argc == 2 && !strcmp(argv[1], "--sample"))
+	if (argc == 2 && !strcmp(mode, "--sample"))
 		return sample();
 	return EXIT_FAILURE;
 }

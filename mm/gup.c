@@ -2208,22 +2208,20 @@ EXPORT_SYMBOL(fault_in_readable);
 struct page *get_dump_page(unsigned long addr, int *locked,
 			   unsigned long *page_offset)
 {
-	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
 	struct page *page;
 	int ret;
 
-	vma = vma_lookup(mm, addr);
-	if (!vma)
-		return NULL;
-	*page_offset = vma_address_to_slice(vma, addr) * MM_PAGE_SIZE(mm);
-
-	ret = __get_user_pages_locked(mm, addr, 1, &page, locked,
+	ret = __get_user_pages_locked(current->mm, addr, 1, &page, locked,
 				      FOLL_FORCE | FOLL_DUMP | FOLL_GET);
-	/* A packed anonymous folio is sliced by address, not by the VMA. */
-	if (ret == 1 && folio_test_ppps_packed_anon(page_folio(page)))
-		*page_offset = offset_in_page(addr) & PAGE_MASK_COMPAT;
+	if (ret == 1) {
+		if (*locked) {
+			struct vm_area_struct *vma = vma_lookup(current->mm, addr);
 
+			*page_offset = vma ? vma_page_slice_offset(vma, page, addr) : 0;
+		} else {
+			*page_offset = mm_user_slice_offset(current->mm, addr);
+		}
+	}
 	return (ret == 1) ? page : NULL;
 }
 #endif /* CONFIG_ELF_CORE */
@@ -2875,9 +2873,8 @@ static void __maybe_unused gup_fast_undo_dev_pagemap(int *nr, int nr_start,
  * pmdp_collapse_flush() in the THP collapse code path).
  */
 static int gup_fast_pte_range(struct mm_struct *mm, pmd_t pmd, pmd_t *pmdp,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		unsigned long *page_offsets, int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	int ret = 0;
 	pte_t *ptep, *ptem;
@@ -2942,8 +2939,6 @@ static int gup_fast_pte_range(struct mm_struct *mm, pmd_t pmd, pmd_t *pmdp,
 		}
 		folio_set_referenced(folio);
 		pages[*nr] = page;
-		if (page_offsets)
-			page_offsets[*nr] = pte_page_offset(pte);
 		(*nr)++;
 	} while (ptep++, addr += MM_PAGE_SIZE(mm), addr != end);
 
@@ -2965,9 +2960,8 @@ pte_unmap:
  * useful to have gup_fast_pmd_leaf even if we can't operate on ptes.
  */
 static int gup_fast_pte_range(struct mm_struct *mm, pmd_t pmd, pmd_t *pmdp,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		unsigned long *page_offsets, int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	return 0;
 }
@@ -2975,7 +2969,7 @@ static int gup_fast_pte_range(struct mm_struct *mm, pmd_t pmd, pmd_t *pmdp,
 
 static int gup_fast_pmd_leaf(pmd_t orig, pmd_t *pmdp, unsigned long addr,
 		unsigned long end, unsigned int flags, struct page **pages,
-		unsigned long *page_offsets, int *nr)
+		int *nr)
 {
 	struct page *page;
 	struct folio *folio;
@@ -3007,9 +3001,6 @@ static int gup_fast_pmd_leaf(pmd_t orig, pmd_t *pmdp, unsigned long addr,
 		gup_put_folio(folio, refs, flags);
 		return 0;
 	}
-	if (page_offsets)
-		memset(page_offsets + *nr, 0,
-		       refs * sizeof(*page_offsets));
 	pages += *nr;
 	*nr += refs;
 	for (; refs; refs--)
@@ -3020,7 +3011,7 @@ static int gup_fast_pmd_leaf(pmd_t orig, pmd_t *pmdp, unsigned long addr,
 
 static int gup_fast_pud_leaf(pud_t orig, pud_t *pudp, unsigned long addr,
 		unsigned long end, unsigned int flags, struct page **pages,
-		unsigned long *page_offsets, int *nr)
+		int *nr)
 {
 	struct page *page;
 	struct folio *folio;
@@ -3054,9 +3045,6 @@ static int gup_fast_pud_leaf(pud_t orig, pud_t *pudp, unsigned long addr,
 		return 0;
 	}
 
-	if (page_offsets)
-		memset(page_offsets + *nr, 0,
-		       refs * sizeof(*page_offsets));
 	pages += *nr;
 	*nr += refs;
 	for (; refs; refs--)
@@ -3066,9 +3054,8 @@ static int gup_fast_pud_leaf(pud_t orig, pud_t *pudp, unsigned long addr,
 }
 
 static int gup_fast_pmd_range(struct mm_struct *mm, pud_t *pudp, pud_t pud,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		unsigned long *page_offsets, int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	unsigned long next;
 	pmd_t *pmdp;
@@ -3087,11 +3074,11 @@ static int gup_fast_pmd_range(struct mm_struct *mm, pud_t *pudp, pud_t pud,
 				return 0;
 
 			if (!gup_fast_pmd_leaf(pmd, pmdp, addr, next, flags,
-				pages, page_offsets, nr))
+				pages, nr))
 				return 0;
 
 		} else if (!gup_fast_pte_range(mm, pmd, pmdp, addr, next, flags,
-					       pages, page_offsets, nr))
+					       pages, nr))
 			return 0;
 	} while (pmdp++, addr = next, addr != end);
 
@@ -3099,9 +3086,8 @@ static int gup_fast_pmd_range(struct mm_struct *mm, pud_t *pudp, pud_t pud,
 }
 
 static int gup_fast_pud_range(struct mm_struct *mm, p4d_t *p4dp, p4d_t p4d,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		unsigned long *page_offsets, int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	unsigned long next;
 	pud_t *pudp;
@@ -3115,10 +3101,10 @@ static int gup_fast_pud_range(struct mm_struct *mm, p4d_t *p4dp, p4d_t p4d,
 			return 0;
 		if (unlikely(pud_leaf(pud))) {
 			if (!gup_fast_pud_leaf(pud, pudp, addr, next, flags,
-					       pages, page_offsets, nr))
+					       pages, nr))
 				return 0;
 		} else if (!gup_fast_pmd_range(mm, pudp, pud, addr, next, flags,
-					       pages, page_offsets, nr))
+					       pages, nr))
 			return 0;
 	} while (pudp++, addr = next, addr != end);
 
@@ -3126,9 +3112,8 @@ static int gup_fast_pud_range(struct mm_struct *mm, p4d_t *p4dp, p4d_t p4d,
 }
 
 static int gup_fast_p4d_range(struct mm_struct *mm, pgd_t *pgdp, pgd_t pgd,
-		unsigned long addr,
-		unsigned long end, unsigned int flags, struct page **pages,
-		unsigned long *page_offsets, int *nr)
+		unsigned long addr, unsigned long end, unsigned int flags,
+		struct page **pages, int *nr)
 {
 	unsigned long next;
 	p4d_t *p4dp;
@@ -3142,7 +3127,7 @@ static int gup_fast_p4d_range(struct mm_struct *mm, pgd_t *pgdp, pgd_t pgd,
 			return 0;
 		BUILD_BUG_ON(p4d_leaf(p4d));
 		if (!gup_fast_pud_range(mm, p4dp, p4d, addr, next, flags,
-					pages, page_offsets, nr))
+					pages, nr))
 			return 0;
 	} while (p4dp++, addr = next, addr != end);
 
@@ -3150,9 +3135,8 @@ static int gup_fast_p4d_range(struct mm_struct *mm, pgd_t *pgdp, pgd_t pgd,
 }
 
 static void gup_fast_pgd_range(struct mm_struct *mm, unsigned long addr,
-		unsigned long end,
-		unsigned int flags, struct page **pages,
-		unsigned long *page_offsets, int *nr)
+		unsigned long end, unsigned int flags, struct page **pages,
+		int *nr)
 {
 	unsigned long next;
 	pgd_t *pgdp;
@@ -3166,15 +3150,14 @@ static void gup_fast_pgd_range(struct mm_struct *mm, unsigned long addr,
 			return;
 		BUILD_BUG_ON(pgd_leaf(pgd));
 		if (!gup_fast_p4d_range(mm, pgdp, pgd, addr, next, flags,
-					pages, page_offsets, nr))
+					pages, nr))
 			return;
 	} while (pgdp++, addr = next, addr != end);
 }
 #else
-static inline void gup_fast_pgd_range(struct mm_struct *mm,
-		unsigned long addr, unsigned long end,
-		unsigned int flags, struct page **pages,
-		unsigned long *page_offsets, int *nr)
+static inline void gup_fast_pgd_range(struct mm_struct *mm, unsigned long addr,
+		unsigned long end, unsigned int flags, struct page **pages,
+		int *nr)
 {
 }
 #endif /* CONFIG_HAVE_GUP_FAST */
@@ -3191,8 +3174,7 @@ static bool gup_fast_permitted(unsigned long start, unsigned long end)
 #endif
 
 static unsigned long gup_fast(unsigned long start, unsigned long end,
-		unsigned int gup_flags, struct page **pages,
-		unsigned long *page_offsets)
+		unsigned int gup_flags, struct page **pages)
 {
 	unsigned long flags;
 	int nr_pinned = 0;
@@ -3219,8 +3201,7 @@ static unsigned long gup_fast(unsigned long start, unsigned long end,
 	 * that come from callers of tlb_remove_table_sync_one().
 	 */
 	local_irq_save(flags);
-	gup_fast_pgd_range(current->mm, start, end, gup_flags, pages, page_offsets,
-			   &nr_pinned);
+	gup_fast_pgd_range(current->mm, start, end, gup_flags, pages, &nr_pinned);
 	local_irq_restore(flags);
 
 	/*
@@ -3239,8 +3220,7 @@ static unsigned long gup_fast(unsigned long start, unsigned long end,
 }
 
 static int gup_fast_fallback(unsigned long start, unsigned long nr_pages,
-		unsigned int gup_flags, struct page **pages,
-		unsigned long *page_offsets)
+		unsigned int gup_flags, struct page **pages)
 {
 	unsigned long len, end;
 	unsigned long nr_pinned;
@@ -3266,7 +3246,7 @@ static int gup_fast_fallback(unsigned long start, unsigned long nr_pages,
 	if (end > TASK_SIZE_MAX)
 		return -EFAULT;
 
-	nr_pinned = gup_fast(start, end, gup_flags, pages, page_offsets);
+	nr_pinned = gup_fast(start, end, gup_flags, pages);
 	if (nr_pinned == nr_pages || gup_flags & FOLL_FAST_ONLY)
 		return nr_pinned;
 
@@ -3320,27 +3300,296 @@ int get_user_pages_fast_only(unsigned long start, int nr_pages,
 			       FOLL_GET | FOLL_FAST_ONLY))
 		return -EINVAL;
 
-	return gup_fast_fallback(start, nr_pages, gup_flags, pages, NULL);
+	return gup_fast_fallback(start, nr_pages, gup_flags, pages);
 }
 EXPORT_SYMBOL_GPL(get_user_pages_fast_only);
 
+/*
+ * Lockless lookup of the leaf PTE mapping @addr in @mm, run with IRQs
+ * disabled like gup_fast().  Returns a pte_none() value when there is no
+ * PTE-level mapping (including under a huge leaf entry).
+ */
+static pte_t gup_fast_lookup_pte(struct mm_struct *mm, unsigned long addr)
+{
+	pgd_t *pgdp, pgd;
+	p4d_t *p4dp, p4d;
+	pud_t *pudp, pud;
+	pmd_t *pmdp, pmd;
+	pte_t *ptep, pte = __pte(0);
+
+	pgdp = pgd_offset(mm, addr);
+	pgd = pgdp_get(pgdp);
+	if (pgd_none(pgd) || pgd_leaf(pgd))
+		return pte;
+	p4dp = p4d_offset_lockless_mm(mm, pgdp, pgd, addr);
+	p4d = p4dp_get(p4dp);
+	if (!p4d_present(p4d))
+		return pte;
+	pudp = pud_offset_lockless_mm(mm, p4dp, p4d, addr);
+	pud = pudp_get(pudp);
+	if (!pud_present(pud) || pud_leaf(pud))
+		return pte;
+	pmdp = pmd_offset_lockless_mm(mm, pudp, pud, addr);
+	pmd = pmdp_get_lockless(pmdp);
+	if (!pmd_present(pmd) || pmd_leaf(pmd))
+		return pte;
+	ptep = pte_offset_map_mm(mm, &pmd, addr);
+	if (!ptep)
+		return pte;
+	pte = ptep_get_lockless(ptep);
+	pte_unmap(ptep);
+	return pte;
+}
+
+/**
+ * get_user_page_fast_only_with_offset() - get_user_page_fast_only() plus the
+ * byte offset of @addr within the returned native page
+ * @addr:        user address
+ * @gup_flags:   flags modifying pin behaviour
+ * @pagep:       receives the pinned native page
+ * @page_offset: receives the byte offset of @addr within *@pagep
+ *
+ * In a compat mm the PTE selects a slice of the native page, so the PTE is
+ * re-read locklessly after the pin and the pin is dropped if it changed.
+ */
 bool get_user_page_fast_only_with_offset(unsigned long addr,
 					 unsigned int gup_flags,
 					 struct page **pagep,
 					 unsigned long *page_offset)
 {
-	unsigned long pte_offset;
+	struct mm_struct *mm = current->mm;
+	unsigned long slice_offset = 0;
 
-	if (!page_offset ||
-	    !is_valid_gup_args(pagep, NULL, &gup_flags,
-			       FOLL_GET | FOLL_FAST_ONLY))
-		return false;
-	if (gup_fast_fallback(addr, 1, gup_flags, pagep, &pte_offset) != 1)
+	if (!page_offset || !get_user_page_fast_only(addr, gup_flags, pagep))
 		return false;
 
-	*page_offset = pte_offset + mm_offset_in_page(current->mm, addr);
+	if (ppps_mm_is_compat(mm)) {
+		unsigned long flags;
+		pte_t pte;
+
+		local_irq_save(flags);
+		pte = gup_fast_lookup_pte(mm, untagged_addr(addr));
+		local_irq_restore(flags);
+		if (!pte_present(pte) || pte_pfn(pte) != page_to_pfn(*pagep)) {
+			put_page(*pagep);
+			return false;
+		}
+		slice_offset = pte_page_offset(pte);
+	}
+
+	*page_offset = slice_offset + mm_offset_in_page(mm, addr);
 	return true;
 }
+
+/**
+ * mm_user_slice_offset() - byte offset of the process page at @addr within
+ * its native page
+ * @mm:   target mm
+ * @addr: user address
+ *
+ * Takes and releases mmap_read_lock(@mm).  Returns 0 for a native mm and for
+ * an unmapped @addr.
+ */
+unsigned long mm_user_slice_offset(struct mm_struct *mm, unsigned long addr)
+{
+	struct vm_area_struct *vma;
+	unsigned long offset = 0;
+
+	if (!ppps_mm_is_compat(mm))
+		return 0;
+
+	mmap_read_lock(mm);
+	addr = untagged_addr_remote(mm, addr);
+	vma = vma_lookup(mm, addr);
+	if (vma)
+		offset = vma_page_slice_offset(vma, NULL, addr);
+	mmap_read_unlock(mm);
+	return offset;
+}
+EXPORT_SYMBOL_GPL(mm_user_slice_offset);
+
+/* Bound whole-range repinning after lock drops, including the first attempt. */
+#define GUP_COMPAT_MAX_ATTEMPTS	16
+
+/*
+ * Keep VMA geometry stable from GUP through span construction. The backing
+ * slice is fixed by the VMA while mmap_lock is held; a later COW may replace
+ * the page, but cannot change the offset within the page we pinned.
+ * @offsets is only for the legacy process-page-count wrapper.
+ */
+static long gup_user_range(struct mm_struct *mm, unsigned long start,
+			   size_t length, unsigned long capacity,
+			   unsigned int gup_flags, struct page **pages,
+			   struct page_span *spans, unsigned int *offsets,
+			   bool pin)
+{
+	unsigned long nr_pages = mm_user_range_pages(mm, start, length);
+	unsigned long addr, end, page_size = MM_PAGE_SIZE(mm);
+	struct vm_area_struct *vma = NULL;
+	int locked = 0;
+	size_t remaining = length;
+	long ret, i;
+
+	if (!length)
+		return 0;
+	if (nr_pages > capacity)
+		return -ENOSPC;
+	if (nr_pages > INT_MAX)
+		return -EOVERFLOW;
+	if (!pages || (!spans && !offsets))
+		return -EINVAL;
+
+	/* The native local-mm path retains fast GUP. */
+	if (!ppps_mm_is_compat(mm) && mm == current->mm) {
+		start = untagged_addr(start);
+	} else {
+		mmap_read_lock(mm);
+		locked = true;
+		start = untagged_addr_remote(mm, start);
+	}
+	if (check_add_overflow(start, length, &end)) {
+		ret = -EOVERFLOW;
+		goto out;
+	}
+	if (locked) {
+		unsigned int attempt;
+
+		ret = -EAGAIN;
+		for (attempt = 0; attempt < GUP_COMPAT_MAX_ATTEMPTS; attempt++) {
+			if (attempt) {
+				cond_resched();
+				if (mmap_read_lock_killable(mm)) {
+					ret = -EINTR;
+					break;
+				}
+				locked = 1;
+			}
+
+			ret = pin ? pin_user_pages_remote(mm, start, nr_pages,
+							  gup_flags, pages, &locked) :
+				    get_user_pages_remote(mm, start, nr_pages,
+							  gup_flags, pages, &locked);
+			if (ret <= 0 || locked || !ppps_mm_is_compat(mm))
+				break;
+
+			/* Faulting may replace VMAs: recompute spans from new pins. */
+			if (pin)
+				unpin_user_pages(pages, ret);
+			else
+				release_pages(pages, ret);
+			ret = -EAGAIN;
+			if (gup_signal_pending(gup_flags)) {
+				ret = -EINTR;
+				break;
+			}
+		}
+	} else
+		ret = pin ? pin_user_pages_fast(start, nr_pages, gup_flags,
+						pages) :
+			    get_user_pages_fast(start, nr_pages, gup_flags,
+						pages);
+
+	addr = start;
+	for (i = 0; i < ret; i++) {
+		unsigned int offset = 0;
+		unsigned int in_page = mm_offset_in_page(mm, addr);
+		unsigned int bytes =
+			min_t(size_t, remaining, page_size - in_page);
+
+		if (ppps_mm_is_compat(mm)) {
+			if (!vma || addr >= vma->vm_end)
+				vma = vma_lookup(mm, addr);
+			if (WARN_ON_ONCE(!vma)) {
+				if (pin)
+					unpin_user_pages(pages, ret);
+				else
+					release_pages(pages, ret);
+				ret = -EFAULT;
+				goto out;
+			}
+			offset = vma_page_slice_offset(vma, pages[i], addr);
+		}
+		if (offsets)
+			offsets[i] = offset;
+		if (spans)
+			spans[i] =
+				(struct page_span){ offset + in_page, bytes };
+		addr += bytes;
+		remaining -= bytes;
+	}
+out:
+	if (locked)
+		mmap_read_unlock(mm);
+	return ret;
+}
+
+/**
+ * pin_user_pages_range() - pin a byte range and describe its native backing
+ * @mm: target address space
+ * @start: first user byte (need not be page aligned)
+ * @length: number of bytes requested
+ * @capacity: number of entries available in both output arrays
+ * @gup_flags: GUP flags, including long-term/write requirements
+ * @pages: native pages, one pin per returned entry (duplicates are allowed)
+ * @spans: byte offset and valid length in the corresponding @pages entry
+ *
+ * Allocations can use mm_user_range_pages() to size the arrays. Takes
+ * mmap_read_lock() as needed; callers must not hold it. A positive return
+ * is the number of entries, possibly short, not a byte count. Only those
+ * entries are valid and each must be unpinned, even if page pointers repeat.
+ * The sum of their span lengths is the completed byte count. No merging or
+ * pin deduplication is performed. Errors and zero-length requests own no pins.
+ * Compat callers return -EAGAIN if repeated mmap_lock drops exhaust the
+ * whole-range repinning budget.
+ */
+long pin_user_pages_range(struct mm_struct *mm, unsigned long start,
+			  size_t length, unsigned long capacity,
+			  unsigned int gup_flags, struct page **pages,
+			  struct page_span *spans)
+{
+	return gup_user_range(mm, start, length, capacity, gup_flags, pages,
+			      spans, NULL, true);
+}
+EXPORT_SYMBOL_GPL(pin_user_pages_range);
+
+/**
+ * get_user_pages_range() - get references to a byte range's native backing
+ * @mm: target address space
+ * @start: first user byte
+ * @length: number of bytes requested
+ * @capacity: number of entries available in both output arrays
+ * @gup_flags: GUP flags
+ * @pages: native pages, one reference per returned entry
+ * @spans: byte offset and valid length for each returned page
+ *
+ * Like pin_user_pages_range(), but release each returned reference with
+ * put_page()/release_pages(), not unpin_user_pages().
+ */
+long get_user_pages_range(struct mm_struct *mm, unsigned long start,
+			  size_t length, unsigned long capacity,
+			  unsigned int gup_flags, struct page **pages,
+			  struct page_span *spans)
+{
+	return gup_user_range(mm, start, length, capacity, gup_flags, pages,
+			      spans, NULL, false);
+}
+EXPORT_SYMBOL_GPL(get_user_pages_range);
+
+/*
+ * Legacy page-count ABI: offsets exclude the displacement of @start within
+ * its process page. New users should pass byte ranges to the interfaces above.
+ */
+long pin_user_pages_with_offsets(struct mm_struct *mm, unsigned long start,
+				 unsigned long nr_pages, unsigned int gup_flags,
+				 struct page **pages, unsigned int *offsets)
+{
+	if (nr_pages > (ULONG_MAX >> MM_PAGE_SHIFT(mm)))
+		return -EOVERFLOW;
+	return gup_user_range(mm, start & MM_PAGE_MASK(mm),
+			      nr_pages << MM_PAGE_SHIFT(mm), nr_pages,
+			      gup_flags, pages, NULL, offsets, true);
+}
+EXPORT_SYMBOL_GPL(pin_user_pages_with_offsets);
 
 /**
  * get_user_pages_fast() - pin user pages in memory
@@ -3369,7 +3618,7 @@ int get_user_pages_fast(unsigned long start, int nr_pages,
 	 */
 	if (!is_valid_gup_args(pages, NULL, &gup_flags, FOLL_GET))
 		return -EINVAL;
-	return gup_fast_fallback(start, nr_pages, gup_flags, pages, NULL);
+	return gup_fast_fallback(start, nr_pages, gup_flags, pages);
 }
 EXPORT_SYMBOL_GPL(get_user_pages_fast);
 
@@ -3397,7 +3646,7 @@ int pin_user_pages_fast(unsigned long start, int nr_pages,
 {
 	if (!is_valid_gup_args(pages, NULL, &gup_flags, FOLL_PIN))
 		return -EINVAL;
-	return gup_fast_fallback(start, nr_pages, gup_flags, pages, NULL);
+	return gup_fast_fallback(start, nr_pages, gup_flags, pages);
 }
 EXPORT_SYMBOL_GPL(pin_user_pages_fast);
 
@@ -3640,128 +3889,3 @@ int folio_add_pins(struct folio *folio, unsigned int pins)
 	return try_grab_folio(folio, pins, FOLL_PIN);
 }
 EXPORT_SYMBOL_GPL(folio_add_pins);
-
-static long gup_user_range(struct mm_struct *mm, unsigned long start,
-			   size_t length, unsigned long capacity,
-			   unsigned int gup_flags, struct page **pages,
-			   struct page_span *spans,
-			   bool pin)
-{
-	unsigned long nr_pages = mm_user_range_pages(mm, start, length);
-	unsigned long addr, end, page_size = MM_PAGE_SIZE(mm);
-	struct vm_area_struct *vma = NULL;
-	bool locked = false;
-	size_t remaining = length;
-	long ret, i;
-
-	if (!length)
-		return 0;
-	if (nr_pages > capacity)
-		return -ENOSPC;
-	if (nr_pages > INT_MAX)
-		return -EOVERFLOW;
-	if (!pages || !spans)
-		return -EINVAL;
-
-	/* The native local-mm path retains fast GUP. */
-	if (!ppps_mm_is_compat(mm) && mm == current->mm) {
-		start = untagged_addr(start);
-	} else {
-		mmap_read_lock(mm);
-		locked = true;
-		start = untagged_addr_remote(mm, start);
-	}
-	if (check_add_overflow(start, length, &end)) {
-		ret = -EOVERFLOW;
-		goto out;
-	}
-	if (locked)
-		ret = pin ? pin_user_pages_remote(mm, start, nr_pages,
-						  gup_flags, pages, NULL) :
-			    get_user_pages_remote(mm, start, nr_pages,
-						  gup_flags, pages, NULL);
-	else
-		ret = pin ? pin_user_pages_fast(start, nr_pages, gup_flags,
-						pages) :
-			    get_user_pages_fast(start, nr_pages, gup_flags,
-						pages);
-
-	addr = start;
-	for (i = 0; i < ret; i++) {
-		unsigned int offset = 0;
-		unsigned int in_page = mm_offset_in_page(mm, addr);
-		unsigned int bytes =
-			min_t(size_t, remaining, page_size - in_page);
-
-		if (ppps_mm_is_compat(mm)) {
-			if (!vma || addr >= vma->vm_end)
-				vma = vma_lookup(mm, addr);
-			if (WARN_ON_ONCE(!vma)) {
-				if (pin)
-					unpin_user_pages(pages, ret);
-				else
-					release_pages(pages, ret);
-				ret = -EFAULT;
-				goto out;
-			}
-			offset = vma_page_slice_offset(vma, pages[i], addr);
-		}
-		spans[i] = (struct page_span){ offset + in_page, bytes };
-		addr += bytes;
-		remaining -= bytes;
-	}
-out:
-	if (locked)
-		mmap_read_unlock(mm);
-	return ret;
-}
-
-/**
- * pin_user_pages_range() - pin a byte range and describe its native backing
- * @mm: target address space
- * @start: first user byte (need not be page aligned)
- * @length: number of bytes requested
- * @capacity: number of entries available in both output arrays
- * @gup_flags: GUP flags, including long-term/write requirements
- * @pages: native pages, one pin per returned entry (duplicates are allowed)
- * @spans: byte offset and valid length in the corresponding @pages entry
- *
- * Allocations can use mm_user_range_pages() to size the arrays. Takes
- * mmap_read_lock() as needed; callers must not hold it. A positive return
- * is the number of entries, possibly short, not a byte count. Only those
- * entries are valid and each must be unpinned, even if page pointers repeat.
- * The sum of their span lengths is the completed byte count. No merging or
- * pin deduplication is performed. Errors and zero-length requests own no pins.
- */
-long pin_user_pages_range(struct mm_struct *mm, unsigned long start,
-			  size_t length, unsigned long capacity,
-			  unsigned int gup_flags, struct page **pages,
-			  struct page_span *spans)
-{
-	return gup_user_range(mm, start, length, capacity, gup_flags, pages,
-			      spans, true);
-}
-EXPORT_SYMBOL_GPL(pin_user_pages_range);
-
-/**
- * get_user_pages_range() - get references to a byte range's native backing
- * @mm: target address space
- * @start: first user byte
- * @length: number of bytes requested
- * @capacity: number of entries available in both output arrays
- * @gup_flags: GUP flags
- * @pages: native pages, one reference per returned entry
- * @spans: byte offset and valid length for each returned page
- *
- * Like pin_user_pages_range(), but release each returned reference with
- * put_page()/release_pages(), not unpin_user_pages().
- */
-long get_user_pages_range(struct mm_struct *mm, unsigned long start,
-			  size_t length, unsigned long capacity,
-			  unsigned int gup_flags, struct page **pages,
-			  struct page_span *spans)
-{
-	return gup_user_range(mm, start, length, capacity, gup_flags, pages,
-			      spans, false);
-}
-EXPORT_SYMBOL_GPL(get_user_pages_range);

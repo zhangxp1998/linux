@@ -177,6 +177,23 @@ static inline unsigned long pte_page_offset(pte_t pte)
 	return __pte_to_phys(pte) & ~PAGE_MASK;
 }
 
+/*
+ * Translation level of a leaf entry mapping @pgsize bytes in either the
+ * native or the PPPS compat geometry, or -1.
+ */
+static inline int pgsize_to_level(unsigned long pgsize)
+{
+	if (pgsize == PAGE_SIZE || pgsize == PAGE_SIZE_COMPAT)
+		return 3;
+	if (pgsize == PMD_SIZE || pgsize == PMD_SIZE_COMPAT)
+		return 2;
+#ifndef __PAGETABLE_PMD_FOLDED
+	if (pgsize == PUD_SIZE || pgsize == PUD_SIZE_COMPAT)
+		return 1;
+#endif
+	return -1;
+}
+
 #define pte_pfn(pte)		(__pte_to_phys(pte) >> PAGE_SHIFT)
 #define pfn_pte(pfn,prot)	\
 	__pte(__phys_to_pte_val((phys_addr_t)(pfn) << PAGE_SHIFT) | pgprot_val(prot))
@@ -477,7 +494,8 @@ static inline void __check_safe_pte_update(struct mm_struct *mm, pte_t *ptep,
 		     __func__, pte_val(old_pte), pte_val(pte));
 }
 
-static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages)
+static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages,
+					 unsigned long page_size)
 {
 	if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte))
 		__sync_icache_dcache(pte);
@@ -491,7 +509,7 @@ static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages)
 	 */
 	if (system_supports_mte() && pte_access_permitted_no_overlay(pte, false) &&
 	    !pte_special(pte) && pte_tagged(pte))
-		mte_sync_tags(pte, nr_pages);
+		mte_sync_tags(pte, nr_pages, page_size);
 }
 
 /*
@@ -522,6 +540,22 @@ static inline pte_t pte_advance_phys(pte_t pte, unsigned long bytes)
 
 	return __pte(__phys_to_pte_val(phys + bytes) | prot);
 }
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * Re-point @pte at process-page slice @slice of the native page it maps.
+ * The slice lives in the address bits below PAGE_SHIFT, so this is a
+ * (possibly negative, hence wrapping) physical advance from the current slice.
+ */
+#define pte_mkslice pte_mkslice
+static inline pte_t pte_mkslice(pte_t pte, unsigned int slice)
+{
+	unsigned long offset = (unsigned long)slice << PAGE_SHIFT_COMPAT;
+
+	return pte_advance_phys(pte, offset - pte_page_offset(pte));
+}
+#endif
+
 /*
  * Hugetlb definitions.
  */
@@ -590,34 +624,6 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 {
 	return clear_pte_bit(pte, __pgprot(PTE_SWP_EXCLUSIVE));
 }
-
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-/*
- * Bit 1 is ignored by pte_present() for an invalid PTE and is not part of
- * arm64's swap type or offset encoding.  PPPS uses it to say that the swap
- * slot contains all four 4K slices of one packed native folio.  The slice is
- * deliberately not encoded: it is derived from the faulting virtual address.
- */
-#define PTE_SWP_PPPS_PACKED	(_AT(pteval_t, 1) << 1)
-
-#define pte_swp_ppps_packed pte_swp_ppps_packed
-static inline bool pte_swp_ppps_packed(pte_t pte)
-{
-	return pte_val(pte) & PTE_SWP_PPPS_PACKED;
-}
-
-#define pte_swp_mk_ppps_packed pte_swp_mk_ppps_packed
-static inline pte_t pte_swp_mk_ppps_packed(pte_t pte)
-{
-	return set_pte_bit(pte, __pgprot(PTE_SWP_PPPS_PACKED));
-}
-
-#define pte_swp_clear_ppps_packed pte_swp_clear_ppps_packed
-static inline pte_t pte_swp_clear_ppps_packed(pte_t pte)
-{
-	return clear_pte_bit(pte, __pgprot(PTE_SWP_PPPS_PACKED));
-}
-#endif
 
 #ifdef CONFIG_HAVE_ARCH_USERFAULTFD_WP
 static inline pte_t pte_swp_mkuffd_wp(pte_t pte)
@@ -773,7 +779,8 @@ static inline void __set_ptes_anysz(struct mm_struct *mm, pte_t *ptep,
 
 	nr_pages = DIV_ROUND_UP((__pte_to_phys(pte) & ~PAGE_MASK) + nr * pgsize,
 				PAGE_SIZE);
-	__sync_cache_and_tags(pte, nr_pages);
+	__sync_cache_and_tags(pte_advance_phys(pte, -pte_page_offset(pte)),
+			      nr_pages, PAGE_SIZE);
 
 	for (;;) {
 		__check_safe_pte_update(mm, ptep, pte);
@@ -1071,8 +1078,8 @@ static inline phys_addr_t p4d_page_paddr(p4d_t p4d)
 
 #define pud_index(addr)		(((addr) >> PUD_SHIFT) & (PTRS_PER_PUD - 1))
 #define pud_index_mm(mm, addr) \
-	(((addr) >> MM_ADDR_PUD_SHIFT((addr), (mm))) & \
-	 (MM_ADDR_PTRS_PER_PUD((addr), (mm)) - 1))
+	(((addr) >> MM_PUD_SHIFT(pgt_mm(addr, mm))) & \
+	 (MM_PTRS_PER_PUD(pgt_mm(addr, mm)) - 1))
 
 static inline pud_t *p4d_to_folded_pud(p4d_t *p4dp, unsigned long addr)
 {
@@ -1085,7 +1092,7 @@ static inline pud_t *p4d_to_folded_pud(p4d_t *p4dp, unsigned long addr)
 static inline pud_t *p4d_to_folded_pud_mm(struct mm_struct *mm, p4d_t *p4dp,
 					  unsigned long addr)
 {
-	return (pud_t *)PTR_ALIGN_DOWN(p4dp, MM_ADDR_PAGE_SIZE(addr, mm)) +
+	return (pud_t *)PTR_ALIGN_DOWN(p4dp, MM_PAGE_SIZE(pgt_mm(addr, mm))) +
 		pud_index_mm(mm, addr);
 }
 
@@ -1226,8 +1233,8 @@ static inline phys_addr_t pgd_page_paddr(pgd_t pgd)
 
 #define p4d_index(addr)		(((addr) >> P4D_SHIFT) & (PTRS_PER_P4D - 1))
 #define p4d_index_mm(mm, addr) \
-	(((addr) >> MM_ADDR_P4D_SHIFT((addr), (mm))) & \
-	 (MM_ADDR_PTRS_PER_P4D((addr), (mm)) - 1))
+	(((addr) >> MM_P4D_SHIFT(pgt_mm(addr, mm))) & \
+	 (MM_PTRS_PER_P4D(pgt_mm(addr, mm)) - 1))
 
 static inline p4d_t *pgd_to_folded_p4d(pgd_t *pgdp, unsigned long addr)
 {
@@ -1240,7 +1247,7 @@ static inline p4d_t *pgd_to_folded_p4d(pgd_t *pgdp, unsigned long addr)
 static inline p4d_t *pgd_to_folded_p4d_mm(struct mm_struct *mm, pgd_t *pgdp,
 					  unsigned long addr)
 {
-	return (p4d_t *)PTR_ALIGN_DOWN(pgdp, MM_ADDR_PAGE_SIZE(addr, mm)) +
+	return (p4d_t *)PTR_ALIGN_DOWN(pgdp, MM_PAGE_SIZE(pgt_mm(addr, mm))) +
 		p4d_index_mm(mm, addr);
 }
 
@@ -1490,15 +1497,19 @@ static inline pte_t __ptep_get_and_clear_anysz(struct mm_struct *mm,
 {
 	pte_t pte = __pte(xchg_relaxed(&pte_val(*ptep), 0));
 
-	if (pgsize == PAGE_SIZE || pgsize == PAGE_SIZE_COMPAT) {
+	switch (pgsize_to_level(pgsize)) {
+	case 3:
 		page_table_check_pte_clear(mm, pte);
-	} else if (pgsize == PMD_SIZE || pgsize == PMD_SIZE_COMPAT) {
+		break;
+	case 2:
 		page_table_check_pmd_clear(mm, pte_pmd(pte));
+		break;
 #ifndef __PAGETABLE_PMD_FOLDED
-	} else if (pgsize == PUD_SIZE || pgsize == PUD_SIZE_COMPAT) {
+	case 1:
 		page_table_check_pud_clear(mm, pte_pud(pte));
+		break;
 #endif
-	} else {
+	default:
 		VM_WARN_ON(1);
 	}
 
@@ -1643,8 +1654,7 @@ static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
 
 /*
  * Encode and decode a swap entry:
- *	bit  0:	present (must be zero)
- *	bit  1:	PPPS packed-anon marker
+ *	bits 0-1:	present (must be zero)
  *	bits 2:		remember PG_anon_exclusive
  *	bit  3:		remember uffd-wp state
  *	bits 6-10:	swap type
@@ -1696,12 +1706,6 @@ static inline void arch_swap_invalidate_area(int type)
 
 #define __HAVE_ARCH_SWAP_RESTORE
 extern void arch_swap_restore(swp_entry_t entry, struct folio *folio);
-
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-#define __HAVE_ARCH_SWAP_RESTORE_PPPS
-void arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
-			    unsigned int slice);
-#endif
 
 #endif /* CONFIG_ARM64_MTE */
 

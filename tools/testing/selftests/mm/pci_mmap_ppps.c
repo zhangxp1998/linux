@@ -1,25 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process maps the QEMU EDU PCI BAR through sysfs resource0 in
+ * process-page units, and a 4K-offset slice mapping lands on the matching
+ * BAR offset.
+ */
 #define _GNU_SOURCE
 
 #include <dirent.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define EDU_VENDOR 0x1234
 #define EDU_DEVICE 0x11e8
 
@@ -118,16 +110,11 @@ static int run_test(void)
 	if (error)
 		ksft_exit_fail_msg("cannot read EDU BAR size\n");
 
-	ksft_set_plan(4);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
-	ksft_test_result(size > USER_PAGE_SIZE && !(size % USER_PAGE_SIZE),
+	ksft_set_plan(3);
+	ksft_test_result(size > PROCESS_PAGE_SIZE && !(size % PROCESS_PAGE_SIZE),
 			 "EDU BAR spans multiple process pages\n");
 
-	fd = open(resource_path, O_RDWR | O_SYNC | O_CLOEXEC);
-	if (fd < 0)
-		ksft_exit_fail_msg("open %s failed: %s\n", resource_path,
-				   strerror(errno));
+	fd = ppps_open_fixture_or_skip(resource_path, O_RDWR | O_SYNC);
 	mapping = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	ksft_test_result(mapping != MAP_FAILED,
 			 "map the complete PCI BAR in process page units\n");
@@ -137,39 +124,18 @@ static int run_test(void)
 		ksft_finished();
 	}
 
-	slice_mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
-			     MAP_SHARED, fd, USER_PAGE_SIZE);
+	slice_mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			     MAP_SHARED, fd, PROCESS_PAGE_SIZE);
 	full_words = mapping;
 	slice_words = slice_mapping;
 	ksft_test_result(slice_mapping != MAP_FAILED &&
-			 slice_words[0] == full_words[USER_PAGE_SIZE / sizeof(*full_words)],
+			 slice_words[0] == full_words[PROCESS_PAGE_SIZE / sizeof(*full_words)],
 			 "preserve a process-page PCI BAR offset\n");
 	if (slice_mapping != MAP_FAILED)
-		munmap(slice_mapping, USER_PAGE_SIZE);
+		munmap(slice_mapping, PROCESS_PAGE_SIZE);
 	munmap(mapping, size);
 	close(fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "pci_mmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * remap_file_pages() in a 4K compat process accepts a 4K-aligned address and
+ * size within a shared memfd mapping and remaps exactly that one 4K file
+ * slice, leaving the neighbouring pages untouched.
+ */
 #define _GNU_SOURCE
 
 #include <asm/unistd.h>
-#include <errno.h>
 #include <linux/memfd.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#define USER_PAGE_SIZE		4096UL
 #define FILE_PAGES		8
 #define MAPPING_PAGES		4
 #define REMAP_FILE_PAGE		5
@@ -24,14 +23,14 @@ static unsigned char page_pattern(unsigned int page)
 
 static bool initialize_file(int fd)
 {
-	unsigned char page[USER_PAGE_SIZE];
+	unsigned char page[PROCESS_PAGE_SIZE];
 	unsigned int i;
 
 	for (i = 0; i < FILE_PAGES; i++) {
 		ssize_t written;
 
 		memset(page, page_pattern(i), sizeof(page));
-		written = pwrite(fd, page, sizeof(page), i * USER_PAGE_SIZE);
+		written = pwrite(fd, page, sizeof(page), i * PROCESS_PAGE_SIZE);
 		if (written != (ssize_t)sizeof(page)) {
 			ksft_print_msg("pwrite page %u returned %zd: %s\n", i,
 				       written, strerror(errno));
@@ -51,8 +50,8 @@ static bool mapping_has_expected_pages(const unsigned char *mapping)
 
 		if (page == 1)
 			expected = page_pattern(REMAP_FILE_PAGE);
-		for (i = 0; i < USER_PAGE_SIZE; i++) {
-			unsigned char value = mapping[page * USER_PAGE_SIZE + i];
+		for (i = 0; i < PROCESS_PAGE_SIZE; i++) {
+			unsigned char value = mapping[page * PROCESS_PAGE_SIZE + i];
 
 			if (value != expected) {
 				ksft_print_msg("page %u byte %#zx: got %#x, expected %#x\n",
@@ -64,18 +63,14 @@ static bool mapping_has_expected_pages(const unsigned char *mapping)
 	return true;
 }
 
-int main(void)
+static int run_test(void)
 {
-	const size_t mapping_size = MAPPING_PAGES * USER_PAGE_SIZE;
+	const size_t mapping_size = MAPPING_PAGES * PROCESS_PAGE_SIZE;
 	unsigned char *mapping = MAP_FAILED;
 	bool remap_succeeded;
-	long page_size;
 	int fd = -1;
 
 	ksft_print_header();
-	page_size = sysconf(_SC_PAGESIZE);
-	if (page_size != USER_PAGE_SIZE)
-		ksft_exit_skip("requires a 4K userspace page size\n");
 	ksft_set_plan(2);
 
 	fd = memfd_create("remap-file-pages-ppps", MFD_CLOEXEC);
@@ -90,7 +85,7 @@ int main(void)
 
 	errno = 0;
 	remap_succeeded = !syscall(__NR_remap_file_pages,
-				   mapping + USER_PAGE_SIZE, USER_PAGE_SIZE,
+				   mapping + PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
 				   0, REMAP_FILE_PAGE, 0);
 	if (!remap_succeeded)
 		ksft_print_msg("remap_file_pages at a 4K-only-aligned address failed: %s\n",
@@ -104,3 +99,5 @@ int main(void)
 	close(fd);
 	ksft_finished();
 }
+
+PPPS_COMPAT_MAIN(run_test)

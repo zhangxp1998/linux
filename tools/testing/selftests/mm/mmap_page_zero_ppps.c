@@ -1,19 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * With MMAP_PAGE_ZERO in its personality, a 4K compat process gets a
+ * page-zero mapping that spans exactly one process page.
+ */
 #define _GNU_SOURCE
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/personality.h>
-#include <unistd.h>
-
-#include "kselftest.h"
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
+#include "kselftest_ppps.h"
 
 static int read_zero_mapping(unsigned long *endp, char perms[5])
 {
@@ -44,12 +36,11 @@ static int run_test(void)
 	char perms[5] = {};
 	bool found;
 
+	ppps_require_compat();
 	found = read_zero_mapping(&end, perms) == 0;
 
 	ksft_print_header();
-	ksft_set_plan(2);
-	ksft_test_result(page_size == USER_PAGE_SIZE,
-			 "exec selected a 4K process page size\n");
+	ksft_set_plan(1);
 	ksft_test_result(found && end == page_size,
 			 "MMAP_PAGE_ZERO maps one process page\n");
 	ksft_print_msg("process page size %lu, page-zero mapping 0-%lx %s\n",
@@ -57,11 +48,16 @@ static int run_test(void)
 	ksft_finished();
 }
 
+/*
+ * Hand-written main: the compat re-exec also needs MMAP_PAGE_ZERO in the
+ * personality, which the standard main does not set.
+ */
 int main(int argc, char **argv)
 {
+	const char *mode = ppps_run_mode(argc, argv, NULL);
 	int persona;
 
-	if (argc == 2 && !strcmp(argv[1], "--run"))
+	if (mode && argc == 2 && !strcmp(mode, PPPS_RUN_FLAG))
 		return run_test();
 	if (argc != 1)
 		ksft_exit_fail_msg("unexpected arguments\n");
@@ -69,10 +65,7 @@ int main(int argc, char **argv)
 	persona = personality(0xffffffffUL);
 	if (persona < 0)
 		ksft_exit_fail_msg("failed to read personality\n");
-	persona |= MMAP_PAGE_ZERO | ADDR_4KB_COMPAT_PAGE_SIZE;
-	if (personality((unsigned int)persona) < 0)
+	if (personality((unsigned int)(persona | MMAP_PAGE_ZERO)) < 0)
 		ksft_exit_fail_msg("failed to set personality\n");
-
-	execl("/proc/self/exe", "mmap_page_zero_ppps", "--run", NULL);
-	ksft_exit_fail_msg("failed to exec test process\n");
+	exec_compat(argv[0], PPPS_RUN_FLAG, NULL);
 }

@@ -1,24 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * With ASLR enabled, page-local stack randomization of a 4K compat exec
+ * stays within a two-process-page RLIMIT_STACK across repeated execs.  The
+ * probe runs with an empty environment: the 8K budget must hold the
+ * arguments, the ELF tables and up to one process page of randomization.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/personality.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define ATTEMPTS 64
 
 static bool get_probe_path(char path[PATH_MAX])
@@ -42,8 +37,8 @@ static bool get_probe_path(char path[PATH_MAX])
 static bool collect_execs(const char *probe, unsigned int *failed)
 {
 	struct rlimit limit = {
-		.rlim_cur = 2 * USER_PAGE_SIZE,
-		.rlim_max = 2 * USER_PAGE_SIZE,
+		.rlim_cur = 2 * PROCESS_PAGE_SIZE,
+		.rlim_max = 2 * PROCESS_PAGE_SIZE,
 	};
 	unsigned int i;
 
@@ -55,9 +50,12 @@ static bool collect_execs(const char *probe, unsigned int *failed)
 		if (pid < 0)
 			return false;
 		if (!pid) {
+			char *const argv[] = { "elf_4k_align_probe", NULL };
+			char *const envp[] = { NULL };
+
 			if (setrlimit(RLIMIT_STACK, &limit))
 				_exit(126);
-			execl(probe, "elf_4k_align_probe", NULL);
+			execve(probe, argv, envp);
 			_exit(127);
 		}
 		if (waitpid(pid, &status, 0) != pid)
@@ -90,9 +88,7 @@ static int run_test(void)
 	ksft_print_header();
 	if (!aslr_enabled())
 		ksft_exit_skip("address randomization is disabled\n");
-	ksft_set_plan(3);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(2);
 
 	collected = get_probe_path(probe) && collect_execs(probe, &failed);
 	ksft_test_result(collected, "execute tight-stack samples with ASLR\n");
@@ -104,22 +100,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("could not enable 4K compatibility mode\n");
-	execl("/proc/self/exe", "exec_stack_random_ppps", "--compat", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--compat"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

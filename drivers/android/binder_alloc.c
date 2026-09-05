@@ -276,17 +276,6 @@ static struct page *binder_page_lookup(struct binder_alloc *alloc,
 	return npages > 0 ? page : NULL;
 }
 
-static int binder_vm_insert_page(struct vm_area_struct *vma,
-				 unsigned long addr, struct page *page)
-{
-	if (ppps_mm_is_compat(vma->vm_mm)) {
-		unsigned long num = 1;
-
-		return vm_insert_pages(vma, addr, &page, &num);
-	}
-	return vm_insert_page(vma, addr, page);
-}
-
 static int binder_page_insert(struct binder_alloc *alloc,
 			      unsigned long addr,
 			      struct page *page)
@@ -299,7 +288,7 @@ static int binder_page_insert(struct binder_alloc *alloc,
 	vma = lock_vma_under_rcu(mm, addr);
 	if (vma) {
 		if (binder_alloc_is_mapped(alloc))
-			ret = binder_vm_insert_page(vma, addr, page);
+			ret = vm_insert_page_native(vma, addr, page);
 		vma_end_read(vma);
 		return ret;
 	}
@@ -308,7 +297,7 @@ static int binder_page_insert(struct binder_alloc *alloc,
 	mmap_read_lock(mm);
 	vma = vma_lookup(mm, addr);
 	if (vma && binder_alloc_is_mapped(alloc))
-		ret = binder_vm_insert_page(vma, addr, page);
+		ret = vm_insert_page_native(vma, addr, page);
 	mmap_read_unlock(mm);
 
 	return ret;

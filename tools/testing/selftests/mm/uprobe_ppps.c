@@ -1,31 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process probes text mapped one 4K slice past native alignment:
+ * the sliced uprobe registers, bumps its ref counter, delivers an unmatched
+ * trap from an execute-only VMA, runs from a fallback XOL area and traces.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define NATIVE_PAGE_SIZE	16384UL
 #define XOL_RESERVE_SIZE	(2 * NATIVE_PAGE_SIZE)
-#define TARGET_OFFSET	(2 * USER_PAGE_SIZE)
-#define REF_CTR_OFFSET	(3 * USER_PAGE_SIZE)
+#define TARGET_OFFSET	(2 * PROCESS_PAGE_SIZE)
+#define REF_CTR_OFFSET	(3 * PROCESS_PAGE_SIZE)
 #define TARGET_MAP_ADDR	((void *)0x20001000UL)
 #define REF_MAP_ADDR	((void *)0x30001000UL)
 #define XOL_HINT_39	((void *)((1UL << 39) - XOL_RESERVE_SIZE))
@@ -71,7 +61,7 @@ static bool unmatched_xom_trap_is_delivered(void *mapping)
 		sigemptyset(&action.sa_mask);
 		sigaction(SIGTRAP, &action, NULL);
 		sigaction(SIGALRM, &action, NULL);
-		if (mprotect(mapping, USER_PAGE_SIZE, PROT_EXEC))
+		if (mprotect(mapping, PROCESS_PAGE_SIZE, PROT_EXEC))
 			_exit(EXIT_FAILURE);
 		alarm(2);
 		((void (*)(void))mapping)();
@@ -105,7 +95,7 @@ static void *map_target(void **ref_mapping)
 	if (ftruncate(fd, NATIVE_PAGE_SIZE) ||
 	    pwrite(fd, &unmatched_trap, sizeof(unmatched_trap), 0) !=
 		    sizeof(unmatched_trap) ||
-	    pwrite(fd, &wrong_slice, sizeof(wrong_slice), USER_PAGE_SIZE) !=
+	    pwrite(fd, &wrong_slice, sizeof(wrong_slice), PROCESS_PAGE_SIZE) !=
 		    sizeof(wrong_slice) ||
 	    pwrite(fd, instructions, sizeof(instructions), TARGET_OFFSET) !=
 		    sizeof(instructions))
@@ -165,9 +155,7 @@ static int run_test(void)
 	unsigned int i;
 
 	ksft_print_header();
-	ksft_set_plan(11);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(10);
 
 	mapping = map_target(&ref_mapping);
 	ksft_test_result(mapping == TARGET_MAP_ADDR &&
@@ -179,7 +167,7 @@ static int run_test(void)
 	target = (target_fn_t)((char *)mapping + TARGET_OFFSET);
 	ref_ctr = (uint16_t *)((char *)ref_mapping + REF_CTR_OFFSET);
 	ksft_print_msg("mapping=%p target=%p native_slice=%lu\n", mapping,
-		       target, TARGET_OFFSET / USER_PAGE_SIZE);
+		       target, TARGET_OFFSET / PROCESS_PAGE_SIZE);
 
 	for (i = 0; i < 1024; i++)
 		target(i);
@@ -238,25 +226,4 @@ static int run_test(void)
 #endif
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "uprobe_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

@@ -1,35 +1,29 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * AF_PACKET TPACKET_V3 rings of a 4K compat process map with every 4K slice
+ * resident, reject an mmap at file offset 4K, and back 4K blocks separately.
+ */
 #define _GNU_SOURCE
 
 #include <arpa/inet.h>
-#include <errno.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
 
-#define USER_PAGE_SIZE 4096UL
-#define RING_SIZE (4 * USER_PAGE_SIZE)
+#define RING_SIZE (4 * PROCESS_PAGE_SIZE)
 #define FRAME_SIZE 2048U
 
 static bool test_subpage_blocks(void)
 {
 	struct tpacket_req3 req = {
-		.tp_block_size = USER_PAGE_SIZE,
+		.tp_block_size = PROCESS_PAGE_SIZE,
 		.tp_block_nr = 2,
 		.tp_frame_size = FRAME_SIZE,
-		.tp_frame_nr = 2 * USER_PAGE_SIZE / FRAME_SIZE,
+		.tp_frame_nr = 2 * PROCESS_PAGE_SIZE / FRAME_SIZE,
 		.tp_retire_blk_tov = 64,
 	};
 	unsigned char residency[2] = {};
@@ -45,16 +39,16 @@ static bool test_subpage_blocks(void)
 		       &version, sizeof(version)) ||
 	    setsockopt(fd, SOL_PACKET, PACKET_RX_RING, &req, sizeof(req)))
 		goto out;
-	ring = mmap(NULL, 2 * USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	ring = mmap(NULL, 2 * PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		    MAP_SHARED | MAP_POPULATE, fd, 0);
 	if (ring == MAP_FAILED)
 		goto out;
-	if (mincore(ring, 2 * USER_PAGE_SIZE, residency))
+	if (mincore(ring, 2 * PROCESS_PAGE_SIZE, residency))
 		goto out;
 	pass = (residency[0] & 1) && (residency[1] & 1);
 out:
 	if (ring != MAP_FAILED)
-		munmap(ring, 2 * USER_PAGE_SIZE);
+		munmap(ring, 2 * PROCESS_PAGE_SIZE);
 	close(fd);
 	return pass;
 }
@@ -68,7 +62,7 @@ static int run_test(void)
 		.tp_frame_nr = RING_SIZE / FRAME_SIZE,
 		.tp_retire_blk_tov = 64,
 	};
-	unsigned char residency[RING_SIZE / USER_PAGE_SIZE] = {};
+	unsigned char residency[RING_SIZE / PROCESS_PAGE_SIZE] = {};
 	int version = TPACKET_V3;
 	void *offset_ring;
 	void *ring = MAP_FAILED;
@@ -78,9 +72,7 @@ static int run_test(void)
 	int i;
 
 	ksft_print_header();
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(6);
 	fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, htons(ETH_P_ALL));
 	ksft_test_result(fd >= 0, "create an AF_PACKET socket\n");
 	if (fd < 0)
@@ -96,7 +88,7 @@ static int run_test(void)
 
 	errno = 0;
 	offset_ring = mmap(NULL, RING_SIZE, PROT_READ | PROT_WRITE,
-			   MAP_SHARED, fd, USER_PAGE_SIZE);
+			   MAP_SHARED, fd, PROCESS_PAGE_SIZE);
 	saved_errno = errno;
 	ksft_test_result(offset_ring == MAP_FAILED,
 			 "reject a packet-ring mmap at offset 4K (errno=%d)\n",
@@ -125,25 +117,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "packet_mmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

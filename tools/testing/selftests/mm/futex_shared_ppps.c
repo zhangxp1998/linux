@@ -1,25 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * Shared futexes of a 4K compat process key on the file page, not the
+ * virtual address: a waiter on one alias of a 4K file slice is woken through
+ * a second alias mapped at a different native-page offset, and a tagged
+ * anonymous address is accepted by FUTEX_WAKE.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/futex.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <time.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#define PROCESS_PAGE_SIZE 4096UL
-#define PPPS_NATIVE_PAGE_SIZE 16384UL
 #define POINTER_TAG 0xb4UL
 #define WAKE_RETRIES 1000
 
@@ -58,17 +55,17 @@ static struct alias_mapping map_alias(int fd, unsigned long native_offset)
 	void *reservation;
 	void *mapping;
 
-	reservation = mmap(NULL, 3 * PPPS_NATIVE_PAGE_SIZE, PROT_NONE,
+	reservation = mmap(NULL, 3 * NATIVE_PAGE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reservation == MAP_FAILED)
 		return alias;
 
-	aligned = ((uintptr_t)reservation + PPPS_NATIVE_PAGE_SIZE - 1) &
-		  ~(PPPS_NATIVE_PAGE_SIZE - 1);
+	aligned = ((uintptr_t)reservation + NATIVE_PAGE_SIZE - 1) &
+		  ~(NATIVE_PAGE_SIZE - 1);
 	mapping = mmap((void *)(aligned + native_offset), PROCESS_PAGE_SIZE,
 		       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
 	if (mapping == MAP_FAILED) {
-		munmap(reservation, 3 * PPPS_NATIVE_PAGE_SIZE);
+		munmap(reservation, 3 * NATIVE_PAGE_SIZE);
 		return alias;
 	}
 
@@ -80,7 +77,7 @@ static struct alias_mapping map_alias(int fd, unsigned long native_offset)
 static void unmap_alias(struct alias_mapping *alias)
 {
 	if (alias->reservation != MAP_FAILED)
-		munmap(alias->reservation, 3 * PPPS_NATIVE_PAGE_SIZE);
+		munmap(alias->reservation, 3 * NATIVE_PAGE_SIZE);
 }
 
 static void *waiter_thread(void *arg)
@@ -97,7 +94,7 @@ static void *waiter_thread(void *arg)
 	return NULL;
 }
 
-int main(void)
+static int run_test(void)
 {
 	struct alias_mapping alias_a = { .reservation = MAP_FAILED };
 	struct alias_mapping alias_b = { .reservation = MAP_FAILED };
@@ -113,9 +110,7 @@ int main(void)
 	int i;
 
 	ksft_print_header();
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(6);
 
 	anonymous_word = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -138,7 +133,7 @@ int main(void)
 	fd = mkstemp(path);
 	if (fd >= 0)
 		unlink(path);
-	if (fd < 0 || ftruncate(fd, PPPS_NATIVE_PAGE_SIZE))
+	if (fd < 0 || ftruncate(fd, NATIVE_PAGE_SIZE))
 		ksft_exit_fail_msg("backing file setup failed: %s\n",
 				   strerror(errno));
 
@@ -189,3 +184,5 @@ int main(void)
 	close(fd);
 	ksft_finished();
 }
+
+PPPS_COMPAT_MAIN(run_test)

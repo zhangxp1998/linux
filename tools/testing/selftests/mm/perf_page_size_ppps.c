@@ -1,26 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A minor-fault perf sample taken by a 4K compat process reports the 4K
+ * process page size in PERF_SAMPLE_DATA_PAGE_SIZE and
+ * PERF_SAMPLE_CODE_PAGE_SIZE.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <linux/perf_event.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "kselftest.h"
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
+#include "kselftest_ppps.h"
 
 static int perf_event_open(struct perf_event_attr *attr)
 {
@@ -45,8 +36,8 @@ static bool find_page_sizes(struct perf_event_mmap_page *metadata,
 			    uint64_t expected_addr, uint64_t *data_page_size,
 			    uint64_t *code_page_size)
 {
-	size_t data_offset = metadata->data_offset ?: USER_PAGE_SIZE;
-	size_t data_size = metadata->data_size ?: USER_PAGE_SIZE;
+	size_t data_offset = metadata->data_offset ?: PROCESS_PAGE_SIZE;
+	size_t data_size = metadata->data_size ?: PROCESS_PAGE_SIZE;
 	const unsigned char *data = (const unsigned char *)metadata + data_offset;
 	uint64_t head = __atomic_load_n(&metadata->data_head, __ATOMIC_ACQUIRE);
 	uint64_t position = metadata->data_tail;
@@ -99,7 +90,7 @@ static int sample_fault_page_sizes(unsigned char *address,
 	fd = perf_event_open(&attr);
 	if (fd < 0)
 		return -1;
-	metadata = mmap(NULL, 2 * USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	metadata = mmap(NULL, 2 * PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			MAP_SHARED, fd, 0);
 	if (metadata == MAP_FAILED)
 		goto out_close;
@@ -115,7 +106,7 @@ static int sample_fault_page_sizes(unsigned char *address,
 		ret = 0;
 
 out_unmap:
-	munmap(metadata, 2 * USER_PAGE_SIZE);
+	munmap(metadata, 2 * PROCESS_PAGE_SIZE);
 out_close:
 	close(fd);
 	return ret;
@@ -129,11 +120,9 @@ static int run_test(void)
 	int sampled;
 
 	ksft_print_header();
-	ksft_set_plan(5);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(4);
 
-	address = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	address = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	ksft_test_result(address != MAP_FAILED,
 			 "create an unfaulted anonymous mapping\n");
@@ -147,31 +136,13 @@ static int run_test(void)
 	ksft_print_msg("data_page_size=%llu code_page_size=%llu\n",
 		       (unsigned long long)data_page_size,
 		       (unsigned long long)code_page_size);
-	ksft_test_result(sampled == 0 && data_page_size == USER_PAGE_SIZE,
+	ksft_test_result(sampled == 0 && data_page_size == PROCESS_PAGE_SIZE,
 			 "PERF_SAMPLE_DATA_PAGE_SIZE uses process page size\n");
-	ksft_test_result(sampled == 0 && code_page_size == USER_PAGE_SIZE,
+	ksft_test_result(sampled == 0 && code_page_size == PROCESS_PAGE_SIZE,
 			 "PERF_SAMPLE_CODE_PAGE_SIZE uses process page size\n");
 
-	munmap(address, USER_PAGE_SIZE);
+	munmap(address, PROCESS_PAGE_SIZE);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("could not enable 4K compatibility mode\n");
-	execl("/proc/self/exe", "perf_page_size_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

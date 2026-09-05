@@ -57,6 +57,10 @@ static inline void tlb_flush(struct mmu_gather *tlb)
 	unsigned long stride = tlb_get_unmap_size(tlb);
 	int tlb_level = tlb_get_level(tlb);
 
+	/*
+	 * tlb_get_unmap_size() reports PAGE_SIZE both for native PTEs and when
+	 * no size hint was recorded; a compat mm's PTEs are one process page.
+	 */
 	if (tlb->mm && stride == PAGE_SIZE)
 		stride = MM_PAGE_SIZE(tlb->mm);
 

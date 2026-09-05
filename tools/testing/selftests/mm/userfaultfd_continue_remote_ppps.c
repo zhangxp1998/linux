@@ -1,31 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A native (16K) userfaultfd handler receives a 4K compat owner's shmem minor
+ * fault and resolves it with a one-page UFFDIO_CONTINUE; the owner's fault
+ * then resumes with the shmem contents.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/userfaultfd.h>
 #include <poll.h>
 #include <pthread.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE		4096UL
-#define RESERVE_SIZE		(3 * USER_PAGE_SIZE)
-#define OWNER_RESERVE_ADDRESS	((1UL << 28) + 7 * USER_PAGE_SIZE)
+#define RESERVE_SIZE		(3 * PROCESS_PAGE_SIZE)
+#define OWNER_RESERVE_ADDRESS	((1UL << 28) + 7 * PROCESS_PAGE_SIZE)
 #define BACKING_VALUE		0x6d
 
 struct handler_report {
@@ -44,40 +36,6 @@ struct fault_args {
 	unsigned char *destination;
 	int completion_fd;
 };
-
-static bool write_full(int fd, const void *buffer, size_t size)
-{
-	const char *position = buffer;
-
-	while (size) {
-		ssize_t written = write(fd, position, size);
-
-		if (written < 0 && errno == EINTR)
-			continue;
-		if (written <= 0)
-			return false;
-		position += written;
-		size -= written;
-	}
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t size)
-{
-	char *position = buffer;
-
-	while (size) {
-		ssize_t bytes = read(fd, position, size);
-
-		if (bytes < 0 && errno == EINTR)
-			continue;
-		if (bytes <= 0)
-			return false;
-		position += bytes;
-		size -= bytes;
-	}
-	return true;
-}
 
 static void *fault_thread(void *opaque)
 {
@@ -99,7 +57,7 @@ static int run_native_handler(int uffd, unsigned long destination,
 	};
 	struct uffdio_continue continuation = {
 		.range.start = destination,
-		.range.len = USER_PAGE_SIZE,
+		.range.len = PROCESS_PAGE_SIZE,
 	};
 	struct pollfd pollfd = {
 		.fd = uffd,
@@ -137,7 +95,7 @@ static int run_native_handler(int uffd, unsigned long destination,
 	       report.event == UFFD_EVENT_PAGEFAULT &&
 	       report.flags & UFFD_PAGEFAULT_FLAG_MINOR &&
 	       report.address == destination && !report.continue_result &&
-	       report.updated == USER_PAGE_SIZE ? EXIT_SUCCESS : EXIT_FAILURE;
+	       report.updated == PROCESS_PAGE_SIZE ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 static int exec_native_handler(int uffd, unsigned long destination,
@@ -147,17 +105,13 @@ static int exec_native_handler(int uffd, unsigned long destination,
 	char ready_fd_arg[16];
 	char report_fd_arg[16];
 	char uffd_arg[16];
-	int persona = personality(0xffffffffUL);
 
-	if (persona < 0 ||
-	    personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
 	snprintf(uffd_arg, sizeof(uffd_arg), "%d", uffd);
 	snprintf(destination_arg, sizeof(destination_arg), "%lu", destination);
 	snprintf(ready_fd_arg, sizeof(ready_fd_arg), "%d", ready_fd);
 	snprintf(report_fd_arg, sizeof(report_fd_arg), "%d", report_fd);
-	execl("/proc/self/exe", "userfaultfd_continue_remote_ppps", "--handler",
-	      uffd_arg, destination_arg, ready_fd_arg, report_fd_arg, NULL);
+	ppps_execl(false, NULL, "--handler", uffd_arg, destination_arg,
+		   ready_fd_arg, report_fd_arg, NULL);
 	return EXIT_FAILURE;
 }
 
@@ -188,24 +142,23 @@ static int run_compat_owner(void)
 	int uffd;
 	char ready;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(10);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "owner process uses 4K pages\n");
+	ksft_set_plan(9);
 
 	memfd = memfd_create("uffd-minor-ppps", MFD_CLOEXEC);
-	alias = memfd < 0 || ftruncate(memfd, USER_PAGE_SIZE) ? MAP_FAILED :
-		mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	alias = memfd < 0 || ftruncate(memfd, PROCESS_PAGE_SIZE) ? MAP_FAILED :
+		mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		     MAP_SHARED, memfd, 0);
 	if (alias != MAP_FAILED) {
 		*alias = BACKING_VALUE;
-		munmap(alias, USER_PAGE_SIZE);
+		munmap(alias, PROCESS_PAGE_SIZE);
 	}
 	reservation = mmap((void *)OWNER_RESERVE_ADDRESS, RESERVE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
 			   -1, 0);
 	destination = reservation == MAP_FAILED ? MAP_FAILED :
-		mmap(reservation + USER_PAGE_SIZE, USER_PAGE_SIZE,
+		mmap(reservation + PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
 		     PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, memfd, 0);
 	uffd = syscall(SYS_userfaultfd, O_NONBLOCK);
 	setup_ok = alias != MAP_FAILED && destination != MAP_FAILED && uffd >= 0 &&
@@ -213,7 +166,7 @@ static int run_compat_owner(void)
 		   api.features & UFFD_FEATURE_MINOR_SHMEM;
 	if (setup_ok) {
 		registration.range.start = (unsigned long)destination;
-		registration.range.len = USER_PAGE_SIZE;
+		registration.range.len = PROCESS_PAGE_SIZE;
 		registration.mode = UFFDIO_REGISTER_MODE_MINOR;
 		setup_ok = !ioctl(uffd, UFFDIO_REGISTER, &registration) &&
 			   registration.ioctls & (1ULL << _UFFDIO_CONTINUE);
@@ -259,8 +212,8 @@ static int run_compat_owner(void)
 	ksft_print_msg("owner page size=%ld, handler page size=%ld\n",
 		       sysconf(_SC_PAGESIZE), report.page_size);
 	ksft_test_result(report_received &&
-			 (report.page_size == USER_PAGE_SIZE ||
-			  report.page_size == 4 * USER_PAGE_SIZE),
+			 (report.page_size == PROCESS_PAGE_SIZE ||
+			  report.page_size == 4 * PROCESS_PAGE_SIZE),
 			 "handler reports a valid native page size\n");
 	ksft_test_result(report_received && report.poll_result > 0 &&
 			 report.read_result == sizeof(struct uffd_msg) &&
@@ -273,7 +226,7 @@ static int run_compat_owner(void)
 			 report.address == (unsigned long)destination,
 			 "fault address belongs to the 4K owner\n");
 	ksft_test_result(report_received && !report.continue_result &&
-			 report.updated == USER_PAGE_SIZE,
+			 report.updated == PROCESS_PAGE_SIZE,
 			 "native handler continues one owner page (%s, %lld bytes)\n",
 			 report.continue_result ? strerror(report.continue_error) : "ok",
 			 (long long)report.updated);
@@ -317,25 +270,15 @@ static int run_compat_owner(void)
 	ksft_finished();
 }
 
-static int exec_compat_owner(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
-	execl("/proc/self/exe", "userfaultfd_continue_remote_ppps", "--owner",
-	      NULL);
-	return EXIT_FAILURE;
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_compat_owner();
-	if (argc == 2 && !strcmp(argv[1], "--owner"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_compat(argv[0], "--owner", NULL);
+	if (argc == 2 && !strcmp(mode, "--owner"))
 		return run_compat_owner();
-	if (argc == 6 && !strcmp(argv[1], "--handler"))
+	if (argc == 6 && !strcmp(mode, "--handler"))
 		return run_native_handler(atoi(argv[2]), strtoul(argv[3], NULL, 10),
 					  atoi(argv[4]), atoi(argv[5]));
 	return EXIT_FAILURE;

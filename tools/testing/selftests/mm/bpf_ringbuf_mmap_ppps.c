@@ -1,27 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process maps the consumer, producer and data pages of BPF
+ * kernel and user ring buffers in 4K units, with the expected protections
+ * and bounds.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <linux/bpf.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define SMALL_RING_SIZE	USER_PAGE_SIZE
-#define RING_SIZE	(4 * USER_PAGE_SIZE)
-#define RING_MMAP_SIZE	(2 * USER_PAGE_SIZE + 2 * RING_SIZE)
+#define SMALL_RING_SIZE	PROCESS_PAGE_SIZE
+#define RING_SIZE	(4 * PROCESS_PAGE_SIZE)
+#define RING_MMAP_SIZE	(2 * PROCESS_PAGE_SIZE + 2 * RING_SIZE)
 
 static int sys_bpf(enum bpf_cmd command, union bpf_attr *attr)
 {
@@ -82,9 +76,7 @@ static int run_test(void)
 	bool mapping_ok;
 
 	ksft_print_header();
-	ksft_set_plan(16);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(15);
 	setrlimit(RLIMIT_MEMLOCK, &memlock);
 
 	small_ringbuf_fd = create_ringbuf(BPF_MAP_TYPE_RINGBUF,
@@ -93,16 +85,16 @@ static int run_test(void)
 		ksft_exit_fail_msg("4K BPF ringbuf creation failed: %s\n",
 				   strerror(errno));
 	ksft_test_result(true, "create a 4K kernel ring buffer\n");
-	mapping_ok = mapping_succeeds(small_ringbuf_fd, USER_PAGE_SIZE,
+	mapping_ok = mapping_succeeds(small_ringbuf_fd, PROCESS_PAGE_SIZE,
 				      PROT_READ | PROT_WRITE, 0);
 	ksft_test_result(mapping_ok,
 			 "map the 4K ring's consumer position\n");
-	mapping_ok = mapping_succeeds(small_ringbuf_fd, USER_PAGE_SIZE,
-				      PROT_READ, USER_PAGE_SIZE);
+	mapping_ok = mapping_succeeds(small_ringbuf_fd, PROCESS_PAGE_SIZE,
+				      PROT_READ, PROCESS_PAGE_SIZE);
 	ksft_test_result(mapping_ok,
 			 "map the 4K ring's producer position\n");
-	mapping_ok = mapping_succeeds(small_ringbuf_fd, USER_PAGE_SIZE,
-				      PROT_READ, 2 * USER_PAGE_SIZE);
+	mapping_ok = mapping_succeeds(small_ringbuf_fd, PROCESS_PAGE_SIZE,
+				      PROT_READ, 2 * PROCESS_PAGE_SIZE);
 	ksft_test_result(mapping_ok, "map the 4K ring's data page\n");
 	close(small_ringbuf_fd);
 
@@ -115,23 +107,23 @@ static int run_test(void)
 				   strerror(errno));
 	}
 	ksft_test_result(true, "create a kernel ring buffer\n");
-	mapping_ok = mapping_succeeds(ringbuf_fd, USER_PAGE_SIZE,
+	mapping_ok = mapping_succeeds(ringbuf_fd, PROCESS_PAGE_SIZE,
 				      PROT_READ | PROT_WRITE, 0);
 	ksft_test_result(mapping_ok,
 			 "map the 4K consumer position read-write\n");
-	mapping_ok = mapping_succeeds(ringbuf_fd, USER_PAGE_SIZE, PROT_READ,
-				      USER_PAGE_SIZE);
+	mapping_ok = mapping_succeeds(ringbuf_fd, PROCESS_PAGE_SIZE, PROT_READ,
+				      PROCESS_PAGE_SIZE);
 	ksft_test_result(mapping_ok,
 			 "map the 4K producer position read-only\n");
-	mapping_ok = mapping_succeeds(ringbuf_fd, USER_PAGE_SIZE, PROT_READ,
-				      2 * USER_PAGE_SIZE);
+	mapping_ok = mapping_succeeds(ringbuf_fd, PROCESS_PAGE_SIZE, PROT_READ,
+				      2 * PROCESS_PAGE_SIZE);
 	ksft_test_result(mapping_ok,
 			 "map the first 4K data slice read-only\n");
 	mapping_ok = mapping_succeeds(ringbuf_fd, RING_MMAP_SIZE, PROT_READ, 0);
 	ksft_test_result(mapping_ok,
 			 "map the complete logical ring buffer\n");
-	mapping_ok = mapping_fails(ringbuf_fd, 2 * USER_PAGE_SIZE, PROT_READ,
-				   RING_MMAP_SIZE - USER_PAGE_SIZE, EINVAL);
+	mapping_ok = mapping_fails(ringbuf_fd, 2 * PROCESS_PAGE_SIZE, PROT_READ,
+				   RING_MMAP_SIZE - PROCESS_PAGE_SIZE, EINVAL);
 	ksft_test_result(mapping_ok,
 			 "reject a mapping past the logical ring buffer\n");
 	close(ringbuf_fd);
@@ -141,20 +133,20 @@ static int run_test(void)
 		ksft_exit_fail_msg("BPF user ringbuf creation failed: %s\n",
 				   strerror(errno));
 	ksft_test_result(true, "create a user ring buffer\n");
-	mapping_ok = mapping_succeeds(user_ringbuf_fd, USER_PAGE_SIZE,
+	mapping_ok = mapping_succeeds(user_ringbuf_fd, PROCESS_PAGE_SIZE,
 				      PROT_READ, 0);
 	ksft_test_result(mapping_ok,
 			 "map the user consumer position read-only\n");
-	mapping_ok = mapping_succeeds(user_ringbuf_fd, USER_PAGE_SIZE,
-				      PROT_READ | PROT_WRITE, USER_PAGE_SIZE);
+	mapping_ok = mapping_succeeds(user_ringbuf_fd, PROCESS_PAGE_SIZE,
+				      PROT_READ | PROT_WRITE, PROCESS_PAGE_SIZE);
 	ksft_test_result(mapping_ok,
 			 "map the user producer position read-write\n");
-	mapping_ok = mapping_succeeds(user_ringbuf_fd, USER_PAGE_SIZE,
+	mapping_ok = mapping_succeeds(user_ringbuf_fd, PROCESS_PAGE_SIZE,
 				      PROT_READ | PROT_WRITE,
-				      2 * USER_PAGE_SIZE);
+				      2 * PROCESS_PAGE_SIZE);
 	ksft_test_result(mapping_ok,
 			 "map the first user data slice read-write\n");
-	mapping_ok = mapping_fails(user_ringbuf_fd, USER_PAGE_SIZE,
+	mapping_ok = mapping_fails(user_ringbuf_fd, PROCESS_PAGE_SIZE,
 				   PROT_READ | PROT_WRITE, 0, EPERM);
 	ksft_test_result(mapping_ok,
 			 "reject a writable user consumer position\n");
@@ -163,25 +155,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "bpf_ringbuf_mmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

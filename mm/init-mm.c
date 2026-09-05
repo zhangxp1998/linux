@@ -45,9 +45,6 @@ struct mm_struct init_mm = {
 #endif
 	.user_ns	= &init_user_ns,
 	.cpu_bitmap	= CPU_BITS_NONE,
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	.page_shift	= PAGE_SHIFT,
-#endif
 	INIT_MM_CONTEXT(init_mm)
 };
 
@@ -58,7 +55,4 @@ void setup_initial_init_mm(void *start_code, void *end_code,
 	init_mm.end_code = (unsigned long)end_code;
 	init_mm.end_data = (unsigned long)end_data;
 	init_mm.brk = (unsigned long)brk;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	init_mm.page_shift = PAGE_SHIFT;
-#endif
 }

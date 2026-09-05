@@ -1,30 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A native (16K) userfaultfd handler poisons one 4K page of a compat owner
+ * with UFFDIO_POISON; the owner can unregister the range and a reader of the
+ * poisoned page is killed with SIGBUS.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/userfaultfd.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE		4096UL
-#define RESERVE_SIZE		(3 * USER_PAGE_SIZE)
-#define OWNER_RESERVE_ADDRESS	((1UL << 28) + 15 * USER_PAGE_SIZE)
+#define RESERVE_SIZE		(3 * PROCESS_PAGE_SIZE)
+#define OWNER_RESERVE_ADDRESS	((1UL << 28) + 15 * PROCESS_PAGE_SIZE)
 
 struct handler_report {
 	long page_size;
@@ -33,46 +25,12 @@ struct handler_report {
 	__s64 updated;
 };
 
-static bool write_full(int fd, const void *buffer, size_t size)
-{
-	const char *position = buffer;
-
-	while (size) {
-		ssize_t written = write(fd, position, size);
-
-		if (written < 0 && errno == EINTR)
-			continue;
-		if (written <= 0)
-			return false;
-		position += written;
-		size -= written;
-	}
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t size)
-{
-	char *position = buffer;
-
-	while (size) {
-		ssize_t bytes = read(fd, position, size);
-
-		if (bytes < 0 && errno == EINTR)
-			continue;
-		if (bytes <= 0)
-			return false;
-		position += bytes;
-		size -= bytes;
-	}
-	return true;
-}
-
 static int run_native_handler(int uffd, unsigned long destination,
 			      int report_fd)
 {
 	struct uffdio_poison poison = {
 		.range.start = destination,
-		.range.len = USER_PAGE_SIZE,
+		.range.len = PROCESS_PAGE_SIZE,
 	};
 	struct handler_report report = {
 		.page_size = sysconf(_SC_PAGESIZE),
@@ -85,7 +43,7 @@ static int run_native_handler(int uffd, unsigned long destination,
 	report.updated = poison.updated;
 	if (!write_full(report_fd, &report, sizeof(report)))
 		return EXIT_FAILURE;
-	return !report.result && report.updated == USER_PAGE_SIZE ?
+	return !report.result && report.updated == PROCESS_PAGE_SIZE ?
 		EXIT_SUCCESS : EXIT_FAILURE;
 }
 
@@ -95,23 +53,19 @@ static int exec_native_handler(int uffd, unsigned long destination,
 	char destination_arg[32];
 	char report_fd_arg[16];
 	char uffd_arg[16];
-	int persona = personality(0xffffffffUL);
 
-	if (persona < 0 ||
-	    personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
 	snprintf(uffd_arg, sizeof(uffd_arg), "%d", uffd);
 	snprintf(destination_arg, sizeof(destination_arg), "%lu", destination);
 	snprintf(report_fd_arg, sizeof(report_fd_arg), "%d", report_fd);
-	execl("/proc/self/exe", "userfaultfd_poison_remote_ppps", "--handler",
-	      uffd_arg, destination_arg, report_fd_arg, NULL);
+	ppps_execl(false, NULL, "--handler", uffd_arg, destination_arg,
+		   report_fd_arg, NULL);
 	return EXIT_FAILURE;
 }
 
 static int run_compat_owner(void)
 {
 	struct uffdio_register registration = {
-		.range.len = USER_PAGE_SIZE,
+		.range.len = PROCESS_PAGE_SIZE,
 		.mode = UFFDIO_REGISTER_MODE_MISSING,
 	};
 	struct uffdio_api api = {
@@ -132,16 +86,15 @@ static int run_compat_owner(void)
 	int uffd;
 	int unregister_result;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "owner process uses 4K pages\n");
+	ksft_set_plan(6);
 
 	reservation = mmap((void *)OWNER_RESERVE_ADDRESS, RESERVE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
 			   -1, 0);
 	destination = reservation == MAP_FAILED ? MAP_FAILED :
-		mmap(reservation + USER_PAGE_SIZE, USER_PAGE_SIZE,
+		mmap(reservation + PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
 		     PROT_READ | PROT_WRITE,
 		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 	uffd = syscall(SYS_userfaultfd, O_NONBLOCK);
@@ -179,11 +132,11 @@ static int run_compat_owner(void)
 	ksft_print_msg("owner page size=%ld, handler page size=%ld\n",
 		       sysconf(_SC_PAGESIZE), report.page_size);
 	ksft_test_result(report_ok &&
-			 (report.page_size == USER_PAGE_SIZE ||
-			  report.page_size == 4 * USER_PAGE_SIZE),
+			 (report.page_size == PROCESS_PAGE_SIZE ||
+			  report.page_size == 4 * PROCESS_PAGE_SIZE),
 			 "start a native UFFD poison handler\n");
 	ksft_test_result(report_ok && !report.result &&
-			 report.updated == USER_PAGE_SIZE,
+			 report.updated == PROCESS_PAGE_SIZE,
 			 "native handler poisons one owner page (%s, %lld bytes)\n",
 			 report.result ? strerror(report.error) : "ok",
 			 (long long)report.updated);
@@ -192,7 +145,7 @@ static int run_compat_owner(void)
 			 "native handler completes cleanly\n");
 
 	unregister_range.start = (unsigned long)destination;
-	unregister_range.len = USER_PAGE_SIZE;
+	unregister_range.len = PROCESS_PAGE_SIZE;
 	unregister_result = ioctl(uffd, UFFDIO_UNREGISTER, &unregister_range);
 	ksft_test_result(!unregister_result,
 			 "owner unregisters the poisoned range\n");
@@ -212,25 +165,15 @@ static int run_compat_owner(void)
 	ksft_finished();
 }
 
-static int exec_compat_owner(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
-	execl("/proc/self/exe", "userfaultfd_poison_remote_ppps", "--owner",
-	      NULL);
-	return EXIT_FAILURE;
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_compat_owner();
-	if (argc == 2 && !strcmp(argv[1], "--owner"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_compat(argv[0], "--owner", NULL);
+	if (argc == 2 && !strcmp(mode, "--owner"))
 		return run_compat_owner();
-	if (argc == 5 && !strcmp(argv[1], "--handler"))
+	if (argc == 5 && !strcmp(mode, "--handler"))
 		return run_native_handler(atoi(argv[2]), strtoul(argv[3], NULL, 10),
 					  atoi(argv[4]));
 	return EXIT_FAILURE;

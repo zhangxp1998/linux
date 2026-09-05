@@ -1,31 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A BPF_F_STACK_BUILD_ID stack trace captured from a 4K compat process
+ * resolves the build ID of code mapped from file offset 4K and reports an
+ * offset inside that 4K file slice.
+ */
 #define _GNU_SOURCE
 
 #include <elf.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/bpf.h>
 #include <linux/memfd.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE		4096UL
-#define FILE_SIZE		(2 * USER_PAGE_SIZE)
-#define CODE_FILE_OFFSET	USER_PAGE_SIZE
+#define FILE_SIZE		(2 * PROCESS_PAGE_SIZE)
+#define CODE_FILE_OFFSET	PROCESS_PAGE_SIZE
 #define NOTE_OFFSET		0x100
 #define STACK_DEPTH		16
 #define STACK_ENTRIES		64
@@ -235,9 +226,7 @@ static int run_test(void)
 	int i;
 
 	ksft_print_header();
-	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(7);
 	setrlimit(RLIMIT_MEMLOCK, &memlock);
 
 	elf_fd = create_test_elf();
@@ -249,14 +238,14 @@ static int run_test(void)
 				   strerror(errno));
 #endif
 	}
-	code = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_EXEC, MAP_PRIVATE,
+	code = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_EXEC, MAP_PRIVATE,
 		    elf_fd, CODE_FILE_OFFSET);
 	ksft_test_result(code != MAP_FAILED,
 			 "map synthetic ELF code at file offset 4K\n");
 	if (code == MAP_FAILED)
 		ksft_exit_fail_msg("test code mmap failed: %s\n",
 				   strerror(errno));
-	__builtin___clear_cache(code, (char *)code + USER_PAGE_SIZE);
+	__builtin___clear_cache(code, (char *)code + PROCESS_PAGE_SIZE);
 	trigger = (trigger_fn_t)code;
 
 	stack_fd = create_stack_map();
@@ -295,36 +284,15 @@ static int run_test(void)
 			 "find the synthetic ELF build ID in the stack map\n");
 
 	offset_ok = build_id_found && reported_offset >= CODE_FILE_OFFSET &&
-		    reported_offset < CODE_FILE_OFFSET + USER_PAGE_SIZE;
+		    reported_offset < CODE_FILE_OFFSET + PROCESS_PAGE_SIZE;
 	ksft_test_result(offset_ok,
 			 "build-id offset includes the PPPS file slice\n");
 
 	close(prog_fd);
 	close(stack_fd);
-	munmap(code, USER_PAGE_SIZE);
+	munmap(code, PROCESS_PAGE_SIZE);
 	close(elf_fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "bpf_stack_build_id_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

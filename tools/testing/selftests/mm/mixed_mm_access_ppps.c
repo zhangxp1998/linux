@@ -1,76 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat caller accessing a native (16K) target through
+ * process_vm_readv/writev, /proc/pid/mem, /proc/pid/pagemap, process_madvise
+ * and ptrace sees the target's own page geometry across a native-page
+ * boundary.
+ */
 #define _GNU_SOURCE
 
 #include <asm/unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/ptrace.h>
-#include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE	0x10000000
-#endif
-
-#define COMPAT_PAGE_SIZE	4096UL
-#define NATIVE_PAGE_SIZE	16384UL
 #define MAPPING_SIZE		(2 * NATIVE_PAGE_SIZE)
-#define PAGEMAP_PRESENT		UINT64_C(0x8000000000000000)
 #define ADDRESS_TAG		(UINT64_C(0xb4) << 56)
 
 struct child_info {
 	uintptr_t address;
 	long page_size;
 };
-
-static bool write_full(int fd, const void *buffer, size_t length)
-{
-	const unsigned char *pos = buffer;
-
-	while (length) {
-		ssize_t written = write(fd, pos, length);
-
-		if (written < 0) {
-			if (errno == EINTR)
-				continue;
-			return false;
-		}
-		pos += written;
-		length -= written;
-	}
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t length)
-{
-	unsigned char *pos = buffer;
-
-	while (length) {
-		ssize_t bytes = read(fd, pos, length);
-
-		if (bytes < 0) {
-			if (errno == EINTR)
-				continue;
-			return false;
-		}
-		if (!bytes)
-			return false;
-		pos += bytes;
-		length -= bytes;
-	}
-	return true;
-}
 
 static bool buffer_is_value(const unsigned char *buffer, size_t length,
 			    unsigned char value)
@@ -84,29 +35,14 @@ static bool buffer_is_value(const unsigned char *buffer, size_t length,
 	return true;
 }
 
-static int set_page_size_and_exec(bool compat, const char *mode,
-				  int info_fd, int command_fd)
+static int exec_native_child(int info_fd, int command_fd)
 {
 	char command_fd_arg[16];
 	char info_fd_arg[16];
-	int persona = personality(0xffffffffUL);
 
-	if (persona < 0)
-		return EXIT_FAILURE;
-	if (compat)
-		persona |= ADDR_4KB_COMPAT_PAGE_SIZE;
-	else
-		persona &= ~ADDR_4KB_COMPAT_PAGE_SIZE;
-	if (personality(persona) < 0)
-		return EXIT_FAILURE;
-	if (!strcmp(mode, "--parent")) {
-		execl("/proc/self/exe", "mixed_mm_access_ppps", mode, NULL);
-	} else {
-		snprintf(info_fd_arg, sizeof(info_fd_arg), "%d", info_fd);
-		snprintf(command_fd_arg, sizeof(command_fd_arg), "%d", command_fd);
-		execl("/proc/self/exe", "mixed_mm_access_ppps", mode,
-		      info_fd_arg, command_fd_arg, NULL);
-	}
+	snprintf(info_fd_arg, sizeof(info_fd_arg), "%d", info_fd);
+	snprintf(command_fd_arg, sizeof(command_fd_arg), "%d", command_fd);
+	ppps_execl(false, NULL, "--child", info_fd_arg, command_fd_arg, NULL);
 	return EXIT_FAILURE;
 }
 
@@ -197,8 +133,7 @@ static int run_parent(void)
 	if (!child) {
 		close(info_pipe[0]);
 		close(command_pipe[1]);
-		_exit(set_page_size_and_exec(false, "--child", info_pipe[1],
-					     command_pipe[0]));
+		_exit(exec_native_child(info_pipe[1], command_pipe[0]));
 	}
 	close(info_pipe[1]);
 	close(command_pipe[0]);
@@ -208,7 +143,7 @@ static int run_parent(void)
 	ksft_print_msg("caller page size=%ld, target page size=%ld, address=%#lx\n",
 		       sysconf(_SC_PAGESIZE), info.page_size,
 		       (unsigned long)info.address);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == COMPAT_PAGE_SIZE &&
+	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE &&
 			 info.page_size == NATIVE_PAGE_SIZE &&
 			 !(info.address & (NATIVE_PAGE_SIZE - 1)),
 			 "4K caller targets a native-16K process\n");
@@ -262,8 +197,8 @@ static int run_parent(void)
 	pidfd = syscall(__NR_pidfd_open, child, 0);
 	if (pidfd < 0)
 		ksft_exit_fail_msg("pidfd_open failed: %s\n", strerror(errno));
-	remote.iov_base = (void *)(info.address + COMPAT_PAGE_SIZE);
-	remote.iov_len = COMPAT_PAGE_SIZE;
+	remote.iov_base = (void *)(info.address + PROCESS_PAGE_SIZE);
+	remote.iov_len = PROCESS_PAGE_SIZE;
 	errno = 0;
 	result = syscall(__NR_process_madvise, pidfd, &remote, 1,
 			 MADV_WILLNEED, 0);
@@ -273,7 +208,7 @@ static int run_parent(void)
 	errno = 0;
 	result = syscall(__NR_process_madvise, pidfd, &remote, 1,
 			 MADV_WILLNEED, 0);
-	ksft_test_result(result == COMPAT_PAGE_SIZE,
+	ksft_test_result(result == PROCESS_PAGE_SIZE,
 			 "process_madvise rounds length using target geometry\n");
 	close(pidfd);
 
@@ -285,7 +220,7 @@ static int run_parent(void)
 	if (attached) {
 		errno = 0;
 		word0 = ptrace(PTRACE_PEEKDATA, child,
-			       (void *)(info.address + COMPAT_PAGE_SIZE), NULL);
+			       (void *)(info.address + PROCESS_PAGE_SIZE), NULL);
 		if (errno)
 			attached = false;
 		errno = 0;
@@ -313,11 +248,13 @@ static int run_parent(void)
 
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return set_page_size_and_exec(true, "--parent", -1, -1);
-	if (argc == 2 && !strcmp(argv[1], "--parent"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_compat(argv[0], "--parent", NULL);
+	if (argc == 2 && !strcmp(mode, "--parent"))
 		return run_parent();
-	if (argc == 4 && !strcmp(argv[1], "--child"))
+	if (argc == 4 && !strcmp(mode, "--child"))
 		return run_child(atoi(argv[2]), atoi(argv[3]));
 	return EXIT_FAILURE;
 }

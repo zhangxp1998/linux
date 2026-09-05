@@ -1,29 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * The ELF core of a crashed 4K compat process carries a PT_AARCH64_MEMTAG_MTE
+ * segment for its tagged mapping, sized at process-page granularity and
+ * preserving the allocation tags of every 4K page.
+ */
 #define _GNU_SOURCE
 
 #include <asm/hwcap.h>
 #include <elf.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
+#include "kselftest_ppps.h"
 
 #ifndef PROT_MTE
 #define PROT_MTE 0x20
@@ -33,13 +25,12 @@
 #define PT_AARCH64_MEMTAG_MTE (PT_LOPROC + 0x2)
 #endif
 
-#define USER_PAGE_SIZE 4096UL
 #define MTE_GRANULE_SIZE 16UL
 #define MTE_TAG_BITS 4UL
 #define TEST_PAGES 4UL
-#define TEST_SIZE (TEST_PAGES * USER_PAGE_SIZE)
+#define TEST_SIZE (TEST_PAGES * PROCESS_PAGE_SIZE)
 #define TAG_BYTES_PER_PAGE \
-	(USER_PAGE_SIZE * MTE_TAG_BITS / (MTE_GRANULE_SIZE * 8))
+	(PROCESS_PAGE_SIZE * MTE_TAG_BITS / (MTE_GRANULE_SIZE * 8))
 #define TOTAL_TAG_BYTES (TEST_PAGES * TAG_BYTES_PER_PAGE)
 #define TEST_BASE 0x50000000UL
 #define CORE_PATTERN "/tmp/mte-core-ppps-%p"
@@ -105,7 +96,7 @@ static void crash_with_mte_mapping(void)
 		_exit(102);
 	memset(mapping, 0, TEST_SIZE);
 	for (offset = 0; offset < TEST_SIZE; offset += MTE_GRANULE_SIZE) {
-		unsigned int page = offset / USER_PAGE_SIZE;
+		unsigned int page = offset / PROCESS_PAGE_SIZE;
 
 		store_allocation_tag(mapping + offset, page + 1);
 	}
@@ -183,9 +174,7 @@ static int run_test(void)
 	ksft_print_header();
 	if (!(getauxval(AT_HWCAP2) & HWCAP2_MTE))
 		ksft_exit_skip("MTE is not supported\n");
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(6);
 	old_pattern = read_core_pattern(&old_pattern_length);
 	if (!old_pattern)
 		ksft_exit_fail_msg("read core_pattern failed: %s\n",
@@ -227,25 +216,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "mte_core_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

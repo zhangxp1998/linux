@@ -96,8 +96,12 @@ static inline bool try_page_mte_tagging(struct page *page)
 }
 
 void mte_zero_clear_page_tags(void *addr);
-void mte_sync_tags(pte_t pte, unsigned int nr_pages);
+void mte_zero_clear_tags_range(void *addr, size_t size);
+void mte_clear_tags_range(void *addr, size_t size);
+void mte_sync_tags(pte_t pte, unsigned int nr_pages,
+		   unsigned long page_size);
 void mte_copy_page_tags(void *kto, const void *kfrom);
+void mte_copy_tags_range(void *kto, const void *kfrom, size_t size);
 void mte_thread_init_user(void);
 void mte_thread_switch(struct task_struct *next);
 void mte_cpu_setup(void);
@@ -128,10 +132,21 @@ static inline bool try_page_mte_tagging(struct page *page)
 static inline void mte_zero_clear_page_tags(void *addr)
 {
 }
-static inline void mte_sync_tags(pte_t pte, unsigned int nr_pages)
+static inline void mte_zero_clear_tags_range(void *addr, size_t size)
+{
+}
+static inline void mte_clear_tags_range(void *addr, size_t size)
+{
+}
+static inline void mte_sync_tags(pte_t pte, unsigned int nr_pages,
+				 unsigned long page_size)
 {
 }
 static inline void mte_copy_page_tags(void *kto, const void *kfrom)
+{
+}
+static inline void mte_copy_tags_range(void *kto, const void *kfrom,
+				       size_t size)
 {
 }
 static inline void mte_thread_init_user(void)

@@ -1,24 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process can attach, round, mremap and detach a one-page SysV
+ * shm segment at 4K-aligned addresses inside a native 16K page.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/shm.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define NATIVE_PAGE_SIZE 16384UL
 #define RESERVE_SIZE	(4 * NATIVE_PAGE_SIZE)
 #define TEST_VALUE	0x5a17c0deU
 
@@ -38,8 +29,8 @@ static bool reserve_subpage_target(struct target_area *area)
 		return false;
 	start = (uintptr_t)area->base;
 	target = (start + NATIVE_PAGE_SIZE - 1) & -NATIVE_PAGE_SIZE;
-	target += USER_PAGE_SIZE;
-	if (target + USER_PAGE_SIZE > start + RESERVE_SIZE) {
+	target += PROCESS_PAGE_SIZE;
+	if (target + PROCESS_PAGE_SIZE > start + RESERVE_SIZE) {
 		munmap(area->base, RESERVE_SIZE);
 		area->base = MAP_FAILED;
 		return false;
@@ -56,7 +47,7 @@ static void release_target(struct target_area *area)
 
 static int create_segment(void)
 {
-	return shmget(IPC_PRIVATE, USER_PAGE_SIZE, IPC_CREAT | 0600);
+	return shmget(IPC_PRIVATE, PROCESS_PAGE_SIZE, IPC_CREAT | 0600);
 }
 
 static bool fixed_attach_roundtrip(bool *detach_ok)
@@ -126,7 +117,7 @@ static bool moved_attach_roundtrip(bool *detach_ok)
 	if (mapping == (void *)-1 || !reserve_subpage_target(&area))
 		goto out;
 	*mapping = TEST_VALUE;
-	moved = mremap(mapping, USER_PAGE_SIZE, USER_PAGE_SIZE,
+	moved = mremap(mapping, PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
 		       MREMAP_MAYMOVE | MREMAP_FIXED, area.target);
 	if (moved == MAP_FAILED)
 		goto out;
@@ -136,7 +127,7 @@ static bool moved_attach_roundtrip(bool *detach_ok)
 	moved = MAP_FAILED;
 out:
 	if (moved != MAP_FAILED)
-		munmap(moved, USER_PAGE_SIZE);
+		munmap(moved, PROCESS_PAGE_SIZE);
 	if (mapping != (void *)-1)
 		shmdt(mapping);
 	if (shmid >= 0)
@@ -162,9 +153,7 @@ static int run_test(void)
 		ksft_exit_fail_msg("SysV shm probe failed: %s\n",
 				   strerror(errno));
 	shmctl(probe, IPC_RMID, NULL);
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(5);
 	fixed = fixed_attach_roundtrip(&fixed_detach);
 	ksft_test_result(fixed,
 			 "attach SysV shm at a 4K-aligned subpage address\n");
@@ -181,25 +170,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "sysv_shm_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

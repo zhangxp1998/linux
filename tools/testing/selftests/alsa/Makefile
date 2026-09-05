@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
 #
-KDIR ?= $(if $(O),$(O),$(realpath ../../../..))
 
 ifneq ($(shell pkg-config --exists alsa && echo 0 || echo 1),0)
 $(error Package alsa not found, please install alsa development package or \
@@ -23,12 +22,10 @@ TEST_GEN_PROGS += snd_pcm_mmap_ppps
 
 TEST_GEN_PROGS_EXTENDED := libatest.so global-timer
 
-TEST_PROGS := test-snd-pcm-mmap-ppps.sh
+TEST_PROGS := snd_pcm_mmap_ppps.sh
 
-TEST_FILES := conf.d pcm-test.conf
-SND_PCM_MMAP_PPPS_MODULE := \
-	snd_pcm_mmap_ppps_module/snd_pcm_mmap_ppps_test.ko
-TEST_FILES += $(SND_PCM_MMAP_PPPS_MODULE)
+TEST_FILES := conf.d pcm-test.conf ../ppps/ppps_run_module.sh
+TEST_GEN_MODS_DIR := ppps_modules
 
 include ../lib.mk
 
@@ -37,18 +34,3 @@ $(OUTPUT)/libatest.so: conf.c alsa-local.h
 
 $(OUTPUT)/%: %.c $(OUTPUT)/libatest.so alsa-local.h
 	$(CC) $(CFLAGS) $< $(LDLIBS) -latest -o $@
-
-ifneq ($(SND_PCM_MMAP_PPPS_MODULE),)
-all: $(SND_PCM_MMAP_PPPS_MODULE)
-
-$(SND_PCM_MMAP_PPPS_MODULE): \
-	snd_pcm_mmap_ppps_module/snd_pcm_mmap_ppps_test.c \
-	snd_pcm_mmap_ppps_module/Makefile
-	+$(MAKE) -C snd_pcm_mmap_ppps_module KDIR=$(KDIR)
-
-.PHONY: clean_snd_pcm_mmap_ppps_module
-clean_snd_pcm_mmap_ppps_module:
-	+$(MAKE) -C snd_pcm_mmap_ppps_module KDIR=$(KDIR) clean
-
-clean: clean_snd_pcm_mmap_ppps_module
-endif

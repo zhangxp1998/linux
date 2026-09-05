@@ -1,30 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * vm_map_pages() through the vm_map_pages_ppps fixture maps five 4K slices at
+ * a 4K file offset for a 4K compat process, each with a present PTE holding
+ * the expected logical page, and a forked child inherits all of them.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 #include "vm_map_pages_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define FILE_OFFSET	USER_PAGE_SIZE
+#define FILE_OFFSET	PROCESS_PAGE_SIZE
 #define MAPPING_PAGES	5
-#define MAPPING_SIZE	(MAPPING_PAGES * USER_PAGE_SIZE)
+#define MAPPING_SIZE	(MAPPING_PAGES * PROCESS_PAGE_SIZE)
 #define FIRST_MARKER	0x41
 
 static sigjmp_buf fault_environment;
@@ -42,6 +34,21 @@ static bool read_mapping(const unsigned char *mapping, unsigned char *value)
 	return true;
 }
 
+static bool mmap_edge_case(int fd, unsigned long offset, bool readable)
+{
+	unsigned char value;
+	unsigned char *mapping;
+	bool result;
+
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, offset * PROCESS_PAGE_SIZE);
+	if (mapping == MAP_FAILED)
+		return false;
+	result = read_mapping(mapping, &value) == readable;
+	munmap(mapping, PROCESS_PAGE_SIZE);
+	return result;
+}
+
 static int run_test(void)
 {
 	struct sigaction action = {
@@ -56,16 +63,10 @@ static int run_test(void)
 	pid_t pid;
 
 	ksft_print_header();
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(10);
 
-	fd = open("/dev/" VM_MAP_PAGES_PPPS_DEVICE_NAME,
-		  O_RDWR | O_CLOEXEC);
+	fd = ppps_open_fixture_or_skip("/dev/vm_map_pages_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the vm_map_pages test device\n");
-	if (fd < 0)
-		ksft_exit_fail_msg("open test device failed: %s\n",
-				   strerror(errno));
 
 	mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE,
 		       MAP_SHARED, fd, FILE_OFFSET);
@@ -83,7 +84,7 @@ static int run_test(void)
 	for (page = 0; page < MAPPING_PAGES; page++) {
 		unsigned char expected = FIRST_MARKER + page;
 
-		if (!read_mapping(mapping + page * USER_PAGE_SIZE, &value)) {
+		if (!read_mapping(mapping + page * PROCESS_PAGE_SIZE, &value)) {
 			ksft_print_msg("SIGBUS at logical page %u\n", page + 1);
 			readable = false;
 			marker_ok = false;
@@ -107,7 +108,7 @@ static int run_test(void)
 		for (page = 0; page < MAPPING_PAGES; page++) {
 			unsigned char expected = FIRST_MARKER + page;
 
-			if (!read_mapping(mapping + page * USER_PAGE_SIZE,
+			if (!read_mapping(mapping + page * PROCESS_PAGE_SIZE,
 					  &value) || value != expected)
 				_exit(EXIT_FAILURE);
 		}
@@ -118,30 +119,20 @@ static int run_test(void)
 	ksft_test_result(WIFEXITED(status) && !WEXITSTATUS(status),
 			 "fork inherits every vm_map_pages slice\n");
 
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_ZERO, false),
+			 "zero-page vm_insert_pages request is a no-op\n");
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_BEFORE, false),
+			 "vm_insert_pages rejects an address before the VMA\n");
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_AFTER, false),
+			 "vm_insert_pages rejects an address at the VMA end\n");
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_TOO_MANY, false),
+			 "vm_insert_pages rejects too many native pages\n");
+	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_BUSY, true),
+			 "vm_insert_pages reports a duplicate PTE and remaining page\n");
+
 	munmap(mapping, MAPPING_SIZE);
 	close(fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "vm_map_pages_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

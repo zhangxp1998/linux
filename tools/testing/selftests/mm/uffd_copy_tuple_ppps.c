@@ -36,36 +36,17 @@
  */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <pthread.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <linux/userfaultfd.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <sys/personality.h>
-#include <sys/syscall.h>
 
-#include "../kselftest.h"
+#include "ppps_tuple_test.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
+#ifndef MREMAP_DONTUNMAP
+#define MREMAP_DONTUNMAP 4
 #endif
 
-#define PROCESS_PAGE	4096UL		/* compat page size */
-#define NATIVE_PAGE	16384UL		/* 16K-native kernel PAGE_SIZE */
-#define SLICES		(NATIVE_PAGE / PROCESS_PAGE)
 #define RACE_ITERATIONS	128UL
-#define FIXED_TUPLES	3UL
-#define REGION_LEN	((FIXED_TUPLES + RACE_ITERATIONS) * NATIVE_PAGE)
-
-#define PAGEMAP_PRESENT		UINT64_C(0x8000000000000000)
-#define PAGEMAP_PFN_MASK	((UINT64_C(1) << 55) - 1)
+#define FIXED_TUPLES	5UL
+#define REGION_LEN	((FIXED_TUPLES + RACE_ITERATIONS) * NATIVE_PAGE_SIZE)
 
 struct copy_args {
 	pthread_barrier_t *barrier;
@@ -75,23 +56,6 @@ struct copy_args {
 	long copied;
 	int uffd;
 };
-
-/*
- * A compat process only exists if the ADDR_4KB_COMPAT_PAGE_SIZE personality
- * was set before exec.  Match the other mm ppps selftests: set the bit and
- * re-exec ourselves.
- */
-static void reexec_compat(char **argv)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_skip("personality get failed: %s\n", strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_skip("personality set failed: %s\n", strerror(errno));
-	execl("/proc/self/exe", argv[0], "--compat", (char *)NULL);
-	ksft_exit_skip("re-exec for compat failed: %s\n", strerror(errno));
-}
 
 static bool read_page_sizes(uintptr_t address, unsigned long *kernel_size,
 			    unsigned long *mmu_size)
@@ -133,110 +97,17 @@ static bool has_ppps_geometry(void)
 	unsigned char *probe;
 	bool parsed;
 
-	probe = mmap(NULL, NATIVE_PAGE, PROT_READ | PROT_WRITE,
+	probe = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (probe == MAP_FAILED)
 		return false;
 	*probe = 0x5a;
 	parsed = read_page_sizes((uintptr_t)probe, &kernel_size, &mmu_size);
-	munmap(probe, NATIVE_PAGE);
+	munmap(probe, NATIVE_PAGE_SIZE);
 	if (!parsed)
 		return false;
 
-	return kernel_size == NATIVE_PAGE && mmu_size == PROCESS_PAGE;
-}
-
-/*
- * Read RssAnon without allocating: the value is sampled either side of a
- * single ioctl, so a stdio buffer or an arena growing in between would show up
- * as noise in the delta.
- */
-static long rss_anon_kb(void)
-{
-	static char buf[8192];
-	const char *p;
-	ssize_t len;
-	int fd;
-
-	fd = open("/proc/self/status", O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return -1;
-	len = read(fd, buf, sizeof(buf) - 1);
-	close(fd);
-	if (len <= 0)
-		return -1;
-	buf[len] = '\0';
-	p = strstr(buf, "RssAnon:");
-	if (!p)
-		return -1;
-	return strtol(p + strlen("RssAnon:"), NULL, 10);
-}
-
-/* Returns false if any slice is absent; pfn[] may still be all-zero w/o caps. */
-static bool read_slice_pfns(const unsigned char *base, uint64_t pfn[SLICES])
-{
-	uint64_t entry;
-	unsigned int i;
-	off_t offset;
-	int fd;
-
-	fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return false;
-	for (i = 0; i < SLICES; i++) {
-		offset = (off_t)(((uintptr_t)base + i * PROCESS_PAGE) /
-				 PROCESS_PAGE) * sizeof(entry);
-		if (pread(fd, &entry, sizeof(entry), offset) != sizeof(entry) ||
-		    !(entry & PAGEMAP_PRESENT)) {
-			close(fd);
-			return false;
-		}
-		pfn[i] = entry & PAGEMAP_PFN_MASK;
-	}
-	close(fd);
-	return true;
-}
-
-static int uffd_open_register(void *start, unsigned long len)
-{
-	struct uffdio_register reg = {};
-	struct uffdio_api api = {};
-	int uffd;
-
-	uffd = syscall(__NR_userfaultfd, O_CLOEXEC | UFFD_USER_MODE_ONLY);
-	if (uffd < 0)
-		return -1;
-	api.api = UFFD_API;
-	if (ioctl(uffd, UFFDIO_API, &api)) {
-		close(uffd);
-		return -1;
-	}
-	reg.range.start = (uintptr_t)start;
-	reg.range.len = len;
-	reg.mode = UFFDIO_REGISTER_MODE_MISSING;
-	if (ioctl(uffd, UFFDIO_REGISTER, &reg)) {
-		close(uffd);
-		return -1;
-	}
-	return uffd;
-}
-
-/* Returns the ioctl's uffdio_copy.copy, or -errno when it never ran. */
-static long uffd_copy(int uffd, void *dst, void *src, unsigned long len)
-{
-	struct uffdio_copy copy = {};
-	int ret;
-
-	copy.dst = (uintptr_t)dst;
-	copy.src = (uintptr_t)src;
-	copy.len = len;
-	copy.mode = 0;
-	copy.copy = 0;
-	ret = ioctl(uffd, UFFDIO_COPY, &copy);
-	/* A partial fill returns -1/EAGAIN but still reports .copy bytes. */
-	if (copy.copy > 0)
-		return (long)copy.copy;
-	return ret ? -errno : 0;
+	return kernel_size == NATIVE_PAGE_SIZE && mmu_size == PROCESS_PAGE_SIZE;
 }
 
 static void *copy_thread(void *data)
@@ -257,16 +128,16 @@ static bool test_source_retry(int dst_uffd, unsigned char *dst)
 	bool cold;
 
 	/* The first source PTE is absent, forcing the mmap-lock-outside retry. */
-	source = mmap(NULL, NATIVE_PAGE, PROT_READ | PROT_WRITE,
+	source = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (source == MAP_FAILED)
 		return false;
 	resident = 1;
-	cold = !mincore(source, PROCESS_PAGE, &resident) && !(resident & 1);
-	copied = cold ? uffd_copy(dst_uffd, dst, source, NATIVE_PAGE) : -1;
-	cold = cold && copied == NATIVE_PAGE &&
-	       !memcmp(dst, source, NATIVE_PAGE);
-	munmap(source, NATIVE_PAGE);
+	cold = !mincore(source, PROCESS_PAGE_SIZE, &resident) && !(resident & 1);
+	copied = cold ? uffd_copy(dst_uffd, dst, source, NATIVE_PAGE_SIZE) : -1;
+	cold = cold && copied == NATIVE_PAGE_SIZE &&
+	       !memcmp(dst, source, NATIVE_PAGE_SIZE);
+	munmap(source, NATIVE_PAGE_SIZE);
 	return cold;
 }
 
@@ -279,14 +150,14 @@ static bool race_one_tuple(int uffd, unsigned char *dst,
 		{
 			.dst = dst,
 			.src = source_a,
-			.len = NATIVE_PAGE,
+			.len = NATIVE_PAGE_SIZE,
 			.copied = -1,
 			.uffd = uffd,
 		},
 		{
 			.dst = dst,
 			.src = source_b,
-			.len = NATIVE_PAGE,
+			.len = NATIVE_PAGE_SIZE,
 			.copied = -1,
 			.uffd = uffd,
 		},
@@ -307,10 +178,10 @@ static bool race_one_tuple(int uffd, unsigned char *dst,
 	pthread_join(threads[1], NULL);
 	pthread_barrier_destroy(&barrier);
 
-	a_won = args[0].copied == NATIVE_PAGE && args[1].copied == -EEXIST;
-	b_won = args[1].copied == NATIVE_PAGE && args[0].copied == -EEXIST;
+	a_won = args[0].copied == NATIVE_PAGE_SIZE && args[1].copied == -EEXIST;
+	b_won = args[1].copied == NATIVE_PAGE_SIZE && args[0].copied == -EEXIST;
 	winner = a_won ? source_a : source_b;
-	if ((!a_won && !b_won) || memcmp(dst, winner, NATIVE_PAGE)) {
+	if ((!a_won && !b_won) || memcmp(dst, winner, NATIVE_PAGE_SIZE)) {
 		ksft_print_msg("race %lu: copy results %ld/%ld\n", iteration,
 			       args[0].copied, args[1].copied);
 		return false;
@@ -323,111 +194,149 @@ static bool test_same_tuple_race(int uffd, unsigned char *race_region,
 				 unsigned char *source_b)
 {
 	for (unsigned long i = 0; i < RACE_ITERATIONS; i++) {
-		if (!race_one_tuple(uffd, race_region + i * NATIVE_PAGE,
+		if (!race_one_tuple(uffd, race_region + i * NATIVE_PAGE_SIZE,
 				    source_a, source_b, i))
 			return false;
 	}
 	return true;
 }
 
-static bool all_bytes_are(const unsigned char *p, unsigned long len,
-			  unsigned char want)
+/*
+ * ART's userfaultfd GC mixes UFFDIO_ZEROPAGE and 4K UFFDIO_COPY slices in one
+ * tuple, then mremap()s the live part of the space -- a 4K, not 16K, multiple
+ * -- with MREMAP_DONTUNMAP.  @tuples spans two tuples: the first is moved
+ * whole and the second only partly, so the whole one is regrouped purely
+ * because of its zero-page slice.  Every moved slice must keep its bytes.
+ */
+static bool test_zeropage_mremap(int uffd, unsigned char *tuples,
+				 const unsigned char *src)
 {
-	unsigned long i;
+	struct uffdio_zeropage zp = {
+		.range = {
+			.start = (uintptr_t)(tuples + 2 * PROCESS_PAGE_SIZE),
+			.len = PROCESS_PAGE_SIZE,
+		},
+	};
+	const size_t moved_len = (PPPS_SLICES + 1) * PROCESS_PAGE_SIZE;
+	unsigned char *reservation, *dst;
+	unsigned int i;
+	bool ok;
 
-	for (i = 0; i < len; i++)
-		if (p[i] != want)
+	if (ioctl(uffd, UFFDIO_ZEROPAGE, &zp) || zp.zeropage != (long)PROCESS_PAGE_SIZE)
+		return false;
+	for (i = 0; i <= PPPS_SLICES; i++) {
+		if (i == 2)
+			continue;
+		if (uffd_copy(uffd, tuples + i * PROCESS_PAGE_SIZE,
+			      (void *)(src + i * PROCESS_PAGE_SIZE),
+			      PROCESS_PAGE_SIZE) != (long)PROCESS_PAGE_SIZE)
 			return false;
-	return true;
+	}
+
+	reservation = mmap(NULL, 3 * NATIVE_PAGE_SIZE, PROT_NONE,
+			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (reservation == MAP_FAILED)
+		return false;
+	dst = (unsigned char *)(((uintptr_t)reservation + NATIVE_PAGE_SIZE - 1) &
+				~(uintptr_t)(NATIVE_PAGE_SIZE - 1));
+	if (mremap(tuples, moved_len, moved_len,
+		   MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP, dst) != dst) {
+		munmap(reservation, 3 * NATIVE_PAGE_SIZE);
+		return false;
+	}
+	ok = true;
+	for (i = 0; i <= PPPS_SLICES; i++)
+		ok = ok && all_bytes_are(dst + i * PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
+					 i == 2 ? 0 : src[i * PROCESS_PAGE_SIZE]);
+	munmap(reservation, 3 * NATIVE_PAGE_SIZE);
+	return ok;
 }
 
 static int run_test(void)
 {
 	unsigned char *reservation, *region, *src;
-	unsigned char *tuple_a, *tuple_b, *tuple_retry, *race_region;
+	unsigned char *tuple_a, *tuple_b, *tuple_retry, *tuple_move, *race_region;
 	long rss_before, rss_after, copied;
-	uint64_t pfn[SLICES];
+	uint64_t pfn[PPPS_SLICES];
 	unsigned int i;
 	bool ok;
 	int uffd;
 
 	ksft_print_header();
 
-	if (sysconf(_SC_PAGESIZE) != (long)PROCESS_PAGE)
-		ksft_exit_skip("need a compat (4K) process; _SC_PAGESIZE=%ld\n",
-			       sysconf(_SC_PAGESIZE));
 	if (!has_ppps_geometry())
 		ksft_exit_skip("need native-16K/compat-4K PPPS geometry\n");
 
 	/* Oversize the reservation so the region can start 16K-aligned. */
-	reservation = mmap(NULL, REGION_LEN + NATIVE_PAGE, PROT_READ | PROT_WRITE,
+	reservation = mmap(NULL, REGION_LEN + NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reservation == MAP_FAILED)
 		ksft_exit_fail_perror("mmap(region)");
-	region = (unsigned char *)(((uintptr_t)reservation + NATIVE_PAGE - 1) &
-				   ~(uintptr_t)(NATIVE_PAGE - 1));
+	region = (unsigned char *)(((uintptr_t)reservation + NATIVE_PAGE_SIZE - 1) &
+				   ~(uintptr_t)(NATIVE_PAGE_SIZE - 1));
 	tuple_a = region;
-	tuple_b = region + NATIVE_PAGE;
-	tuple_retry = region + 2 * NATIVE_PAGE;
-	race_region = region + FIXED_TUPLES * NATIVE_PAGE;
+	tuple_b = region + NATIVE_PAGE_SIZE;
+	tuple_retry = region + 2 * NATIVE_PAGE_SIZE;
+	tuple_move = region + 3 * NATIVE_PAGE_SIZE;
+	race_region = region + FIXED_TUPLES * NATIVE_PAGE_SIZE;
 
 	/*
 	 * The source is faulted in and filled up front: an unpopulated source
 	 * would fault (and grow RssAnon) inside the measured ioctl.
 	 */
-	src = mmap(NULL, 4 * NATIVE_PAGE, PROT_READ | PROT_WRITE,
+	src = mmap(NULL, 4 * NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (src == MAP_FAILED)
 		ksft_exit_fail_perror("mmap(src)");
-	for (i = 0; i < 2 * SLICES; i++)
-		memset(src + i * PROCESS_PAGE, 0xa0 + i, PROCESS_PAGE);
-	memset(src + 2 * NATIVE_PAGE, 0x5a, NATIVE_PAGE);
-	memset(src + 3 * NATIVE_PAGE, 0xa5, NATIVE_PAGE);
+	for (i = 0; i < 2 * PPPS_SLICES; i++)
+		memset(src + i * PROCESS_PAGE_SIZE, 0xa0 + i, PROCESS_PAGE_SIZE);
+	memset(src + 2 * NATIVE_PAGE_SIZE, 0x5a, NATIVE_PAGE_SIZE);
+	memset(src + 3 * NATIVE_PAGE_SIZE, 0xa5, NATIVE_PAGE_SIZE);
 
 	uffd = uffd_open_register(region, REGION_LEN);
 	if (uffd < 0)
 		ksft_exit_skip("userfaultfd MISSING registration failed: %s\n",
 			       strerror(errno));
-	ksft_set_plan(7);
+	ksft_set_plan(8);
 
 	/* Warm the status read so the measured pair allocates nothing. */
-	if (rss_anon_kb() < 0)
+	if (rss_anon_bytes() < 0)
 		ksft_exit_fail_msg("cannot read RssAnon from /proc/self/status\n");
 
-	rss_before = rss_anon_kb();
-	copied = uffd_copy(uffd, tuple_a, src, NATIVE_PAGE);
-	rss_after = rss_anon_kb();
+	rss_before = rss_anon_bytes();
+	copied = uffd_copy(uffd, tuple_a, src, NATIVE_PAGE_SIZE);
+	rss_after = rss_anon_bytes();
 
-	ksft_test_result(copied == (long)NATIVE_PAGE,
+	ksft_test_result(copied == (long)NATIVE_PAGE_SIZE,
 			 "16K UFFDIO_COPY installed the whole tuple (copy=%ld, want %lu)\n",
-			 copied, NATIVE_PAGE);
+			 copied, NATIVE_PAGE_SIZE);
 
-	ok = copied == (long)NATIVE_PAGE;
-	for (i = 0; ok && i < SLICES; i++)
-		ok = all_bytes_are(tuple_a + i * PROCESS_PAGE, PROCESS_PAGE,
+	ok = copied == (long)NATIVE_PAGE_SIZE;
+	for (i = 0; ok && i < PPPS_SLICES; i++)
+		ok = all_bytes_are(tuple_a + i * PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
 				   (unsigned char)(0xa0 + i));
 	ksft_test_result(ok, "all %u destination slices carry the copied bytes\n",
-			 (unsigned int)SLICES);
+			 (unsigned int)PPPS_SLICES);
 
 	if (rss_before < 0 || rss_after < 0)
 		ksft_test_result_skip("RssAnon unreadable\n");
 	else
-		ksft_test_result(rss_after - rss_before == (long)(NATIVE_PAGE / 1024),
+		ksft_test_result(rss_after - rss_before == (long)NATIVE_PAGE_SIZE,
 				 "RssAnon grew by one native page: %ld kB (packed=%lu, singletons=%lu)\n",
-				 rss_after - rss_before, NATIVE_PAGE / 1024,
-				 SLICES * NATIVE_PAGE / 1024);
+				 (rss_after - rss_before) / 1024, NATIVE_PAGE_SIZE / 1024,
+				 PPPS_SLICES * NATIVE_PAGE_SIZE / 1024);
 
-	if (!read_slice_pfns(tuple_a, pfn)) {
+	if (!read_pfns(tuple_a, pfn)) {
 		ksft_test_result_skip("pagemap: destination slices not all present\n");
 	} else if (!pfn[0]) {
 		ksft_test_result_skip("pagemap: pfns hidden (need CAP_SYS_ADMIN)\n");
 	} else {
 		ok = true;
-		for (i = 1; i < SLICES; i++)
+		for (i = 1; i < PPPS_SLICES; i++)
 			ok = ok && pfn[i] == pfn[0];
 		ksft_test_result(ok,
 				 "the %u slices share one native folio (pfn %#llx %#llx %#llx %#llx)\n",
-				 (unsigned int)SLICES,
+				 (unsigned int)PPPS_SLICES,
 				 (unsigned long long)pfn[0],
 				 (unsigned long long)pfn[1],
 				 (unsigned long long)pfn[2],
@@ -441,40 +350,36 @@ static int run_test(void)
 	 * stop at slice 1 and report exactly 4096 -- byte-for-byte what the
 	 * pre-K1 kernel reported.
 	 */
-	copied = uffd_copy(uffd, tuple_b + PROCESS_PAGE, src + NATIVE_PAGE,
-			   PROCESS_PAGE);
-	if (copied != (long)PROCESS_PAGE) {
+	copied = uffd_copy(uffd, tuple_b + PROCESS_PAGE_SIZE, src + NATIVE_PAGE_SIZE,
+			   PROCESS_PAGE_SIZE);
+	if (copied != (long)PROCESS_PAGE_SIZE) {
 		ksft_test_result_fail("seeding slice 1 failed (copy=%ld)\n",
 				      copied);
 	} else {
-		copied = uffd_copy(uffd, tuple_b, src, NATIVE_PAGE);
-		ok = copied == (long)PROCESS_PAGE &&
-		     all_bytes_are(tuple_b, PROCESS_PAGE, 0xa0) &&
-		     all_bytes_are(tuple_b + PROCESS_PAGE, PROCESS_PAGE, 0xa4);
+		copied = uffd_copy(uffd, tuple_b, src, NATIVE_PAGE_SIZE);
+		ok = copied == (long)PROCESS_PAGE_SIZE &&
+		     all_bytes_are(tuple_b, PROCESS_PAGE_SIZE, 0xa0) &&
+		     all_bytes_are(tuple_b + PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE, 0xa4);
 		ksft_test_result(ok,
 				 "16K COPY over a populated slice stops at it (copy=%ld, want %lu)\n",
-				 copied, PROCESS_PAGE);
+				 copied, PROCESS_PAGE_SIZE);
 	}
 
 	ksft_test_result(test_source_retry(uffd, tuple_retry),
 			 "source faults retry outside mmap lock and preserve the tuple\n");
 
 	ksft_test_result(test_same_tuple_race(uffd, race_region,
-					      src + 2 * NATIVE_PAGE,
-					      src + 3 * NATIVE_PAGE),
+					      src + 2 * NATIVE_PAGE_SIZE,
+					      src + 3 * NATIVE_PAGE_SIZE),
 			 "same-tuple COPY races have one winner and one EEXIST loser\n");
 
+	ksft_test_result(test_zeropage_mremap(uffd, tuple_move, src),
+			 "unaligned mremap keeps COPY slices beside a ZEROPAGE slice\n");
+
 	close(uffd);
-	munmap(src, 4 * NATIVE_PAGE);
-	munmap(reservation, REGION_LEN + NATIVE_PAGE);
+	munmap(src, 4 * NATIVE_PAGE_SIZE);
+	munmap(reservation, REGION_LEN + NATIVE_PAGE_SIZE);
 	ksft_finished();
 }
 
-int main(int argc, char **argv)
-{
-	/* Become a compat (4K) process if we are not already one. */
-	if (sysconf(_SC_PAGESIZE) != (long)PROCESS_PAGE && argc == 1)
-		reexec_compat(argv);
-
-	return run_test();
-}
+PPPS_COMPAT_MAIN(run_test)

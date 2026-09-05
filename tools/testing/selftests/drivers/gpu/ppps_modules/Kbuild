@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0
+ifneq ($(CONFIG_DRM),)
+obj-m += drm_gem_mmap_ppps_module.o
+endif
+ifneq ($(CONFIG_DRM_TTM),)
+obj-m += ttm_vm_fault_ppps_module.o
+endif

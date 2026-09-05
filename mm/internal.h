@@ -18,6 +18,9 @@
 #include <linux/swapops.h>
 #include <linux/swap_cgroup.h>
 #include <linux/tracepoint-defs.h>
+#include <linux/userfaultfd_k.h>
+
+#include "ppps.h"
 
 /* Internal core VMA manipulation functions. */
 #include "vma.h"
@@ -322,6 +325,40 @@ static inline unsigned int folio_pte_batch_flags(struct folio *folio,
 unsigned int folio_pte_batch(struct folio *folio, pte_t *ptep, pte_t pte,
 		unsigned int max_nr);
 
+/* Process PTEs a fully mapped @folio spans in @vma; folio_nr_pages() natively. */
+static inline unsigned long folio_nr_ptes(struct folio *folio,
+					  const struct vm_area_struct *vma)
+{
+	return folio_size(folio) >> MM_PAGE_SHIFT(vma->vm_mm);
+}
+
+/* Compat mappings advance by process-page slices, not native PFNs. */
+static inline unsigned int vma_folio_pte_batch(struct vm_area_struct *vma,
+		struct folio *folio, unsigned long addr, pte_t *ptep,
+		pte_t *ptentp, unsigned int max_nr, fpb_t flags)
+{
+	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
+	unsigned int nr;
+
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return folio_pte_batch_flags(folio, vma, ptep, ptentp,
+					     max_nr, flags);
+	for (nr = 1; nr < max_nr; nr++) {
+		pte_t next = ptep_get(ptep + nr);
+
+		if (!pte_present(next) ||
+		    vm_normal_folio(vma, addr + nr * page_size, next) != folio)
+			break;
+		if (flags & FPB_MERGE_YOUNG_DIRTY) {
+			if (pte_young(next))
+				*ptentp = pte_mkyoung(*ptentp);
+			if (pte_dirty(next))
+				*ptentp = pte_mkdirty(*ptentp);
+		}
+	}
+	return nr;
+}
+
 /**
  * pte_move_swp_offset - Move the swap entry offset field of a swap pte
  *	 forward or backward by delta
@@ -345,8 +382,6 @@ static inline pte_t pte_move_swp_offset(pte_t pte, long delta)
 		new = pte_swp_mkexclusive(new);
 	if (pte_swp_uffd_wp(pte))
 		new = pte_swp_mkuffd_wp(new);
-	if (pte_swp_ppps_packed(pte))
-		new = pte_swp_mk_ppps_packed(new);
 
 	return new;
 }
@@ -439,6 +474,8 @@ static inline vm_fault_t vmf_anon_prepare(struct vm_fault *vmf)
 }
 
 vm_fault_t do_swap_page(struct vm_fault *vmf);
+vm_fault_t wp_page_copy(struct vm_fault *vmf);
+bool wp_can_reuse_anon_folio(struct folio *folio, struct vm_area_struct *vma);
 void folio_rotate_reclaimable(struct folio *folio);
 bool __folio_end_writeback(struct folio *folio);
 void deactivate_file_folio(struct folio *folio);
@@ -995,8 +1032,8 @@ folio_within_range(struct folio *folio, struct vm_area_struct *vma,
 
 	if (end > vma->vm_end)
 		end = vma->vm_end;
-	if (ppps_mm_is_compat(vma->vm_mm) && !vma_is_anonymous(vma)) {
-		file_start = vma_file_offset(vma) + start - vma->vm_start;
+	if (ppps_vma_has_slices(vma)) {
+		file_start = vma_addr_file_offset(vma, start);
 		file_end = file_start + end - start;
 		folio_start = folio_pos(folio);
 		if (folio_start < file_start || folio_start >= file_end)
@@ -1085,26 +1122,21 @@ static inline unsigned long vma_address(const struct vm_area_struct *vma,
 		pgoff_t pgoff, unsigned long nr_pages)
 {
 	unsigned long address;
-	unsigned int shift = vma_page_shift(vma);
-	unsigned int scale_shift = vma_slice_shift(vma);
-
 
 	if (pgoff >= vma->vm_pgoff) {
-		address = vma->vm_start +
-			((pgoff - vma->vm_pgoff) << shift);
-		if (ppps_mm_is_compat(vma->vm_mm) &&
-		    !vma_is_anonymous((struct vm_area_struct *)vma))
-			address -= ((unsigned long)vma_slice_off(vma) << PAGE_SHIFT_COMPAT);
+		address = vma_pgoff_to_address(vma, pgoff);
 		/* Check for address beyond vma (or wrapped through 0?) */
 		if (address < vma->vm_start) {
-			if (ppps_mm_is_compat(vma->vm_mm) && pgoff == vma->vm_pgoff)
+			/* Later slices of a sliced VMA's first page are mapped. */
+			if (ppps_vma_has_slices(vma) && pgoff == vma->vm_pgoff)
 				address = vma->vm_start;
 			else
 				address = -EFAULT;
 		} else if (address >= vma->vm_end) {
 			address = -EFAULT;
 		}
-	} else if (pgoff + (nr_pages << scale_shift) - 1 >= vma->vm_pgoff) {
+	} else if (pgoff + (nr_pages << (PAGE_SHIFT - vma_pgoff_shift(vma))) - 1 >=
+		   vma->vm_pgoff) {
 		/* Test above avoids possibility of wrap to 0 on 32-bit */
 		address = vma->vm_start;
 	} else {
@@ -1123,22 +1155,18 @@ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
 	pgoff_t pgoff;
 	unsigned long address;
 
-	if (ppps_mm_is_compat(vma->vm_mm) && !vma_is_anonymous(vma)) {
-		pgoff = pvmw->pgoff + pvmw->nr_pages;
-		address = vma->vm_start +
-			((pgoff - vma->vm_pgoff) << PAGE_SHIFT);
-		address -= offset_in_page(vma_file_offset(vma));
-		if (address < vma->vm_start || address > vma->vm_end)
-			address = vma->vm_end;
+	address = ppps_pvmw_walk_end(pvmw);
+	if (address)
 		return address;
-	}
 
-	/* Common case, plus ->pgoff is invalid for KSM */
-	if (pvmw->nr_pages == 1)
+	/* Common case, plus ->pgoff is invalid for KSM. */
+	if (pvmw->nr_pages == 1 && !ppps_vma_has_slices(vma))
 		return pvmw->address + PAGE_SIZE;
 
-	pgoff = pvmw->pgoff + pvmw->nr_pages;
-	address = vma->vm_start + ((pgoff - vma->vm_pgoff) << PAGE_SHIFT);
+	/* Anonymous offsets count process pages, not native pages. */
+	pgoff = pvmw->pgoff +
+		(pvmw->nr_pages << (PAGE_SHIFT - vma_pgoff_shift(vma)));
+	address = vma_pgoff_to_address(vma, pgoff);
 	/* Check for address beyond vma (or wrapped through 0?) */
 	if (address < vma->vm_start || address > vma->vm_end)
 		address = vma->vm_end;
@@ -1147,6 +1175,13 @@ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
 
 extern void _trace_android_vh_unlock_mmap_bypass(struct vm_fault *vmf,
 		struct file *fpin, bool *bypass);
+
+/* Does user address @addr of file-backed @vma lie at or beyond size @isize? */
+static inline bool vma_addr_beyond_eof(const struct vm_area_struct *vma,
+				       unsigned long addr, loff_t isize)
+{
+	return vma_addr_file_offset(vma, addr) >= isize;
+}
 
 static inline struct file *maybe_unlock_mmap_for_io(struct vm_fault *vmf,
 						    struct file *fpin)
@@ -1698,5 +1733,33 @@ static inline bool reclaim_pt_is_enabled(unsigned long start, unsigned long end,
 
 void dup_mm_exe_file(struct mm_struct *mm, struct mm_struct *oldmm);
 int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm);
+
+#ifdef CONFIG_MMU
+/*
+ * Return true if the original pte was a uffd-wp pte marker (so the pte was
+ * wr-protected).
+ */
+static __always_inline bool vmf_orig_pte_uffd_wp(struct vm_fault *vmf)
+{
+	if (!userfaultfd_wp(vmf->vma))
+		return false;
+	if (!(vmf->flags & FAULT_FLAG_ORIG_PTE_VALID))
+		return false;
+
+	return pte_marker_uffd_wp(vmf->orig_pte);
+}
+#endif /* CONFIG_MMU */
+
+#ifdef CONFIG_USERFAULTFD
+/* Revalidate a UFFD move after reacquiring both PTE locks. */
+static inline bool is_pte_pages_stable(pte_t *dst_pte, pte_t *src_pte,
+				       pte_t orig_dst_pte, pte_t orig_src_pte,
+				       pmd_t *dst_pmd, pmd_t dst_pmdval)
+{
+	return pte_same(ptep_get(src_pte), orig_src_pte) &&
+	       pte_same(ptep_get(dst_pte), orig_dst_pte) &&
+	       pmd_same(dst_pmdval, pmdp_get_lockless(dst_pmd));
+}
+#endif /* CONFIG_USERFAULTFD */
 
 #endif	/* __MM_INTERNAL_H */

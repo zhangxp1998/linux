@@ -1,26 +1,24 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * SHM_LOCK of a one-process-page SysV segment fits a 4K RLIMIT_MEMLOCK for
+ * an unprivileged 4K compat process.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #include <sys/resource.h>
 #include <sys/shm.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#define USER_PAGE_SIZE 4096UL
 #define UNPRIVILEGED_ID 65534
 
-int main(void)
+static int run_test(void)
 {
 	struct rlimit limit = {
-		.rlim_cur = USER_PAGE_SIZE,
-		.rlim_max = USER_PAGE_SIZE,
+		.rlim_cur = PROCESS_PAGE_SIZE,
+		.rlim_max = PROCESS_PAGE_SIZE,
 	};
 	unsigned char *mapping = (void *)-1;
 	bool lock_ok = false;
@@ -28,9 +26,9 @@ int main(void)
 	int error;
 
 	ksft_print_header();
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	if (access("/proc/sysvipc/shm", F_OK))
+		ksft_exit_skip("SysV shared memory is unavailable\n");
+	ksft_set_plan(6);
 
 	error = setrlimit(RLIMIT_MEMLOCK, &limit);
 	ksft_test_result(!error, "set a one-process-page memlock limit\n");
@@ -43,7 +41,7 @@ int main(void)
 	if (error)
 		goto out_skip;
 
-	shmid = shmget(IPC_PRIVATE, USER_PAGE_SIZE, IPC_CREAT | 0600);
+	shmid = shmget(IPC_PRIVATE, PROCESS_PAGE_SIZE, IPC_CREAT | 0600);
 	ksft_test_result(shmid >= 0, "create a one-process-page SysV segment\n");
 	if (shmid < 0)
 		goto out_skip;
@@ -51,10 +49,10 @@ int main(void)
 	mapping = shmat(shmid, NULL, 0);
 	if (mapping != (void *)-1) {
 		mapping[0] = 0xa5;
-		mapping[USER_PAGE_SIZE - 1] = 0x5a;
+		mapping[PROCESS_PAGE_SIZE - 1] = 0x5a;
 	}
 	ksft_test_result(mapping != (void *)-1 && mapping[0] == 0xa5 &&
-			 mapping[USER_PAGE_SIZE - 1] == 0x5a,
+			 mapping[PROCESS_PAGE_SIZE - 1] == 0x5a,
 			 "map the complete 4K segment\n");
 
 	errno = 0;
@@ -69,7 +67,7 @@ int main(void)
 	goto out;
 
 out_skip:
-	while (ksft_test_num() < 7)
+	while (ksft_test_num() < 6)
 		ksft_test_result_skip("prerequisite failed\n");
 out:
 	if (mapping != (void *)-1)
@@ -78,3 +76,5 @@ out:
 		shmctl(shmid, IPC_RMID, NULL);
 	ksft_finished();
 }
+
+PPPS_COMPAT_MAIN(run_test)

@@ -1,29 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * process_mrelease() from a native (16K) caller on a killed 4K compat child
+ * succeeds and zaps the child's resident anonymous VMA.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <stdbool.h>
 #include <sched.h>
 #include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
 #define TEST_PAGES	32
-#define MAPPING_SIZE	(TEST_PAGES * USER_PAGE_SIZE)
-#define RESERVE_SIZE	(MAPPING_SIZE + 2 * USER_PAGE_SIZE)
+#define MAPPING_SIZE	(TEST_PAGES * PROCESS_PAGE_SIZE)
+#define RESERVE_SIZE	(MAPPING_SIZE + 2 * PROCESS_PAGE_SIZE)
 
 struct child_status {
 	long page_size;
@@ -31,40 +23,6 @@ struct child_status {
 	bool mapped;
 	bool isolated;
 };
-
-static bool write_full(int fd, const void *buffer, size_t size)
-{
-	const char *position = buffer;
-
-	while (size) {
-		ssize_t written = write(fd, position, size);
-
-		if (written < 0 && errno == EINTR)
-			continue;
-		if (written <= 0)
-			return false;
-		position += written;
-		size -= written;
-	}
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t size)
-{
-	char *position = buffer;
-
-	while (size) {
-		ssize_t bytes = read(fd, position, size);
-
-		if (bytes < 0 && errno == EINTR)
-			continue;
-		if (bytes <= 0)
-			return false;
-		position += bytes;
-		size -= bytes;
-	}
-	return true;
-}
 
 static bool vma_span(const void *address, unsigned long *span)
 {
@@ -92,6 +50,10 @@ static bool vma_span(const void *address, unsigned long *span)
 	return found;
 }
 
+/*
+ * Rss of the child VMA containing @address; a VMA that is no longer there
+ * (the child has been released) reports 0 bytes rather than a failure.
+ */
 static bool read_smaps_rss(pid_t pid, unsigned long address,
 			   unsigned long *rss_bytes)
 {
@@ -144,13 +106,13 @@ static int run_compat_child(int ready_fd)
 	reservation = mmap(NULL, RESERVE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	mapping = reservation == MAP_FAILED ? MAP_FAILED :
-		mmap(reservation + USER_PAGE_SIZE, MAPPING_SIZE,
+		mmap(reservation + PROCESS_PAGE_SIZE, MAPPING_SIZE,
 		     PROT_READ | PROT_WRITE,
 		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 	if (mapping != MAP_FAILED) {
 		madvise(mapping, MAPPING_SIZE, MADV_NOHUGEPAGE);
 		for (i = 0; i < TEST_PAGES; i++)
-			mapping[i * USER_PAGE_SIZE] = 0x40 + i;
+			mapping[i * PROCESS_PAGE_SIZE] = 0x40 + i;
 		status.address = (unsigned long)mapping;
 		status.mapped = true;
 		status.isolated = vma_span(mapping, &span) &&
@@ -182,26 +144,16 @@ static int run_parent(void)
 	pid_t pid;
 
 	ksft_print_header();
-	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE ||
-			 sysconf(_SC_PAGESIZE) == 4 * USER_PAGE_SIZE,
-			 "parent uses a supported page size\n");
+	ksft_set_plan(7);
 	if (pipe(ready_pipe))
 		ksft_exit_fail_msg("pipe failed: %s\n", strerror(errno));
 	pid = fork();
 	if (pid < 0)
 		ksft_exit_fail_msg("fork failed: %s\n", strerror(errno));
 	if (!pid) {
-		int persona;
-
 		close(ready_pipe[0]);
-		persona = personality(0xffffffffUL);
-		if (persona < 0 ||
-		    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-			_exit(127);
 		snprintf(ready_fd, sizeof(ready_fd), "%d", ready_pipe[1]);
-		execl("/proc/self/exe", "process_mrelease_ppps", "--child",
-		      ready_fd, NULL);
+		ppps_execl(true, NULL, "--child", ready_fd, NULL);
 		_exit(127);
 	}
 
@@ -216,7 +168,7 @@ static int run_parent(void)
 	}
 	ksft_print_msg("process_mrelease caller page size: %ld\n",
 		       sysconf(_SC_PAGESIZE));
-	ksft_test_result(child.page_size == USER_PAGE_SIZE,
+	ksft_test_result(child.page_size == PROCESS_PAGE_SIZE,
 			 "child process uses 4K pages\n");
 	ksft_test_result(child.mapped && child.isolated,
 			 "map an isolated anonymous VMA in the child\n");
@@ -256,27 +208,15 @@ out_wait:
 	ksft_finished();
 }
 
-static int exec_native_parent(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality clear failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "process_mrelease_ppps", "--parent", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_native_parent();
-	if (argc == 2 && !strcmp(argv[1], "--parent"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_native(argv[0], "--parent", NULL);
+	if (argc == 2 && !strcmp(mode, "--parent"))
 		return run_parent();
-	if (argc == 3 && !strcmp(argv[1], "--child"))
+	if (argc == 3 && !strcmp(mode, "--child"))
 		return run_compat_child(atoi(argv[2]));
 	return EXIT_FAILURE;
 }

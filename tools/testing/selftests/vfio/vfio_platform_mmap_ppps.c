@@ -1,22 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process maps the VFIO platform fixture's MMIO regions at 4K
+ * process-page offsets, including a single-process-page region, and reads
+ * the bytes the fixture placed there.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
 
-#define USER_PAGE_SIZE 4096UL
 #define SMALL_REGION_OFFSET 0x10000000000ULL
 
 static int verify_mapping(const unsigned char *mapping)
@@ -42,16 +37,12 @@ static int run_test(void)
 	pid_t pid;
 
 	ksft_print_header();
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(5);
 
-	fd = open("/dev/vfio_platform_mmap_ppps", O_RDWR | O_CLOEXEC);
+	fd = ppps_open_fixture_or_skip("/dev/vfio_platform_mmap_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the VFIO platform fixture\n");
-	if (fd < 0)
-		ksft_exit_fail_msg("open fixture failed: %s\n", strerror(errno));
 
-	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		       MAP_SHARED, fd, 0);
 	ksft_test_result(mapping != MAP_FAILED, "map one process page\n");
 	if (mapping == MAP_FAILED)
@@ -66,45 +57,24 @@ static int run_test(void)
 		ksft_exit_fail_msg("waitpid failed: %s\n", strerror(errno));
 	ksft_test_result(WIFEXITED(status) && WEXITSTATUS(status) == 0,
 			 "mapped VFIO platform page is accessible\n");
-	second_mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
-			      MAP_SHARED, fd, USER_PAGE_SIZE);
+	second_mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			      MAP_SHARED, fd, PROCESS_PAGE_SIZE);
 	ksft_test_result(second_mapping != MAP_FAILED &&
 			 second_mapping[0] == 0x22,
 			 "map the requested process-page MMIO offset\n");
 	if (second_mapping != MAP_FAILED)
-		munmap(second_mapping, USER_PAGE_SIZE);
-	small_mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		munmap(second_mapping, PROCESS_PAGE_SIZE);
+	small_mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			     MAP_SHARED, fd, SMALL_REGION_OFFSET);
 	ksft_test_result(small_mapping != MAP_FAILED &&
 			 small_mapping[0] == 0x11,
 			 "map a single-process-page MMIO region\n");
 	if (small_mapping != MAP_FAILED)
-		munmap(small_mapping, USER_PAGE_SIZE);
+		munmap(small_mapping, PROCESS_PAGE_SIZE);
 
-	munmap(mapping, USER_PAGE_SIZE);
+	munmap(mapping, PROCESS_PAGE_SIZE);
 	close(fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "vfio_platform_mmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

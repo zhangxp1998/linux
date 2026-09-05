@@ -7,6 +7,7 @@
 
 #include "vma_internal.h"
 #include "vma.h"
+#include "ppps.h"
 
 #include <linux/page_size_compat.h>
 
@@ -46,6 +47,8 @@ int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
 	VMG_STATE(vmg, mm, &vmi, new_start, old_end, 0, vma->vm_pgoff);
 	struct vm_area_struct *next;
 	struct mmu_gather tlb;
+	struct ppps_mremap_folios *ppps_folios;
+	int ret;
 	PAGETABLE_MOVE(pmc, vma, vma, old_start, new_start, length);
 
 	BUG_ON(new_start > new_end);
@@ -69,9 +72,19 @@ int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
 	 * move the page tables downwards, on failure we rely on
 	 * process cleanup to remove whatever mess we made.
 	 */
+	ppps_folios = ppps_anon_mremap_prepare(vma, old_start, new_start, length);
+	if (IS_ERR(ppps_folios))
+		return PTR_ERR(ppps_folios);
 	pmc.for_stack = true;
-	if (length != move_page_tables(&pmc))
-		return -ENOMEM;
+	ret = -ENOMEM;
+	if (length == move_page_tables(&pmc)) {
+		ret = 0;
+		if (ppps_mm_is_compat(mm) && vma_is_anonymous(vma))
+			ret = ppps_anon_reslice_range(mm, old_start, new_start, length);
+	}
+	ppps_anon_mremap_finish(ppps_folios);
+	if (ret)
+		return ret;
 
 	tlb_gather_mmu(&tlb, mm);
 	next = vma_next(&vmi);

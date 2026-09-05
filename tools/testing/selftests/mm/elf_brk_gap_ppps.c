@@ -1,34 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * brk randomization of an AArch32 ET_EXEC run from a 4K compat process
+ * works in 4K steps: the initial brk gap can be smaller than a native 16K
+ * page.
+ */
 #define _GNU_SOURCE
 
 #include <elf.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/memfd.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
-#include <sys/types.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
+#include "kselftest_ppps.h"
 
 #ifndef PT_GNU_STACK
 #define PT_GNU_STACK 0x6474e551
 #endif
 
-#define PROCESS_PAGE_SIZE 4096U
-#define NATIVE_16K_SIZE 16384U
 #define MAX_SAMPLES 65536U
 
 /*
@@ -62,40 +51,6 @@ static const unsigned char sample_code[] = {
 	0x01, 0x70, 0xa0, 0xe3, /* mov r7, #__NR_exit */
 	0x00, 0x00, 0x00, 0xef, /* svc #0 */
 };
-
-static bool write_full(int fd, const void *buffer, size_t size)
-{
-	const char *p = buffer;
-
-	while (size) {
-		ssize_t ret = write(fd, p, size);
-
-		if (ret < 0 && errno == EINTR)
-			continue;
-		if (ret <= 0)
-			return false;
-		p += ret;
-		size -= ret;
-	}
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t size)
-{
-	char *p = buffer;
-
-	while (size) {
-		ssize_t ret = read(fd, p, size);
-
-		if (ret < 0 && errno == EINTR)
-			continue;
-		if (ret <= 0)
-			return false;
-		p += ret;
-		size -= ret;
-	}
-	return true;
-}
 
 static int make_sample(void)
 {
@@ -226,10 +181,8 @@ static int run_test(void)
 	ksft_print_header();
 	if (!brk_aslr_enabled())
 		ksft_exit_skip("brk ASLR is disabled\n");
-	ksft_set_plan(3);
+	ksft_set_plan(2);
 
-	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE,
-			 "process uses 4K pages\n");
 	sample_fd = make_sample();
 	if (sample_fd < 0)
 		ksft_exit_fail_msg("failed to create compat ELF: %s\n",
@@ -259,7 +212,7 @@ static int run_test(void)
 		gap = brk - SAMPLE_BRK_BASE;
 		if (gap < minimum_gap)
 			minimum_gap = gap;
-		if (gap < NATIVE_16K_SIZE) {
+		if (gap < NATIVE_PAGE_SIZE) {
 			found_low_gap = true;
 			break;
 		}
@@ -274,25 +227,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "elf_brk_gap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

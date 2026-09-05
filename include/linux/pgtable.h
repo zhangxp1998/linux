@@ -24,29 +24,6 @@
 #endif
 
 /*
- * PPPS packed-anon swap PTE bit. Architectures with
- * CONFIG_ARM64_PER_PROCESS_PAGE_SIZE define the real accessors in their
- * <asm/pgtable.h>; everywhere else the bit does not exist, so callers can
- * use these fallbacks without #ifdef guards.
- */
-#ifndef pte_swp_ppps_packed
-static inline bool pte_swp_ppps_packed(pte_t pte)
-{
-	return false;
-}
-
-static inline pte_t pte_swp_mk_ppps_packed(pte_t pte)
-{
-	return pte;
-}
-
-static inline pte_t pte_swp_clear_ppps_packed(pte_t pte)
-{
-	return pte;
-}
-#endif
-
-/*
  * On almost all architectures and configurations, 0 can be used as the
  * upper ceiling to free_pgtables(): on many architectures it has the same
  * effect as using TASK_SIZE.  However, there is one configuration which
@@ -77,6 +54,20 @@ static inline unsigned long pte_page_offset(pte_t pte)
 }
 
 #define pte_page_offset pte_page_offset
+#endif
+
+/*
+ * Re-point @pte at process-page slice @slice of the native page it maps.
+ * Only PPPS encodes sub-page slices in PTEs; elsewhere @slice is always 0.
+ */
+#ifndef pte_mkslice
+static inline pte_t pte_mkslice(pte_t pte, unsigned int slice)
+{
+	(void)slice;
+	return pte;
+}
+
+#define pte_mkslice pte_mkslice
 #endif
 
 /*
@@ -113,8 +104,8 @@ static inline unsigned long pte_index_mm(struct mm_struct *mm,
 #ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return pte_index(address);
 #else
-	return (address >> MM_ADDR_PAGE_SHIFT(address, mm)) &
-		(MM_ADDR_PTRS_PER_PTE(address, mm) - 1);
+	return (address >> MM_PAGE_SHIFT(pgt_mm(address, mm))) &
+		(MM_PTRS_PER_PTE(pgt_mm(address, mm)) - 1);
 #endif
 }
 
@@ -133,8 +124,8 @@ static inline unsigned long pmd_index_mm(struct mm_struct *mm,
 #ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return pmd_index(address);
 #else
-	return (address >> MM_ADDR_PMD_SHIFT(address, mm)) &
-		(MM_ADDR_PTRS_PER_PMD(address, mm) - 1);
+	return (address >> MM_PMD_SHIFT(pgt_mm(address, mm))) &
+		(MM_PTRS_PER_PMD(pgt_mm(address, mm)) - 1);
 #endif
 }
 
@@ -154,8 +145,8 @@ static inline unsigned long pud_index_mm(struct mm_struct *mm,
 #ifndef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return pud_index(address);
 #else
-	return (address >> MM_ADDR_PUD_SHIFT(address, mm)) &
-		(MM_ADDR_PTRS_PER_PUD(address, mm) - 1);
+	return (address >> MM_PUD_SHIFT(pgt_mm(address, mm))) &
+		(MM_PTRS_PER_PUD(pgt_mm(address, mm)) - 1);
 #endif
 }
 
@@ -191,14 +182,14 @@ static inline void pud_init(void *addr)
 #define pgd_index_mm(mm, a) ((void)(mm), pgd_index(a))
 #else
 #define pgd_index_mm(mm, a) \
-	(((a) >> MM_ADDR_PGD_SHIFT((a), (mm))) & \
-	 (MM_ADDR_PTRS_PER_PGD((a), (mm)) - 1))
+	(((a) >> MM_PGD_SHIFT(pgt_mm(a, mm))) & \
+	 (MM_PTRS_PER_PGD(pgt_mm(a, mm)) - 1))
 #endif
 
 #ifndef p4d_index_mm
 #define p4d_index_mm(mm, a) \
-	(((a) >> MM_ADDR_P4D_SHIFT((a), (mm))) & \
-	 (MM_ADDR_PTRS_PER_P4D((a), (mm)) - 1))
+	(((a) >> MM_P4D_SHIFT(pgt_mm(a, mm))) & \
+	 (MM_PTRS_PER_P4D(pgt_mm(a, mm)) - 1))
 #endif
 
 #ifndef pte_offset_kernel
@@ -1383,16 +1374,6 @@ static inline void arch_swap_restore(swp_entry_t entry, struct folio *folio)
 }
 #endif
 
-#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && \
-	!defined(__HAVE_ARCH_SWAP_RESTORE_PPPS)
-static inline void
-arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
-		       unsigned int slice)
-{
-	arch_swap_restore(entry, folio);
-}
-#endif
-
 #ifndef __HAVE_ARCH_PGD_OFFSET_GATE
 #define pgd_offset_gate(mm, addr)	pgd_offset(mm, addr)
 #endif
@@ -1422,8 +1403,8 @@ arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
 
 #define pgd_addr_end_mm(mm, addr, end)					\
 ({									\
-	unsigned long __boundary = ((addr) + MM_ADDR_PGDIR_SIZE(addr, mm)) &\
-				   MM_ADDR_PGDIR_MASK(addr, mm);	\
+	unsigned long __boundary = ((addr) + MM_PGDIR_SIZE(pgt_mm(addr, mm))) &\
+				   MM_PGDIR_MASK(pgt_mm(addr, mm));	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 
@@ -1436,8 +1417,8 @@ arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
 
 #define p4d_addr_end_mm(mm, addr, end)					\
 ({									\
-	unsigned long __boundary = ((addr) + MM_ADDR_P4D_SIZE(addr, mm)) &\
-				   MM_ADDR_P4D_MASK(addr, mm);	\
+	unsigned long __boundary = ((addr) + MM_P4D_SIZE(pgt_mm(addr, mm))) &\
+				   MM_P4D_MASK(pgt_mm(addr, mm));	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 
@@ -1451,8 +1432,8 @@ arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
 
 #define pud_addr_end_mm(mm, addr, end)					\
 ({									\
-	unsigned long __boundary = ((addr) + MM_ADDR_PUD_SIZE(addr, mm)) &\
-				   MM_ADDR_PUD_MASK(addr, mm);	\
+	unsigned long __boundary = ((addr) + MM_PUD_SIZE(pgt_mm(addr, mm))) &\
+				   MM_PUD_MASK(pgt_mm(addr, mm));	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 
@@ -1465,8 +1446,8 @@ arch_swap_restore_ppps(swp_entry_t entry, struct folio *folio,
 
 #define pmd_addr_end_mm(mm, addr, end)					\
 ({									\
-	unsigned long __boundary = ((addr) + MM_ADDR_PMD_SIZE(addr, mm)) &\
-				   MM_ADDR_PMD_MASK(addr, mm);	\
+	unsigned long __boundary = ((addr) + MM_PMD_SIZE(pgt_mm(addr, mm))) &\
+				   MM_PMD_MASK(pgt_mm(addr, mm));	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
 })
 

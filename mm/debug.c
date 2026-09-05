@@ -34,7 +34,7 @@ const char *migrate_reason_names[MR_TYPES] = {
 const struct trace_print_flags pageflag_names[] = {
 	__def_pageflag_names,
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	{1UL << PG_ppps_packed_anon, "ppps_packed_anon"},
+	{1UL << PG_ppps_compat_anon, "ppps_compat_anon"},
 #endif
 	{0, NULL}
 };

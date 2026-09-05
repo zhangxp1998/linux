@@ -1,21 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * MADV_WILLNEED on a two-4K-page file range that straddles two native pages
+ * is accepted by a 4K compat process and brings both native pages back into
+ * the page cache after eviction.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#define USER_PAGE_SIZE	4096UL
-#define MAPPING_OFFSET	(3 * USER_PAGE_SIZE)
-#define MAPPING_LENGTH	(2 * USER_PAGE_SIZE)
-#define FILE_SIZE	(64 * USER_PAGE_SIZE)
+#define MAPPING_OFFSET	(3 * PROCESS_PAGE_SIZE)
+#define MAPPING_LENGTH	(2 * PROCESS_PAGE_SIZE)
+#define FILE_SIZE	(64 * PROCESS_PAGE_SIZE)
 #define POLL_ATTEMPTS	100
 
 static bool initialize_file(int fd)
@@ -29,7 +26,7 @@ static bool initialize_file(int fd)
 	if (!contents)
 		return false;
 	for (i = 0; i < FILE_SIZE; i++)
-		contents[i] = 0x31 + (i / USER_PAGE_SIZE) % 31;
+		contents[i] = 0x31 + (i / PROCESS_PAGE_SIZE) % 31;
 	written = pwrite(fd, contents, FILE_SIZE, 0);
 	if (written != (ssize_t)FILE_SIZE) {
 		ksft_print_msg("pwrite returned %zd: %s\n", written,
@@ -100,20 +97,14 @@ static bool wait_for_willneed(void *mapping)
 	return false;
 }
 
-int main(int argc, char **argv)
+static int run_test(const char *path)
 {
-	const char *path;
 	void *mapping = MAP_FAILED;
 	bool evicted;
 	int fd = -1;
 	int ret;
 
 	ksft_print_header();
-	if (sysconf(_SC_PAGESIZE) != USER_PAGE_SIZE)
-		ksft_exit_skip("requires a 4K userspace page size\n");
-	if (argc != 2)
-		ksft_exit_fail_msg("usage: %s FILE\n", argv[0]);
-	path = argv[1];
 
 	fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0600);
 	if (fd < 0)
@@ -143,4 +134,22 @@ int main(int argc, char **argv)
 	close(fd);
 	unlink(path);
 	ksft_finished();
+}
+
+int main(int argc, char **argv)
+{
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode) {
+		if (argc != 2)
+			ksft_exit_fail_msg("usage: %s FILE\n", argv[0]);
+		if (!ppps_is_compat_process())
+			exec_compat(argv[0], PPPS_RUN_FLAG, argv[1], NULL);
+		return run_test(argv[1]);
+	}
+	if (argc == 3 && !strcmp(mode, PPPS_RUN_FLAG)) {
+		ppps_require_compat();
+		return run_test(argv[2]);
+	}
+	return EXIT_FAILURE;
 }

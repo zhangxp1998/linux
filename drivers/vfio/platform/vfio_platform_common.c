@@ -603,6 +603,7 @@ static int vfio_platform_mmap_mmio(struct vfio_platform_region region,
 	u64 req_len, req_start;
 	unsigned long pfn;
 	unsigned int slice;
+	int ret;
 
 	req_len = vma->vm_end - vma->vm_start;
 	req_start = vma_file_offset(vma) & VFIO_PLATFORM_OFFSET_MASK;
@@ -614,10 +615,11 @@ static int vfio_platform_mmap_mmio(struct vfio_platform_region region,
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	phys_addr = region.addr + req_start;
 	pfn = PFN_DOWN(phys_addr);
-	vma->vm_pgoff = pfn;
+	ret = vma_set_file_offset(vma, phys_addr);
+	if (ret)
+		return ret;
 	/* Native mappings start on a native page boundary, so slice is 0. */
-	slice = (phys_addr & ~PAGE_MASK) >> MM_PAGE_SHIFT(vma->vm_mm);
-	vma_set_slice_off(vma, slice);
+	slice = vma_offset_to_slice(vma, phys_addr);
 
 	return remap_pfn_range_slice(vma, vma->vm_start, pfn, slice,
 				     req_len, vma->vm_page_prot);

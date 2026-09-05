@@ -1,29 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * taskstats of a 4K compat process reports the RSS and VM high-watermarks in
+ * process-page KB matching /proc/self/status, and integrates resident and
+ * virtual memory (Mbyte-usecs) consistently with VmRSS and VmSize.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/genetlink.h>
 #include <linux/netlink.h>
 #include <linux/taskstats.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/socket.h>
 #include <time.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
 #define WORKLOAD_SIZE	(32UL * 1024 * 1024)
 #define MESSAGE_SIZE	4096
 
@@ -223,7 +214,7 @@ static unsigned int burn_cpu(unsigned char *mapping, uint64_t duration_ns)
 
 	do {
 		for (offset = 0; offset < WORKLOAD_SIZE;
-		     offset += USER_PAGE_SIZE) {
+		     offset += PROCESS_PAGE_SIZE) {
 			mapping[offset]++;
 			checksum += mapping[offset];
 		}
@@ -268,9 +259,7 @@ static int run_test(void)
 	int netlink;
 
 	ksft_print_header();
-	ksft_set_plan(9);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(8);
 
 	netlink = open_netlink();
 	family = netlink >= 0 ? taskstats_family(netlink) : 0;
@@ -324,25 +313,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "taskstats_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

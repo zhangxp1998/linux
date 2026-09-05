@@ -209,6 +209,8 @@ free_pages:
 static DEFINE_MUTEX(pin_longterm_test_mutex);
 static struct page **pin_longterm_test_pages;
 static unsigned long pin_longterm_test_nr_pages;
+static unsigned long pin_longterm_test_page_size;
+static struct page_span *pin_longterm_test_spans;
 
 static inline void pin_longterm_test_stop(void)
 {
@@ -217,6 +219,8 @@ static inline void pin_longterm_test_stop(void)
 			unpin_user_pages(pin_longterm_test_pages,
 					 pin_longterm_test_nr_pages);
 		kvfree(pin_longterm_test_pages);
+		kvfree(pin_longterm_test_spans);
+		pin_longterm_test_spans = NULL;
 		pin_longterm_test_pages = NULL;
 		pin_longterm_test_nr_pages = 0;
 	}
@@ -230,6 +234,7 @@ static inline int pin_longterm_test_start(unsigned long arg)
 	struct page **pages;
 	int ret = 0;
 	bool fast;
+	bool compat = ppps_mm_is_compat(current->mm);
 
 	if (pin_longterm_test_pages)
 		return -EINVAL;
@@ -257,35 +262,55 @@ static inline int pin_longterm_test_start(unsigned long arg)
 	if (args.flags & PIN_LONGTERM_TEST_FLAG_USE_WRITE)
 		gup_flags |= FOLL_WRITE;
 	fast = !!(args.flags & PIN_LONGTERM_TEST_FLAG_USE_FAST);
+	if (fast && compat) {
+		/* Fast pins do not yet return a stable backing-slice snapshot. */
+		kvfree(pages);
+		return -EOPNOTSUPP;
+	}
 
-	if (!fast && mmap_read_lock_killable(current->mm)) {
+	if (!fast && !compat && mmap_read_lock_killable(current->mm)) {
 		kvfree(pages);
 		return -EINTR;
 	}
 
 	pin_longterm_test_pages = pages;
 	pin_longterm_test_nr_pages = 0;
+	pin_longterm_test_page_size = pgsize;
+	if (compat) {
+		pin_longterm_test_spans = kvcalloc(nr_pages,
+					 sizeof(*pin_longterm_test_spans), GFP_KERNEL);
+		if (!pin_longterm_test_spans) {
+			pin_longterm_test_stop();
+			return -ENOMEM;
+		}
+	}
 
 	while (nr_pages - pin_longterm_test_nr_pages) {
 		remaining_pages = nr_pages - pin_longterm_test_nr_pages;
 		addr = args.addr + pin_longterm_test_nr_pages * pgsize;
 
-		if (fast)
+		/* Capture compat backing offsets under the same lock as the pins. */
+		if (compat)
+			cur_pages = pin_user_pages_range(current->mm, addr,
+					remaining_pages * pgsize, remaining_pages,
+					gup_flags, pages, pin_longterm_test_spans +
+					pin_longterm_test_nr_pages);
+		else if (fast)
 			cur_pages = pin_user_pages_fast(addr, remaining_pages,
 							gup_flags, pages);
 		else
 			cur_pages = pin_user_pages(addr, remaining_pages,
 						   gup_flags, pages);
-		if (cur_pages < 0) {
+		if (cur_pages <= 0) {
 			pin_longterm_test_stop();
-			ret = cur_pages;
+			ret = cur_pages ? cur_pages : -EFAULT;
 			break;
 		}
 		pin_longterm_test_nr_pages += cur_pages;
 		pages += cur_pages;
 	}
 
-	if (!fast)
+	if (!fast && !compat)
 		mmap_read_unlock(current->mm);
 	return ret;
 }
@@ -295,7 +320,7 @@ static inline int pin_longterm_test_read(unsigned long arg)
 	__u64 user_addr;
 	unsigned long i;
 
-	unsigned long pgsize = MM_PAGE_SIZE(current->mm);
+	unsigned long pgsize = pin_longterm_test_page_size;
 
 	if (!pin_longterm_test_pages)
 		return -EINVAL;
@@ -306,8 +331,10 @@ static inline int pin_longterm_test_read(unsigned long arg)
 	for (i = 0; i < pin_longterm_test_nr_pages; i++) {
 		void *addr = kmap_local_page(pin_longterm_test_pages[i]);
 		unsigned long ret;
+		unsigned int offset = pin_longterm_test_spans ?
+			pin_longterm_test_spans[i].offset : 0;
 
-		ret = copy_to_user((void __user *)(unsigned long)user_addr, addr,
+		ret = copy_to_user((void __user *)(unsigned long)user_addr, addr + offset,
 				   pgsize);
 		kunmap_local(addr);
 		if (ret)

@@ -159,10 +159,8 @@ static loff_t vaddr_to_offset(struct vm_area_struct *vma, unsigned long vaddr)
 static unsigned long uprobe_vma_page_offset(struct vm_area_struct *vma,
 					    unsigned long vaddr)
 {
-	struct mm_struct *mm = vma->vm_mm;
-
-	return ((unsigned long)vma_address_to_slice(vma, vaddr) <<
-		MM_PAGE_SHIFT(mm)) + mm_offset_in_page(mm, vaddr);
+	return vma_page_slice_offset(vma, NULL, vaddr) +
+	       mm_offset_in_page(vma->vm_mm, vaddr);
 }
 
 /**

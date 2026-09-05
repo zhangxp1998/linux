@@ -7,26 +7,16 @@
  * bytes.  Check that smaps applies mapcounts to the matching slice only.
  */
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
-#include <unistd.h>
+#include <sys/wait.h>
+#include <poll.h>
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
+#include "kselftest_ppps.h"
 
-#define USER_PAGE_SIZE 4096UL
-#define MAPPING_SIZE (4 * USER_PAGE_SIZE)
+#define MAPPING_SIZE (4 * PROCESS_PAGE_SIZE)
 
 struct smaps_stats {
 	unsigned long rss_kb;
@@ -37,15 +27,18 @@ struct smaps_stats {
 	unsigned long private_dirty_kb;
 };
 
-static bool read_smaps_stats(uintptr_t address, struct smaps_stats *stats)
+static bool read_process_smaps(pid_t pid, uintptr_t address,
+			       struct smaps_stats *stats)
 {
 	char *line = NULL;
 	size_t line_size = 0;
 	bool in_mapping = false;
 	FILE *file;
+	char path[64];
 
 	memset(stats, 0, sizeof(*stats));
-	file = fopen("/proc/self/smaps", "re");
+	snprintf(path, sizeof(path), "/proc/%ld/smaps", (long)pid);
+	file = fopen(path, "re");
 	if (!file)
 		return false;
 
@@ -79,6 +72,11 @@ static bool read_smaps_stats(uintptr_t address, struct smaps_stats *stats)
 	return in_mapping && stats->rss_kb;
 }
 
+static bool read_smaps_stats(uintptr_t address, struct smaps_stats *stats)
+{
+	return read_process_smaps(getpid(), address, stats);
+}
+
 static bool stats_equal(const struct smaps_stats *stats,
 			unsigned long rss, unsigned long pss,
 			unsigned long shared, unsigned long private)
@@ -91,13 +89,118 @@ static bool stats_equal(const struct smaps_stats *stats,
 static void show_result(const char *name, const struct smaps_stats *stats,
 			bool pass, int *test_no, int *failures)
 {
-	printf("%s %d - %s\n", pass ? "ok" : "not ok", ++*test_no, name);
+	ksft_test_result(pass, "%s\n", name);
+	++*test_no;
 	printf("# Rss=%lu Pss=%lu Shared=%lu Private=%lu kB\n",
 	       stats->rss_kb, stats->pss_kb,
 	       stats->shared_clean_kb + stats->shared_dirty_kb,
 	       stats->private_clean_kb + stats->private_dirty_kb);
 	if (!pass)
 		(*failures)++;
+}
+
+/* Native child holds one 16K mapping while the compat parent aliases 4K. */
+static int native_pss_child(int fd, int ready, int done)
+{
+	unsigned char *mapping = MAP_FAILED;
+	uintptr_t address = 0;
+	char token;
+	bool ok;
+
+	if (getpagesize() == NATIVE_PAGE_SIZE) {
+		mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE,
+			       MAP_SHARED, fd, 0);
+		if (mapping == MAP_FAILED)
+			return EXIT_FAILURE;
+		mapping[0] = 0x54;
+		address = (uintptr_t)mapping;
+	}
+	ok = write_full(ready, &address, sizeof(address)) &&
+		read_full(done, &token, 1);
+	if (mapping != MAP_FAILED)
+		munmap(mapping, MAPPING_SIZE);
+	return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+static int mixed_pss(void)
+{
+	int ready[2], done[2], status, fd;
+	pid_t child;
+	uintptr_t native_addr = 0;
+	unsigned char *alias = MAP_FAILED;
+	struct smaps_stats stats;
+	int test_no = 0, failures = 0;
+	bool pass;
+	char fd_arg[24], ready_arg[24], done_arg[24];
+	struct pollfd pollfd;
+	char token = 1;
+
+	fd = syscall(SYS_memfd_create, "mixed-smaps-pss", 0);
+	if (fd < 0 || ftruncate(fd, MAPPING_SIZE) || pipe(ready) || pipe(done))
+		ksft_exit_fail_msg("mixed PSS setup: %s\n", strerror(errno));
+	child = fork();
+	if (child < 0)
+		ksft_exit_fail_msg("fork: %s\n", strerror(errno));
+	if (!child) {
+		close(ready[0]);
+		close(done[1]);
+		snprintf(fd_arg, sizeof(fd_arg), "%d", fd);
+		snprintf(ready_arg, sizeof(ready_arg), "%d", ready[1]);
+		snprintf(done_arg, sizeof(done_arg), "%d", done[0]);
+		ppps_execl(false, NULL, "--native-pss", fd_arg, ready_arg,
+			   done_arg, NULL);
+		_exit(EXIT_FAILURE);
+	}
+	close(ready[1]);
+	close(done[0]);
+	pollfd = (struct pollfd) { .fd = ready[0], .events = POLLIN };
+	if (poll(&pollfd, 1, 10000) != 1 ||
+	    !read_full(ready[0], &native_addr, sizeof(native_addr)))
+		goto out;
+	if (!native_addr) {
+		for (test_no = 0; test_no < 3; test_no++)
+			ksft_test_result_skip("native 16K process unavailable\n");
+		goto out;
+	}
+	alias = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		     MAP_SHARED, fd, PROCESS_PAGE_SIZE);
+	if (alias == MAP_FAILED)
+		goto out;
+	alias[0] = 0x35;
+	pass = read_process_smaps(child, native_addr, &stats) &&
+		stats_equal(&stats, 16, 14, 4, 12);
+	ksft_test_result(pass, "native mapping shares only the compat-aliased slice\n");
+	failures += !pass;
+	test_no++;
+	pass = read_smaps_stats((uintptr_t)alias, &stats) &&
+		stats_equal(&stats, 4, 2, 4, 0);
+	ksft_test_result(pass, "compat alias agrees with native PSS\n");
+	failures += !pass;
+	test_no++;
+	munmap(alias, PROCESS_PAGE_SIZE);
+	alias = MAP_FAILED;
+	pass = read_process_smaps(child, native_addr, &stats) &&
+		stats_equal(&stats, 16, 16, 0, 16);
+	ksft_test_result(pass, "native private accounting recovers after compat unmap\n");
+	failures += !pass;
+	test_no++;
+out:
+	if (alias != MAP_FAILED)
+		munmap(alias, PROCESS_PAGE_SIZE);
+	/* EOF also releases the child if setup failed. */
+	if (native_addr || test_no == 3)
+		write_full(done[1], &token, 1);
+	close(done[1]);
+	close(ready[0]);
+	close(fd);
+	if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+	    WEXITSTATUS(status))
+		failures++;
+	while (test_no++ < 3) {
+		ksft_test_result_fail("mixed PSS setup did not complete\n");
+		failures++;
+	}
+	return failures;
 }
 
 static int run_test(void)
@@ -110,14 +213,8 @@ static int run_test(void)
 	int test_no = 0;
 	int fd = -1;
 
-	printf("TAP version 13\n1..5\n");
-	printf("%s %d - process page size is 4K\n",
-	       sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE ? "ok" : "not ok",
-	       ++test_no);
-	if (sysconf(_SC_PAGESIZE) != USER_PAGE_SIZE) {
-		failures++;
-		goto out;
-	}
+	ksft_print_header();
+	ksft_set_plan(7);
 
 	fd = syscall(SYS_memfd_create, "smaps-pss-ppps", MFD_CLOEXEC);
 	if (fd < 0) {
@@ -134,8 +231,8 @@ static int run_test(void)
 		perror("mmap");
 		return EXIT_FAILURE;
 	}
-	for (i = 0; i < MAPPING_SIZE; i += USER_PAGE_SIZE)
-		mapping[i] = (unsigned char)(0x40 + i / USER_PAGE_SIZE);
+	for (i = 0; i < MAPPING_SIZE; i += PROCESS_PAGE_SIZE)
+		mapping[i] = (unsigned char)(0x40 + i / PROCESS_PAGE_SIZE);
 
 	if (!read_smaps_stats((uintptr_t)mapping, &stats)) {
 		perror("read smaps");
@@ -145,7 +242,7 @@ static int run_test(void)
 		    stats_equal(&stats, 16, 16, 0, 16),
 		    &test_no, &failures);
 
-	alias = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
+	alias = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
 		     fd, 0);
 	if (alias == MAP_FAILED) {
 		perror("mmap alias");
@@ -168,7 +265,7 @@ static int run_test(void)
 		    stats_equal(&stats, 4, 2, 4, 0),
 		    &test_no, &failures);
 
-	munmap(alias, USER_PAGE_SIZE);
+	munmap(alias, PROCESS_PAGE_SIZE);
 	alias = MAP_FAILED;
 	if (!read_smaps_stats((uintptr_t)mapping, &stats)) {
 		perror("read target smaps after unmap");
@@ -179,37 +276,37 @@ static int run_test(void)
 		    &test_no, &failures);
 
 out:
-	if (test_no < 5)
-		failures += 5 - test_no;
+	while (test_no++ < 4) {
+		ksft_test_result_fail("compat PSS setup did not complete\n");
+		failures++;
+	}
 	if (alias != MAP_FAILED)
-		munmap(alias, USER_PAGE_SIZE);
+		munmap(alias, PROCESS_PAGE_SIZE);
 	if (mapping != MAP_FAILED)
 		munmap(mapping, MAPPING_SIZE);
 	if (fd >= 0)
 		close(fd);
-	printf("# Totals: pass:%d fail:%d\n", 5 - failures, failures);
+	failures += mixed_pss();
+	ksft_print_cnts();
 	return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
 int main(int argc, char **argv)
 {
-	int persona;
+	if (argc == 5 && !strcmp(argv[1], "--native-pss"))
+		return native_pss_child(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]));
+	if (argc == 2 && !strcmp(argv[1], "--mixed")) {
+		if (!ppps_is_compat_process())
+			exec_compat(argv[0], "--mixed", NULL);
+		ksft_print_header();
+		ksft_set_plan(3);
+		return mixed_pss() ? EXIT_FAILURE : EXIT_SUCCESS;
+	}
 
 	if (access("/proc/self", F_OK) &&
 	    mount("proc", "/proc", "proc", 0, NULL)) {
 		perror("mount proc");
 		return EXIT_FAILURE;
 	}
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-
-	persona = personality(0xffffffffUL);
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0) {
-		perror("personality");
-		return EXIT_FAILURE;
-	}
-	execl("/proc/self/exe", argv[0], "--run", NULL);
-	perror("exec");
-	return EXIT_FAILURE;
+	return ppps_compat_main(argc, argv, run_test);
 }

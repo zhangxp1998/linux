@@ -16,10 +16,6 @@
 
 #define ITER_PAGE_SIZE(i) \
 	(user_backed_iter(i) ? MM_PAGE_SIZE(current->mm) : PAGE_SIZE)
-#define ITER_PAGE_MASK(i) \
-	(user_backed_iter(i) ? MM_PAGE_MASK(current->mm) : PAGE_MASK)
-#define ITER_PAGE_SHIFT(i) \
-	(user_backed_iter(i) ? MM_PAGE_SHIFT(current->mm) : PAGE_SHIFT)
 
 static __always_inline
 size_t copy_to_user_iter(void __user *iter_to, size_t progress,
@@ -1056,6 +1052,40 @@ static struct page *first_bvec_segment(const struct iov_iter *i,
 	return page;
 }
 
+/*
+ * A compat process page is one slice of a native page, so a page array with a
+ * single initial offset can describe at most one process page.  Extract one
+ * process page per call; *@start is its byte offset within the native page.
+ */
+static ssize_t iov_iter_extract_compat_page(struct iov_iter *i,
+					    unsigned long addr,
+					    struct page ***pages,
+					    size_t maxsize,
+					    unsigned int maxpages,
+					    unsigned int gup_flags,
+					    size_t *start, bool pin)
+{
+	struct mm_struct *mm = current->mm;
+	size_t offset = mm_offset_in_page(mm, addr);
+	struct page_span span;
+	int res;
+
+	maxsize = min(maxsize, MM_PAGE_SIZE(mm) - offset);
+	if (!want_pages_array(pages, maxsize, 0, min(maxpages, 1U)))
+		return -ENOMEM;
+
+	addr = untagged_addr(addr);
+	res = pin ? pin_user_pages_range(mm, addr, maxsize, 1, gup_flags,
+					 *pages, &span) :
+		    get_user_pages_range(mm, addr, maxsize, 1, gup_flags,
+					 *pages, &span);
+	if (unlikely(res <= 0))
+		return res;
+	*start = span.offset;
+	iov_iter_advance(i, maxsize);
+	return maxsize;
+}
+
 static ssize_t __iov_iter_get_pages_alloc(struct iov_iter *i,
 		   struct page ***pages, size_t maxsize,
 		   unsigned int maxpages, size_t *start)
@@ -1070,7 +1100,6 @@ static ssize_t __iov_iter_get_pages_alloc(struct iov_iter *i,
 		maxsize = MAX_RW_COUNT;
 
 	if (likely(user_backed_iter(i))) {
-		struct mm_struct *mm = current->mm;
 		unsigned long addr;
 		int res;
 
@@ -1080,42 +1109,11 @@ static ssize_t __iov_iter_get_pages_alloc(struct iov_iter *i,
 			gup_flags |= FOLL_NOFAULT;
 
 		addr = first_iovec_segment(i, &maxsize);
-		if (ppps_mm_is_compat(mm)) {
-			struct vm_area_struct *vma;
-			size_t offset = mm_offset_in_page(mm, addr);
-
-			/*
-			 * A page array and one initial offset cannot describe
-			 * multiple process-page slices within native pages.  Return
-			 * one process page at a time so callers can iterate safely.
-			 */
-			maxsize = min(maxsize, MM_PAGE_SIZE(mm) - offset);
-			n = want_pages_array(pages, maxsize, 0,
-					     min(maxpages, 1U));
-			if (!n)
-				return -ENOMEM;
-
-			addr = untagged_addr(addr);
-			mmap_read_lock(mm);
-			vma = vma_lookup(mm, addr);
-			if (!vma) {
-				res = -EFAULT;
-				goto unlock;
-			}
-			*start = ((size_t)vma_address_to_slice(vma, addr) <<
-				  MM_PAGE_SHIFT(mm)) + offset;
-			res = get_user_pages(addr, 1, gup_flags, *pages);
-			if (res > 0 && ppps_mm_is_compat(mm) &&
-			    folio_test_ppps_packed_anon(page_folio((*pages)[0])))
-				*start = offset_in_page(addr);
-unlock:
-			mmap_read_unlock(mm);
-			if (unlikely(res <= 0))
-				return res;
-			iov_iter_advance(i, maxsize);
-			return maxsize;
-		}
-
+		if (ppps_mm_is_compat(current->mm))
+			return iov_iter_extract_compat_page(i, addr, pages,
+							    maxsize, maxpages,
+							    gup_flags, start,
+							    false);
 		*start = addr % PAGE_SIZE;
 		addr &= PAGE_MASK;
 		n = want_pages_array(pages, maxsize, *start, maxpages);
@@ -1770,22 +1768,6 @@ static ssize_t iov_iter_extract_kvec_pages(struct iov_iter *i,
  * the buffer; using a pin rather than a ref makes forces fork() to give the
  * child a copy of the page.
  */
-static int want_pages_array_mmsz(struct page ***res, size_t size,
-			    size_t start, unsigned int maxpages, size_t page_size)
-{
-	unsigned int count = DIV_ROUND_UP(size + start, page_size);
-
-	if (count > maxpages)
-		count = maxpages;
-	WARN_ON(!count);
-	if (!*res) {
-		*res = kvmalloc_array(count, sizeof(struct page *), GFP_KERNEL);
-		if (!*res)
-			return 0;
-	}
-	return count;
-}
-
 static ssize_t iov_iter_extract_user_pages(struct iov_iter *i,
 					   struct page ***pages,
 					   size_t maxsize,
@@ -1797,8 +1779,6 @@ static ssize_t iov_iter_extract_user_pages(struct iov_iter *i,
 	unsigned int gup_flags = 0;
 	size_t offset;
 	int res;
-	unsigned long pgsize = MM_PAGE_SIZE(current->mm);
-	unsigned long pgmask = MM_PAGE_MASK(current->mm);
 
 	if (i->data_source == ITER_DEST)
 		gup_flags |= FOLL_WRITE;
@@ -1808,48 +1788,19 @@ static ssize_t iov_iter_extract_user_pages(struct iov_iter *i,
 		gup_flags |= FOLL_NOFAULT;
 
 	addr = first_iovec_segment(i, &maxsize);
-	offset = addr % pgsize;
-	if (ppps_mm_is_compat(current->mm)) {
-		struct mm_struct *mm = current->mm;
-		struct vm_area_struct *vma;
-
-		/* See the matching get_pages path above. */
-		maxsize = min(maxsize, pgsize - offset);
-		maxpages = want_pages_array_mmsz(pages, maxsize, 0,
-						 min(maxpages, 1U), pgsize);
-		if (!maxpages)
-			return -ENOMEM;
-
-		addr = untagged_addr(addr);
-		mmap_read_lock(mm);
-		vma = vma_lookup(mm, addr);
-		if (!vma) {
-			res = -EFAULT;
-			goto unlock;
-		}
-		*offset0 = ((size_t)vma_address_to_slice(vma, addr) <<
-			    MM_PAGE_SHIFT(mm)) + offset;
-		res = pin_user_pages(addr, 1, gup_flags, *pages);
-		if (res > 0 && ppps_mm_is_compat(mm) &&
-		    folio_test_ppps_packed_anon(page_folio((*pages)[0])))
-			*offset0 = offset_in_page(addr);
-unlock:
-		mmap_read_unlock(mm);
-		if (unlikely(res <= 0))
-			return res;
-		iov_iter_advance(i, maxsize);
-		return maxsize;
-	}
-
-	addr &= pgmask;
-	maxpages = want_pages_array_mmsz(pages, maxsize, offset, maxpages, pgsize);
+	if (ppps_mm_is_compat(current->mm))
+		return iov_iter_extract_compat_page(i, addr, pages, maxsize,
+						    maxpages, gup_flags,
+						    offset0, true);
+	*offset0 = offset = addr % PAGE_SIZE;
+	addr &= PAGE_MASK;
+	maxpages = want_pages_array(pages, maxsize, offset, maxpages);
 	if (!maxpages)
 		return -ENOMEM;
 	res = pin_user_pages_fast(addr, maxpages, gup_flags, *pages);
 	if (unlikely(res <= 0))
 		return res;
-	*offset0 = (addr % PAGE_SIZE) + offset;
-	maxsize = min_t(size_t, maxsize, res * pgsize - offset);
+	maxsize = min_t(size_t, maxsize, res * PAGE_SIZE - offset);
 	iov_iter_advance(i, maxsize);
 	return maxsize;
 }

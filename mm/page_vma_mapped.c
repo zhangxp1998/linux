@@ -186,6 +186,7 @@ bool page_vma_mapped_walk(struct page_vma_mapped_walk *pvmw)
 {
 	struct vm_area_struct *vma = pvmw->vma;
 	struct mm_struct *mm = vma->vm_mm;
+	unsigned long page_size = MM_PAGE_SIZE(mm);
 	unsigned long end;
 	spinlock_t *ptl;
 	pgd_t *pgd;
@@ -299,11 +300,11 @@ this_pte:
 			return true;
 next_pte:
 		do {
-			pvmw->address += MM_PAGE_SIZE(mm);
+			pvmw->address += page_size;
 			if (pvmw->address >= end)
 				return not_found(pvmw);
 			/* Did we cross page table boundary? */
-			if ((pvmw->address & (MM_PMD_SIZE(mm) - MM_PAGE_SIZE(mm))) == 0) {
+			if ((pvmw->address & (MM_PMD_SIZE(mm) - page_size)) == 0) {
 				if (pvmw->ptl) {
 					spin_unlock(pvmw->ptl);
 					pvmw->ptl = NULL;

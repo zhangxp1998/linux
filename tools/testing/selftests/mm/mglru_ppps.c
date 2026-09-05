@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A forced MGLRU page-table aging pass over a 4K compat process's anonymous
+ * mapping, driven through debugfs lru_gen in a dedicated memory cgroup,
+ * produces a new generation.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#define PROCESS_PAGE_SIZE 4096UL
 #define TEST_PAGES 512
 #define CGROUP_PATH "/sys/fs/cgroup/ppps-mglru"
 #define LRU_GEN_PATH "/sys/kernel/debug/lru_gen"
@@ -105,7 +101,7 @@ static bool age_memcg(const struct generation_stats *stats)
 	return write_text(LRU_GEN_PATH, command);
 }
 
-int main(void)
+static int run_test(void)
 {
 	struct generation_stats before;
 	struct generation_stats after;
@@ -117,9 +113,7 @@ int main(void)
 	int i;
 
 	ksft_print_header();
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(5);
 
 	joined = join_test_cgroup();
 	ksft_test_result(joined, "join a dedicated memory cgroup\n");
@@ -155,3 +149,5 @@ int main(void)
 	munmap((void *)mapping, TEST_PAGES * PROCESS_PAGE_SIZE);
 	ksft_finished();
 }
+
+PPPS_COMPAT_MAIN(run_test)

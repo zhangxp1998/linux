@@ -18,9 +18,7 @@ struct perf_buffer {
 	int				page_order;	/* allocation order  */
 #endif
 	int				nr_pages;	/* nr of data pages  */
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	unsigned long			data_size;	/* logical data size */
-#endif
 	int				overwrite;	/* can overwrite itself */
 	int				paused;		/* can write into ring buffer */
 
@@ -40,9 +38,7 @@ struct perf_buffer {
 
 	refcount_t			mmap_count;
 	unsigned long			mmap_locked;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	unsigned long			mmap_page_size;
-#endif
 	struct user_struct		*mmap_user;
 
 	/* AUX area */
@@ -51,9 +47,7 @@ struct perf_buffer {
 	unsigned int			aux_nest;
 	long				aux_wakeup;	/* last aux_watermark boundary crossed by aux_head */
 	unsigned long			aux_pgoff;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	u64				aux_offset;
-#endif
 	int				aux_nr_pages;
 	int				aux_overwrite;
 	refcount_t			aux_mmap_count;
@@ -137,52 +131,17 @@ static inline int data_page_nr(struct perf_buffer *rb)
 
 static inline unsigned long perf_data_size(struct perf_buffer *rb)
 {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return rb->data_size;
-#else
-	return rb->nr_pages << (PAGE_SHIFT + page_order(rb));
-#endif
-}
-
-static inline void perf_set_data_size(struct perf_buffer *rb,
-				      unsigned long data_size)
-{
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	rb->data_size = data_size;
-#endif
 }
 
 static inline unsigned long perf_mmap_page_size(struct perf_buffer *rb)
 {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return rb->mmap_page_size;
-#else
-	return __PAGE_SIZE;
-#endif
-}
-
-static inline void perf_set_mmap_page_size(struct perf_buffer *rb,
-					   unsigned long page_size)
-{
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	rb->mmap_page_size = page_size;
-#endif
 }
 
 static inline u64 perf_aux_offset(struct perf_buffer *rb)
 {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	return rb->aux_offset;
-#else
-	return (u64)rb->aux_pgoff << PAGE_SHIFT;
-#endif
-}
-
-static inline void perf_set_aux_offset(struct perf_buffer *rb, u64 offset)
-{
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	rb->aux_offset = offset;
-#endif
 }
 
 static inline unsigned long perf_aux_size(struct perf_buffer *rb)

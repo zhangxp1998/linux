@@ -1,27 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A native (16K) parent and a 4K compat child pinned to the same CPU hand
+ * off through a shared futex for many rounds, each writing and re-reading
+ * every 4K slice of a private native page, without memory or futex errors.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <linux/futex.h>
 #include <sched.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define COMPAT_PAGE_SIZE 4096UL
-#define NATIVE_PAGE_SIZE 16384UL
 #define DEFAULT_ROUNDS 50000
 
 struct shared_state {
@@ -75,11 +67,11 @@ static int exercise_mapping(unsigned char *mapping, unsigned long round)
 {
 	unsigned int slice;
 
-	for (slice = 0; slice < NATIVE_PAGE_SIZE / COMPAT_PAGE_SIZE; slice++) {
+	for (slice = 0; slice < NATIVE_PAGE_SIZE / PROCESS_PAGE_SIZE; slice++) {
 		unsigned char value = (unsigned char)(round + 17 * slice);
 
-		mapping[slice * COMPAT_PAGE_SIZE] = value;
-		if (mapping[slice * COMPAT_PAGE_SIZE] != value)
+		mapping[slice * PROCESS_PAGE_SIZE] = value;
+		if (mapping[slice * PROCESS_PAGE_SIZE] != value)
 			return -1;
 	}
 	return 0;
@@ -98,7 +90,7 @@ static int run_child(int fd, unsigned long rounds)
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (shared == MAP_FAILED || mapping == MAP_FAILED || pin_to_cpu_zero())
 		error = errno ? errno : EFAULT;
-	if (!error && sysconf(_SC_PAGESIZE) != COMPAT_PAGE_SIZE)
+	if (!error && sysconf(_SC_PAGESIZE) != PROCESS_PAGE_SIZE)
 		error = EINVAL;
 	shared->child_page_size = sysconf(_SC_PAGESIZE);
 	shared->child_error = error;
@@ -127,15 +119,10 @@ static int exec_compat_child(int fd, unsigned long rounds)
 {
 	char fd_arg[16];
 	char rounds_arg[32];
-	int persona = personality(0xffffffffUL);
 
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
 	snprintf(fd_arg, sizeof(fd_arg), "%d", fd);
 	snprintf(rounds_arg, sizeof(rounds_arg), "%lu", rounds);
-	execl("/proc/self/exe", "mixed_context_switch_ppps", "--child",
-	      fd_arg, rounds_arg, NULL);
+	ppps_execl(true, NULL, "--child", fd_arg, rounds_arg, NULL);
 	return EXIT_FAILURE;
 }
 
@@ -174,7 +161,7 @@ static int run_parent(unsigned long rounds)
 		_exit(exec_compat_child(fd, rounds));
 	ksft_test_result(!wait_for_value(&shared->ready, 1),
 			 "start a same-CPU 4K compat peer\n");
-	ksft_test_result(shared->child_page_size == COMPAT_PAGE_SIZE &&
+	ksft_test_result(shared->child_page_size == PROCESS_PAGE_SIZE &&
 			 !shared->child_error,
 			 "peer enters 4K compat mode (%ld, error=%d)\n",
 			 shared->child_page_size, shared->child_error);
@@ -208,10 +195,13 @@ static int run_parent(unsigned long rounds)
 
 int main(int argc, char **argv)
 {
+	const char *mode = ppps_run_mode(argc, argv, NULL);
 	unsigned long rounds = DEFAULT_ROUNDS;
 
-	if (argc == 4 && !strcmp(argv[1], "--child"))
+	if (mode && argc == 4 && !strcmp(mode, "--child"))
 		return run_child(atoi(argv[2]), strtoul(argv[3], NULL, 0));
+	if (mode)
+		return EXIT_FAILURE;
 	if (argc == 2)
 		rounds = strtoul(argv[1], NULL, 0);
 	if ((argc != 1 && argc != 2) || !rounds)

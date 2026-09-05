@@ -1,23 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * With address randomization disabled, a 4K compat process can exec a 4K
+ * ELF under a one-process-page RLIMIT_STACK.
+ */
 #define _GNU_SOURCE
 
 #include <limits.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/personality.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
+#include "kselftest_ppps.h"
 
 static bool get_probe_path(char path[PATH_MAX])
 {
@@ -38,22 +30,21 @@ static bool get_probe_path(char path[PATH_MAX])
 	return true;
 }
 
-static void run_test(void)
+static int run_test(void)
 {
 	char probe_path[PATH_MAX];
 	struct rlimit limit = {
-		.rlim_cur = USER_PAGE_SIZE,
-		.rlim_max = USER_PAGE_SIZE,
+		.rlim_cur = PROCESS_PAGE_SIZE,
+		.rlim_max = PROCESS_PAGE_SIZE,
 	};
 	char *const argv[] = { (char *)"elf_4k_align_probe", NULL };
 	char *const envp[] = { NULL };
 	int status = 0;
 	pid_t pid;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(2);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(1);
 	if (!get_probe_path(probe_path))
 		ksft_exit_fail_msg("could not locate the ELF probe\n");
 
@@ -79,24 +70,20 @@ static void run_test(void)
 	ksft_finished();
 }
 
-static void exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed\n");
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE |
-			ADDR_NO_RANDOMIZE) < 0)
-		ksft_exit_fail_msg("personality set failed\n");
-	execl("/proc/self/exe", "exec_stack_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed\n");
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		run_test();
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode) {
+		/* The probe inherits ADDR_NO_RANDOMIZE through the re-exec. */
+		int persona = personality(0xffffffffUL);
+
+		if (persona < 0 ||
+		    personality(persona | ADDR_NO_RANDOMIZE) < 0)
+			ksft_exit_fail_msg("personality set failed\n");
+		exec_compat(argv[0], PPPS_RUN_FLAG, NULL);
+	}
+	if (argc == 2 && !strcmp(mode, PPPS_RUN_FLAG))
+		return run_test();
 	return EXIT_FAILURE;
 }

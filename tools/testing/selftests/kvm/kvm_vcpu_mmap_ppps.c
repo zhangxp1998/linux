@@ -1,37 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process sees the VCPU mmap size, run page, coalesced-MMIO page
+ * and dirty ring in 4K process-page units, maps each at its 4K offset, and
+ * the kernel honors the 4K coalesced-ring capacity.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/kvm.h>
-#include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
 
-#define USER_PAGE_SIZE 4096UL
-#define MAX_NATIVE_PAGE_SIZE 16384UL
-#define MAPPING_SIZE (2 * USER_PAGE_SIZE)
-#define DIRTY_RING_SIZE 4096
+#define MAPPING_SIZE (2 * PROCESS_PAGE_SIZE)
+/* One process page; int so comparisons with ioctl() results stay signed. */
+#define DIRTY_RING_SIZE ((int)PROCESS_PAGE_SIZE)
 #define GUEST_CODE_GPA 0x40000000ULL
 #define GUEST_MMIO_GPA 0x10000000ULL
 #define GUEST_EXIT_MMIO_GPA 0x20000000ULL
-#define PAGEMAP_PRESENT (UINT64_C(1) << 63)
-#define PAGEMAP_PFN_MASK ((1ULL << 55) - 1)
 #define USER_COALESCED_MMIO_MAX \
-	((USER_PAGE_SIZE - sizeof(struct kvm_coalesced_mmio_ring)) / \
+	((PROCESS_PAGE_SIZE - sizeof(struct kvm_coalesced_mmio_ring)) / \
 	 sizeof(struct kvm_coalesced_mmio))
 
 static int set_one_reg(int vcpu_fd, uint64_t id, uint64_t value)
@@ -69,7 +60,7 @@ static bool mapping_is_accessible(void *mapping, size_t size)
 
 		close(pipefd[0]);
 		sum = 0;
-		for (offset = 0; offset < size; offset += USER_PAGE_SIZE)
+		for (offset = 0; offset < size; offset += PROCESS_PAGE_SIZE)
 			sum += *((unsigned char *)mapping + offset);
 		_exit(write(pipefd[1], &sum, sizeof(sum)) == sizeof(sum) ? 0 : 1);
 	}
@@ -90,8 +81,6 @@ static int mapping_pfn(void *mapping, uint64_t *pfn)
 	uint64_t entry;
 	unsigned char byte;
 	int pipefd[2];
-	off_t offset;
-	int fd;
 
 	if (pipe(pipefd))
 		return -errno;
@@ -105,17 +94,8 @@ static int mapping_pfn(void *mapping, uint64_t *pfn)
 	}
 	close(pipefd[0]);
 	close(pipefd[1]);
-	fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return -errno;
-	offset = (uintptr_t)mapping / USER_PAGE_SIZE * sizeof(entry);
-	if (pread(fd, &entry, sizeof(entry), offset) != sizeof(entry)) {
-		int err = errno ? -errno : -EIO;
-
-		close(fd);
-		return err;
-	}
-	close(fd);
+	if (!ppps_pagemap_entry(mapping, &entry))
+		return errno ? -errno : -EIO;
 	if (!(entry & PAGEMAP_PRESENT))
 		return -EFAULT;
 	*pfn = entry & PAGEMAP_PFN_MASK;
@@ -132,7 +112,7 @@ static void test_coalesced_mmio(int vm_fd, int vcpu_fd, void *run_mapping,
 	struct kvm_userspace_memory_region region = {
 		.slot = 0,
 		.guest_phys_addr = GUEST_CODE_GPA,
-		.memory_size = MAX_NATIVE_PAGE_SIZE,
+		.memory_size = NATIVE_PAGE_SIZE,
 	};
 	struct kvm_coalesced_mmio_zone zone = {
 		.addr = GUEST_MMIO_GPA,
@@ -157,12 +137,12 @@ static void test_coalesced_mmio(int vm_fd, int vcpu_fd, void *run_mapping,
 		ret = ioctl(vcpu_fd, KVM_ARM_VCPU_INIT, &init);
 	ksft_test_result(ret == 0, "initialize an arm64 VCPU\n");
 
-	guest_mapping = mmap(NULL, 2 * MAX_NATIVE_PAGE_SIZE,
+	guest_mapping = mmap(NULL, 2 * NATIVE_PAGE_SIZE,
 			     PROT_READ | PROT_WRITE,
 			     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (guest_mapping != MAP_FAILED) {
-		guest_addr = ((uintptr_t)guest_mapping + MAX_NATIVE_PAGE_SIZE - 1) &
-			     ~(MAX_NATIVE_PAGE_SIZE - 1);
+		guest_addr = ((uintptr_t)guest_mapping + NATIVE_PAGE_SIZE - 1) &
+			     ~(NATIVE_PAGE_SIZE - 1);
 		memcpy((void *)guest_addr, guest_code, sizeof(guest_code));
 		region.userspace_addr = guest_addr;
 		region_ok = ioctl(vm_fd, KVM_SET_USER_MEMORY_REGION, &region) == 0;
@@ -216,7 +196,7 @@ static void test_coalesced_mmio(int vm_fd, int vcpu_fd, void *run_mapping,
 			 "kernel honors the 4K coalesced-ring capacity\n");
 
 	if (guest_mapping != MAP_FAILED)
-		munmap(guest_mapping, 2 * MAX_NATIVE_PAGE_SIZE);
+		munmap(guest_mapping, 2 * NATIVE_PAGE_SIZE);
 }
 
 static int run_test(void)
@@ -239,15 +219,10 @@ static int run_test(void)
 	int ret;
 
 	ksft_print_header();
-	ksft_set_plan(24);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(23);
 
-	kvm_fd = open("/dev/kvm", O_RDWR | O_CLOEXEC);
+	kvm_fd = ppps_open_fixture_or_skip("/dev/kvm", O_RDWR);
 	ksft_test_result(kvm_fd >= 0, "open /dev/kvm\n");
-	if (kvm_fd < 0)
-		ksft_exit_fail_msg("open /dev/kvm failed: %s\n",
-				   strerror(errno));
 
 	ret = ioctl(kvm_fd, KVM_GET_API_VERSION, 0);
 	ksft_test_result(ret == KVM_API_VERSION, "KVM API is available\n");
@@ -290,27 +265,27 @@ static int run_test(void)
 				   strerror(errno));
 
 	start_pgoff = KVM_DIRTY_LOG_PAGE_OFFSET -
-			(MAPPING_SIZE / USER_PAGE_SIZE);
+			(MAPPING_SIZE / PROCESS_PAGE_SIZE);
 	mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE,
-		       vcpu_fd, start_pgoff * USER_PAGE_SIZE);
+		       vcpu_fd, start_pgoff * PROCESS_PAGE_SIZE);
 	ksft_test_result(mapping != MAP_FAILED,
 			 "map a private VCPU range ending before the dirty ring\n");
 	if (mapping != MAP_FAILED)
 		munmap(mapping, MAPPING_SIZE);
 
-	run_mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	run_mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			   MAP_SHARED, vcpu_fd, 0);
 	ksft_test_result(run_mapping != MAP_FAILED, "map the KVM run page\n");
-	mmio_mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	mmio_mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			    MAP_SHARED, vcpu_fd,
-			    mmio_offset * USER_PAGE_SIZE);
+			    mmio_offset * PROCESS_PAGE_SIZE);
 	ksft_test_result(mmio_mapping != MAP_FAILED,
 			 "map the coalesced-MMIO page\n");
 	ksft_test_result(run_mapping != MAP_FAILED &&
-			 mapping_is_accessible(run_mapping, USER_PAGE_SIZE),
+			 mapping_is_accessible(run_mapping, PROCESS_PAGE_SIZE),
 			 "KVM run page is accessible\n");
 	ksft_test_result(mmio_mapping != MAP_FAILED &&
-			 mapping_is_accessible(mmio_mapping, USER_PAGE_SIZE),
+			 mapping_is_accessible(mmio_mapping, PROCESS_PAGE_SIZE),
 			 "coalesced-MMIO page is accessible\n");
 	ret = run_mapping == MAP_FAILED ? -EINVAL :
 		mapping_pfn(run_mapping, &run_pfn);
@@ -322,7 +297,7 @@ static int run_test(void)
 
 	dirty_mapping = mmap(NULL, DIRTY_RING_SIZE, PROT_READ | PROT_WRITE,
 			     MAP_SHARED, vcpu_fd,
-			     KVM_DIRTY_LOG_PAGE_OFFSET * USER_PAGE_SIZE);
+			     KVM_DIRTY_LOG_PAGE_OFFSET * PROCESS_PAGE_SIZE);
 	ksft_test_result(dirty_mapping != MAP_FAILED, "map the dirty ring\n");
 	ksft_test_result(dirty_mapping != MAP_FAILED &&
 			 mapping_is_accessible(dirty_mapping, DIRTY_RING_SIZE),
@@ -333,9 +308,9 @@ static int run_test(void)
 	if (dirty_mapping != MAP_FAILED)
 		munmap(dirty_mapping, DIRTY_RING_SIZE);
 	if (mmio_mapping != MAP_FAILED)
-		munmap(mmio_mapping, USER_PAGE_SIZE);
+		munmap(mmio_mapping, PROCESS_PAGE_SIZE);
 	if (run_mapping != MAP_FAILED)
-		munmap(run_mapping, USER_PAGE_SIZE);
+		munmap(run_mapping, PROCESS_PAGE_SIZE);
 
 	close(vcpu_fd);
 	close(vm_fd);
@@ -343,25 +318,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "kvm_vcpu_mmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

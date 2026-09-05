@@ -890,7 +890,7 @@ struct perf_buffer *rb_alloc(int nr_pages, unsigned long data_size,
 	}
 
 	rb->nr_pages = nr_pages;
-	perf_set_data_size(rb, data_size);
+	rb->data_size = data_size;
 
 	ring_buffer_init(rb, watermark, flags);
 
@@ -976,7 +976,7 @@ struct perf_buffer *rb_alloc(int nr_pages, unsigned long data_size,
 		rb->nr_pages = 1;
 		rb->page_order = ilog2(nr_pages);
 	}
-	perf_set_data_size(rb, data_size);
+	rb->data_size = data_size;
 
 	ring_buffer_init(rb, watermark, flags);
 

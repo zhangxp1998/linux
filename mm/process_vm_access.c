@@ -22,7 +22,6 @@
  * @len: number of bytes to copy
  * @iter: where to copy to/from locally
  * @page_size: page size of the target process
- * @addr: target-process address of the first page
  * @slice_idx: first subpage slice within the host page
  * @advance_slice: whether each target page advances the subpage slice
  * @vm_write: 0 means copy from, 1 means copy to
@@ -33,7 +32,6 @@ static int process_vm_rw_pages(struct page **pages,
 			       size_t len,
 			       struct iov_iter *iter,
 			       unsigned int page_size,
-			       unsigned long addr,
 			       unsigned int slice_idx,
 			       bool advance_slice,
 			       int vm_write)
@@ -41,17 +39,9 @@ static int process_vm_rw_pages(struct page **pages,
 	/* Do the copy for each page */
 	while (len && iov_iter_count(iter)) {
 		struct page *page = *pages++;
-		unsigned int page_offset;
+		unsigned int page_offset = slice_idx * page_size + offset;
 		size_t copy = page_size - offset;
 		size_t copied;
-
-		/* Packed anonymous folios only exist when PPPS is enabled. */
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-		if (folio_test_ppps_packed_anon(page_folio(page)))
-			page_offset = offset_in_page(addr) + offset;
-		else
-#endif
-			page_offset = slice_idx * page_size + offset;
 
 		if (copy > len)
 			copy = len;
@@ -65,9 +55,6 @@ static int process_vm_rw_pages(struct page **pages,
 		if (copied < copy && iov_iter_count(iter))
 			return -EFAULT;
 		offset = 0;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-		addr += page_size;
-#endif
 		if (advance_slice)
 			slice_idx = (slice_idx + 1) & PPPS_SLICE_MASK;
 	}
@@ -126,7 +113,7 @@ static int process_vm_rw_single_vec(unsigned long addr,
 		struct vm_area_struct *vma;
 		unsigned long vma_pages;
 		unsigned int slice_idx;
-		bool advance_slice;
+		bool advance_slice = ppps_mm_is_compat(mm);
 		int locked = 1;
 		size_t bytes;
 
@@ -143,7 +130,6 @@ static int process_vm_rw_single_vec(unsigned long addr,
 			return -EFAULT;
 		}
 		slice_idx = vma_address_to_slice(vma, pa);
-		advance_slice = ppps_mm_is_compat(mm) && vma->vm_ops;
 		vma_pages = (vma->vm_end - pa) >> page_shift;
 		pinned_pages = min_t(unsigned long, pinned_pages, vma_pages);
 		pinned_pages = pin_user_pages_remote(mm, pa, pinned_pages,
@@ -153,19 +139,24 @@ static int process_vm_rw_single_vec(unsigned long addr,
 			mmap_read_unlock(mm);
 		if (pinned_pages <= 0)
 			return -EFAULT;
-		if (!locked && ppps_mm_is_compat(mm)) {
+		/*
+		 * A fault may drop mmap_lock for UFFD or I/O.  Native pages need
+		 * no VMA metadata, but compat offsets must describe these exact
+		 * pins.  If geometry could have changed, discard the pins and
+		 * retry the now-faulted range under a fresh lock/VMA lookup.
+		 */
+		if (!locked && advance_slice) {
 			unpin_user_pages(process_pages, pinned_pages);
 			cond_resched();
 			continue;
 		}
-
 
 		bytes = pinned_pages * page_size - start_offset;
 		if (bytes > len)
 			bytes = len;
 
 		rc = process_vm_rw_pages(process_pages,
-					 start_offset, bytes, iter, page_size, pa,
+					 start_offset, bytes, iter, page_size,
 					 slice_idx, advance_slice,
 					 vm_write);
 		len -= bytes;
@@ -244,9 +235,8 @@ static ssize_t process_vm_rw_core(pid_t pid, struct iov_iter *iter,
 	}
 	page_size = MM_PAGE_SIZE(mm);
 
-	/*
-	 * Work out how many pages of struct pages we're going to need
-	 * when eventually calling get_user_pages.
+	/* Work out how many pages of struct pages we're going to need
+	 * when eventually calling get_user_pages
 	 */
 	for (i = 0; i < riovcnt; i++) {
 		iov_len = rvec[i].iov_len;
@@ -261,11 +251,9 @@ static ssize_t process_vm_rw_core(pid_t pid, struct iov_iter *iter,
 
 	if (nr_pages > PVM_MAX_PP_ARRAY_COUNT) {
 		/* For reliability don't try to kmalloc more than
-		 * 2 pages worth.
-		 */
-		process_pages = kmalloc(min_t(size_t,
-					      PVM_MAX_KMALLOC_PAGES * PAGE_SIZE,
-					      sizeof(struct page *) * nr_pages),
+		   2 pages worth */
+		process_pages = kmalloc(min_t(size_t, PVM_MAX_KMALLOC_PAGES * PAGE_SIZE,
+					      sizeof(struct page *)*nr_pages),
 					GFP_KERNEL);
 		if (!process_pages) {
 			rc = -ENOMEM;

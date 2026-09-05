@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A native (16K) BPF loader copies strings that straddle a 4K slice boundary
+ * out of a 4K compat target's anonymous and file-backed mappings through the
+ * remote task string-copy helpers; both copies must see the whole string.
+ */
 #define _GNU_SOURCE
 
 #include <errno.h>
@@ -6,22 +11,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <test_progs.h>
 
+#include "kselftest_ppps.h"
 #include "bpf_copy_remote_str_ppps.skel.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
-#define NATIVE_PAGE_SIZE 16384UL
-#define FILE_OFFSET (3 * USER_PAGE_SIZE)
+#define FILE_OFFSET (3 * PROCESS_PAGE_SIZE)
 #define FILE_SIZE (4 * NATIVE_PAGE_SIZE)
 #define OUTPUT_SIZE 32
 #define ANON_ADDRESS ((void *)0x40000000UL)
@@ -46,65 +45,27 @@ struct bpf_copy_state {
 	uint64_t file_ptr;
 	int32_t anon_ret;
 	int32_t file_ret;
+	int32_t invalid_flags_ret;
+	int32_t zero_size_ret;
+	int32_t fault_pad_ret;
+	int32_t fault_no_pad_ret;
+	int32_t no_pad_ret;
 	char anon_output[OUTPUT_SIZE];
 	char file_output[OUTPUT_SIZE];
+	char fault_pad_output[8];
+	char no_pad_output[OUTPUT_SIZE];
 };
 
-static int write_full(int fd, const void *buffer, size_t length)
+static bool all_zeros(const void *data, size_t size)
 {
-	const unsigned char *pos = buffer;
+	const unsigned char *bytes = data;
+	size_t i;
 
-	while (length) {
-		ssize_t written = write(fd, pos, length);
-
-		if (written < 0) {
-			if (errno == EINTR)
-				continue;
-			return -1;
-		}
-		pos += written;
-		length -= written;
+	for (i = 0; i < size; i++) {
+		if (bytes[i])
+			return false;
 	}
-	return 0;
-}
-
-static int read_full(int fd, void *buffer, size_t length)
-{
-	unsigned char *pos = buffer;
-
-	while (length) {
-		ssize_t bytes = read(fd, pos, length);
-
-		if (bytes < 0) {
-			if (errno == EINTR)
-				continue;
-			return -1;
-		}
-		if (!bytes)
-			return -1;
-		pos += bytes;
-		length -= bytes;
-	}
-	return 0;
-}
-
-static int pwrite_full(int fd, const void *buffer, size_t length, off_t offset)
-{
-	const unsigned char *pos = buffer;
-
-	while (length) {
-		ssize_t written = pwrite(fd, pos, length, offset);
-
-		if (written < 0) {
-			if (errno == EINTR)
-				continue;
-			return -1;
-		}
-		pos += written;
-		offset += written;
-		length -= written;
-	}
-	return 0;
+	return true;
 }
 
 static int run_target(int info_fd, int finish_fd)
@@ -116,58 +77,53 @@ static int run_target(int info_fd, int finish_fd)
 	char finish;
 	int memfd;
 
-	anon_mapping = mmap(ANON_ADDRESS, 2 * USER_PAGE_SIZE,
+	anon_mapping = mmap(ANON_ADDRESS, 2 * PROCESS_PAGE_SIZE,
 			    PROT_READ | PROT_WRITE,
 			    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
 			    -1, 0);
 	if (anon_mapping == MAP_FAILED)
 		return EXIT_FAILURE;
-	memset(anon_mapping, 'A', 2 * USER_PAGE_SIZE);
-	memcpy(anon_mapping + USER_PAGE_SIZE - 4, anon_expected,
+	memset(anon_mapping, 'A', 2 * PROCESS_PAGE_SIZE);
+	memcpy(anon_mapping + PROCESS_PAGE_SIZE - 4, anon_expected,
 	       sizeof(anon_expected));
 
 	memfd = memfd_create("bpf-copy-remote-str-ppps", 0);
 	if (memfd < 0 || ftruncate(memfd, FILE_SIZE))
 		return EXIT_FAILURE;
 	memset(file_data, 'Q', sizeof(file_data));
-	memcpy(file_data + FILE_OFFSET + USER_PAGE_SIZE - 4, file_expected,
+	memcpy(file_data + FILE_OFFSET + PROCESS_PAGE_SIZE - 4, file_expected,
 	       sizeof(file_expected));
-	if (pwrite_full(memfd, file_data, sizeof(file_data), 0))
+	if (!pwrite_full(memfd, file_data, sizeof(file_data), 0))
 		return EXIT_FAILURE;
-	file_mapping = mmap(FILE_ADDRESS, 2 * USER_PAGE_SIZE,
+	file_mapping = mmap(FILE_ADDRESS, 2 * PROCESS_PAGE_SIZE,
 			    PROT_READ | PROT_WRITE,
 			    MAP_SHARED | MAP_FIXED_NOREPLACE, memfd,
 			    FILE_OFFSET);
 	if (file_mapping == MAP_FAILED)
 		return EXIT_FAILURE;
 
-	info.anon_ptr = (uintptr_t)(anon_mapping + USER_PAGE_SIZE - 4);
-	info.file_ptr = (uintptr_t)(file_mapping + USER_PAGE_SIZE - 4);
+	info.anon_ptr = (uintptr_t)(anon_mapping + PROCESS_PAGE_SIZE - 4);
+	info.file_ptr = (uintptr_t)(file_mapping + PROCESS_PAGE_SIZE - 4);
 	info.page_size = sysconf(_SC_PAGESIZE);
-	if (write_full(info_fd, &info, sizeof(info)) ||
-	    read_full(finish_fd, &finish, sizeof(finish)))
+	if (!write_full(info_fd, &info, sizeof(info)) ||
+	    !read_full(finish_fd, &finish, sizeof(finish)))
 		return EXIT_FAILURE;
 
-	munmap(file_mapping, 2 * USER_PAGE_SIZE);
+	munmap(file_mapping, 2 * PROCESS_PAGE_SIZE);
 	close(memfd);
-	munmap(anon_mapping, 2 * USER_PAGE_SIZE);
+	munmap(anon_mapping, 2 * PROCESS_PAGE_SIZE);
 	return EXIT_SUCCESS;
 }
 
+/*
+ * Re-exec test_progs restricted to this test in @mode, as a compat or native
+ * process.  Only ever called in a forked child, which fails quietly.
+ */
 static void exec_mode(const char *mode, bool compat, int info_fd, int finish_fd)
 {
 	char info_fd_string[16];
 	char finish_fd_string[16];
-	int persona = personality(0xffffffffUL);
 
-	if (persona < 0)
-		_exit(EXIT_FAILURE);
-	if (compat)
-		persona |= ADDR_4KB_COMPAT_PAGE_SIZE;
-	else
-		persona &= ~ADDR_4KB_COMPAT_PAGE_SIZE;
-	if (personality(persona) < 0)
-		_exit(EXIT_FAILURE);
 	if (setenv(MODE_ENV, mode, 1))
 		_exit(EXIT_FAILURE);
 	if (info_fd >= 0) {
@@ -178,8 +134,8 @@ static void exec_mode(const char *mode, bool compat, int info_fd, int finish_fd)
 		    setenv(FINISH_FD_ENV, finish_fd_string, 1))
 			_exit(EXIT_FAILURE);
 	}
-	execl("/proc/self/exe", "test_progs", "-t",
-	      "bpf_copy_remote_str_ppps", NULL);
+	ppps_execl(compat, "test_progs", "-t", "bpf_copy_remote_str_ppps",
+		   NULL);
 	_exit(EXIT_FAILURE);
 }
 
@@ -234,10 +190,10 @@ static void run_loader(void)
 
 	close(info_pipe[1]);
 	close(finish_pipe[0]);
-	if (!ASSERT_OK(read_full(info_pipe[0], &info, sizeof(info)),
-		       "read target info"))
+	if (!ASSERT_TRUE(read_full(info_pipe[0], &info, sizeof(info)),
+			 "read target info"))
 		goto release_child;
-	ASSERT_EQ(info.page_size, USER_PAGE_SIZE, "target page size");
+	ASSERT_EQ(info.page_size, PROCESS_PAGE_SIZE, "target page size");
 
 	skeleton = bpf_copy_remote_str_ppps__open_and_load();
 	if (!ASSERT_OK_PTR(skeleton, "open and load BPF skeleton"))
@@ -261,6 +217,19 @@ static void run_loader(void)
 	ASSERT_STREQ(state.anon_output, anon_expected, "anonymous contents");
 	ASSERT_EQ(state.file_ret, (int)sizeof(file_expected), "file return");
 	ASSERT_STREQ(state.file_output, file_expected, "file contents");
+	ASSERT_EQ(state.invalid_flags_ret, -EINVAL, "invalid flags");
+	ASSERT_EQ(state.zero_size_ret, 0, "zero destination size");
+	ASSERT_EQ(state.fault_pad_ret, -EFAULT, "fault with zero padding");
+	ASSERT_EQ(state.fault_no_pad_ret, -EFAULT, "fault without padding");
+	ASSERT_EQ(state.no_pad_ret, (int)sizeof(anon_expected),
+		  "no-padding return");
+	ASSERT_STREQ(state.no_pad_output, anon_expected, "no-padding contents");
+	ASSERT_TRUE(all_zeros(state.fault_pad_output,
+			      sizeof(state.fault_pad_output)),
+		    "fault output zeroed");
+	ASSERT_TRUE(all_zeros(state.anon_output + sizeof(anon_expected),
+			      sizeof(state.anon_output) - sizeof(anon_expected)),
+		    "success output padded");
 
 release_child:
 	bpf_copy_remote_str_ppps__destroy(skeleton);
@@ -275,7 +244,7 @@ release_child:
 
 void test_bpf_copy_remote_str_ppps(void)
 {
-	const char *mode = getenv(MODE_ENV);
+	const char *mode = ppps_run_mode(0, NULL, MODE_ENV);
 	int status;
 	pid_t child;
 

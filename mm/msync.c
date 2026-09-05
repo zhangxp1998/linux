@@ -43,11 +43,7 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 
 	if (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC))
 		goto out;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-	if (mm_offset_in_page(current->mm, start))
-#else
-	if (__offset_in_page_log(start))
-#endif
+	if (mm_uapi_offset_in_page_log(current->mm, start))
 		goto out;
 	if ((flags & MS_ASYNC) && (flags & MS_SYNC))
 		goto out;
@@ -91,7 +87,7 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 			goto out_unlock;
 		}
 		file = vma->vm_file;
-		fstart = vma_file_offset(vma) + start - vma->vm_start;
+		fstart = vma_addr_file_offset(vma, start);
 		fend = fstart + (min(end, vma->vm_end) - start) - 1;
 		start = vma->vm_end;
 		if ((flags & MS_SYNC) && file &&

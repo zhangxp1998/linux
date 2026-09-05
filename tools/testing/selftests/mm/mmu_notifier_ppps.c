@@ -1,23 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * An MGLRU page-table aging pass over a 4K compat process's anonymous
+ * mapping invokes the fixture MMU notifier with ranges in whole process
+ * pages that never exceed one native page (a packed anonymous tuple).
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "mmu_notifier_ppps_module/mmu_notifier_ppps.h"
+#include "kselftest_ppps.h"
+#include "mmu_notifier_ppps.h"
 
-#define PROCESS_PAGE_SIZE 4096UL
 #define TEST_PAGES 512
 #define CGROUP_PATH "/sys/fs/cgroup/ppps-mmu-notifier"
 #define LRU_GEN_PATH "/sys/kernel/debug/lru_gen"
@@ -114,14 +110,13 @@ static void reclaim_memcg(void)
 	write_text(CGROUP_PATH "/memory.reclaim", "1M\n");
 }
 
-int main(void)
+static int run_test(void)
 {
 	struct mmu_notifier_ppps_range range;
 	struct mmu_notifier_ppps_stats stats;
 	struct generation_stats generations;
 	unsigned char *mapping;
 	size_t mapping_size = TEST_PAGES * PROCESS_PAGE_SIZE;
-	long page_size = sysconf(_SC_PAGESIZE);
 	bool joined;
 	bool found;
 	bool aged;
@@ -132,29 +127,23 @@ int main(void)
 	int i;
 	int attempt;
 
-	printf("TAP version 13\n1..7\n");
-	printf("%s 1 - process uses 4K pages\n",
-	       page_size == PROCESS_PAGE_SIZE ? "ok" : "not ok");
-	if (page_size != PROCESS_PAGE_SIZE)
-		return 1;
+	printf("TAP version 13\n1..6\n");
 
 	joined = join_test_cgroup();
-	printf("%s 2 - join a dedicated memory cgroup\n",
+	printf("%s 1 - join a dedicated memory cgroup\n",
 	       joined ? "ok" : "not ok");
 	if (!joined)
 		return 1;
 
-	fd = open("/dev/mmu_notifier_ppps", O_RDWR | O_CLOEXEC);
-	printf("%s 3 - register an MMU notifier for this process\n",
+	fd = ppps_open_fixture_or_skip("/dev/mmu_notifier_ppps", O_RDWR);
+	printf("%s 2 - register an MMU notifier for this process\n",
 	       fd >= 0 ? "ok" : "not ok");
-	if (fd < 0)
-		return 1;
 
 	mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (mapping != MAP_FAILED)
 		madvise(mapping, mapping_size, MADV_NOHUGEPAGE);
-	printf("%s 4 - allocate the notifier test mapping\n",
+	printf("%s 3 - allocate the notifier test mapping\n",
 	       mapping != MAP_FAILED ? "ok" : "not ok");
 	if (mapping == MAP_FAILED)
 		return 1;
@@ -171,7 +160,7 @@ int main(void)
 		mapping[i * PROCESS_PAGE_SIZE]++;
 
 	found = read_generation_stats(&generations);
-	printf("%s 5 - find the test cgroup in the MGLRU histogram\n",
+	printf("%s 4 - find the test cgroup in the MGLRU histogram\n",
 	       found ? "ok" : "not ok");
 	if (!found)
 		return 1;
@@ -212,7 +201,7 @@ int main(void)
 		sizeof(child_result) && child_result;
 	close(pipefd[0]);
 	waitpid(child, NULL, 0);
-	printf("%s 6 - force an MGLRU page-table aging pass\n",
+	printf("%s 5 - force an MGLRU page-table aging pass\n",
 	       aged ? "ok" : "not ok");
 	if (!aged)
 		return 1;
@@ -229,10 +218,12 @@ int main(void)
 	       (unsigned long long)stats.max_span,
 	       (unsigned long long)stats.last_start,
 	       (unsigned long long)stats.last_end);
-	printf("%s 7 - MMU notifier ranges use one process page\n",
+	printf("%s 6 - MMU notifier ranges are process pages within a native page\n",
 	       stats.callbacks && !stats.bad_ranges ? "ok" : "not ok");
 
 	munmap(mapping, mapping_size);
 	close(fd);
 	return stats.callbacks && !stats.bad_ranges ? 0 : 1;
 }
+
+PPPS_COMPAT_MAIN(run_test)

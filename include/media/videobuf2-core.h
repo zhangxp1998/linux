@@ -1263,6 +1263,25 @@ vb2_plane_size(struct vb2_buffer *vb, unsigned int plane_no)
 }
 
 /**
+ * vb2_plane_size_of_priv() - return the size of the plane backed by @mem_priv.
+ * @vb:		pointer to &struct vb2_buffer to which the plane in
+ *		question belongs to.
+ * @mem_priv:	the allocator private data of the plane.
+ *
+ * Returns 0 if no plane of @vb is backed by @mem_priv.
+ */
+static inline unsigned long
+vb2_plane_size_of_priv(struct vb2_buffer *vb, void *mem_priv)
+{
+	unsigned int plane;
+
+	for (plane = 0; plane < vb->num_planes; plane++)
+		if (vb->planes[plane].mem_priv == mem_priv)
+			return vb2_plane_size(vb, plane);
+	return 0;
+}
+
+/**
  * vb2_start_streaming_called() - return streaming status of driver.
  * @q:		pointer to &struct vb2_queue with videobuf2 queue.
  */
