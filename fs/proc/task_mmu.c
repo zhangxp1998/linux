@@ -37,18 +37,15 @@
 #define SENTINEL_VMA_END	-1
 #define SENTINEL_VMA_GATE	-2
 
-#define SEQ_PUT_DEC(str, val) \
-		seq_put_decimal_ull_width(m, str, (val) << (MM_PAGE_SHIFT(mm)-10), 8)
+#define SEQ_PUT_DEC(str, val) seq_put_decimal_ull_width(m, str, (val) >> 10, 8)
 void task_mem(struct seq_file *m, struct mm_struct *mm)
 {
-	unsigned long text, lib, swap, anon, file, shmem;
-	unsigned long hiwater_vm, total_vm, hiwater_rss, total_rss;
+	u64 text, lib, swap, anon, file, shmem;
+	u64 hiwater_vm, total_vm, hiwater_rss, total_rss;
 
-	/* Anonymous RSS is tracked per native folio; report process pages. */
-	anon = mm_native_to_process_pages(mm,
-					  get_mm_counter_sum(mm, MM_ANONPAGES));
-	file = get_mm_counter_sum(mm, MM_FILEPAGES);
-	shmem = get_mm_counter_sum(mm, MM_SHMEMPAGES);
+	anon = get_mm_counter_sum_bytes(mm, MM_ANONPAGES);
+	file = get_mm_counter_sum_bytes(mm, MM_FILEPAGES);
+	shmem = get_mm_counter_sum_bytes(mm, MM_SHMEMPAGES);
 
 	/*
 	 * Note: to minimize their overhead, mm maintains hiwater_vm and
@@ -57,23 +54,25 @@ void task_mem(struct seq_file *m, struct mm_struct *mm)
 	 * and rss too, which will usually be the higher.  Barriers? not
 	 * worth the effort, such snapshots can always be inconsistent.
 	 */
-	hiwater_vm = total_vm = mm->total_vm;
-	if (hiwater_vm < mm->hiwater_vm)
-		hiwater_vm = mm->hiwater_vm;
-	hiwater_rss = total_rss = anon + file + shmem;
-	if (hiwater_rss < mm->hiwater_rss)
-		hiwater_rss = mm->hiwater_rss;
+	total_vm = mm_process_pages_to_bytes(mm, mm->total_vm);
+	hiwater_vm = total_vm;
+	hiwater_vm =
+		max(hiwater_vm, mm_process_pages_to_bytes(mm, mm->hiwater_vm));
+	total_rss = anon + file + shmem;
+	hiwater_rss = total_rss;
+	hiwater_rss = max(hiwater_rss,
+			  mm_process_pages_to_bytes(mm, mm->hiwater_rss));
 
 	/* split executable areas between text and lib */
 	text = ALIGN(mm->end_code, MM_PAGE_SIZE(mm)) - (mm->start_code & MM_PAGE_MASK(mm));
-	text = min(text, mm->exec_vm << MM_PAGE_SHIFT(mm));
-	lib = (mm->exec_vm << MM_PAGE_SHIFT(mm)) - text;
+	text = min(text, mm_process_pages_to_bytes(mm, mm->exec_vm));
+	lib = mm_process_pages_to_bytes(mm, mm->exec_vm) - text;
 
-	swap = mm_native_to_process_pages(mm,
-					  get_mm_counter_sum(mm, MM_SWAPENTS));
+	swap = get_mm_counter_sum_bytes(mm, MM_SWAPENTS);
 	SEQ_PUT_DEC("VmPeak:\t", hiwater_vm);
 	SEQ_PUT_DEC(" kB\nVmSize:\t", total_vm);
-	SEQ_PUT_DEC(" kB\nVmLck:\t", mm->locked_vm);
+	SEQ_PUT_DEC(" kB\nVmLck:\t",
+		    mm_process_pages_to_bytes(mm, mm->locked_vm));
 	seq_put_decimal_ull_width(m,
 				  " kB\nVmPin:\t",
 				  atomic64_read(&mm->pinned_vm) <<
@@ -83,8 +82,10 @@ void task_mem(struct seq_file *m, struct mm_struct *mm)
 	SEQ_PUT_DEC(" kB\nRssAnon:\t", anon);
 	SEQ_PUT_DEC(" kB\nRssFile:\t", file);
 	SEQ_PUT_DEC(" kB\nRssShmem:\t", shmem);
-	SEQ_PUT_DEC(" kB\nVmData:\t", mm->data_vm);
-	SEQ_PUT_DEC(" kB\nVmStk:\t", mm->stack_vm);
+	SEQ_PUT_DEC(" kB\nVmData:\t",
+		    mm_process_pages_to_bytes(mm, mm->data_vm));
+	SEQ_PUT_DEC(" kB\nVmStk:\t",
+		    mm_process_pages_to_bytes(mm, mm->stack_vm));
 	seq_put_decimal_ull_width(m,
 		    " kB\nVmExe:\t", text >> 10, 8);
 	seq_put_decimal_ull_width(m,
@@ -107,15 +108,17 @@ unsigned long task_statm(struct mm_struct *mm,
 			 unsigned long *shared, unsigned long *text,
 			 unsigned long *data, unsigned long *resident)
 {
-	*shared = __page_size_count(get_mm_counter_sum(mm, MM_FILEPAGES) +
-			get_mm_counter_sum(mm, MM_SHMEMPAGES));
+	*shared = __page_size_count(
+		(get_mm_counter_sum_bytes(mm, MM_FILEPAGES) +
+		 get_mm_counter_sum_bytes(mm, MM_SHMEMPAGES)) >>
+		MM_PAGE_SHIFT(mm));
 	*text = (MM_UAPI_PAGE_ALIGN(mm, mm->end_code) -
 		 (mm->start_code & MM_UAPI_PAGE_MASK(mm)))
 						>> MM_UAPI_PAGE_SHIFT(mm);
 	*data = __page_size_count(mm->data_vm + mm->stack_vm);
-	/* Anonymous RSS is tracked per native folio; report process pages. */
-	*resident = __page_size_count(*shared + mm_native_to_process_pages(mm,
-				get_mm_counter_sum(mm, MM_ANONPAGES)));
+	*resident = __page_size_count(
+		*shared + (get_mm_counter_sum_bytes(mm, MM_ANONPAGES) >>
+			   MM_PAGE_SHIFT(mm)));
 
 	return __page_size_count(mm->total_vm);
 }
