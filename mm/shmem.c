@@ -3243,97 +3243,100 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 		nofs_flags = memalloc_nofs_save();
 		shmem_ppps_uffd_lock(info);
 	}
-repeat:
-	if (ppps_compat) {
-		struct folio *existing;
+	for (;;) {
+		if (ppps_compat) {
+			struct folio *existing;
 
-		ret = shmem_ppps_mfill_existing_slice(inode, pgoff, dst_pmd,
-						      dst_vma, dst_addr, src_addr,
-						      flags, gfp, foliop,
-						      &existing);
-		if (existing || ret)
-			goto out_unacct_blocks;
-	}
-
-	if (!*foliop) {
-		unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
-		unsigned long offset = vma_page_slice_offset(dst_vma, dst_addr);
-
-		ret = -ENOMEM;
-		folio = shmem_alloc_folio(gfp, 0, info, pgoff);
-		if (!folio)
-			goto out_unacct_blocks;
-
-		/* Only one slice is filled below; the rest must not leak. */
-		if (ppps_compat)
-			folio_zero_range(folio, 0, folio_size(folio));
-
-		if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
-			page_kaddr = kmap_local_folio(folio, 0);
-			/*
-			 * The read mmap_lock is held here.  Despite the
-			 * mmap_lock being read recursive a deadlock is still
-			 * possible if a writer has taken a lock.  For example:
-			 *
-			 * process A thread 1 takes read lock on own mmap_lock
-			 * process A thread 2 calls mmap, blocks taking write lock
-			 * process B thread 1 takes page fault, read lock on own mmap lock
-			 * process B thread 2 calls mmap, blocks taking write lock
-			 * process A thread 1 blocks taking read lock on process B
-			 * process B thread 1 blocks taking read lock on process A
-			 *
-			 * Disable page faults to prevent potential deadlock
-			 * and retry the copy outside the mmap_lock.
-			 */
-			pagefault_disable();
-			ret = copy_from_user(page_kaddr + offset,
-					     (const void __user *)src_addr,
-					     pgsize);
-			pagefault_enable();
-			kunmap_local(page_kaddr);
-
-			/* fallback to copy_from_user outside mmap_lock */
-			if (unlikely(ret)) {
-				*foliop = folio;
-				ret = -ENOENT;
-				/* don't free the page */
+			ret = shmem_ppps_mfill_existing_slice(inode, pgoff, dst_pmd,
+							      dst_vma, dst_addr, src_addr,
+							      flags, gfp, foliop,
+							      &existing);
+			if (existing || ret)
 				goto out_unacct_blocks;
+		}
+
+		if (!*foliop) {
+			unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
+			unsigned long offset = vma_page_slice_offset(dst_vma, dst_addr);
+
+			ret = -ENOMEM;
+			folio = shmem_alloc_folio(gfp, 0, info, pgoff);
+			if (!folio)
+				goto out_unacct_blocks;
+
+			/* Only one slice is filled below; the rest must not leak. */
+			if (ppps_compat)
+				folio_zero_range(folio, 0, folio_size(folio));
+
+			if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
+				page_kaddr = kmap_local_folio(folio, 0);
+				/*
+				 * The read mmap_lock is held here.  Despite the
+				 * mmap_lock being read recursive a deadlock is still
+				 * possible if a writer has taken a lock.  For example:
+				 *
+				 * process A thread 1 takes read lock on own mmap_lock
+				 * process A thread 2 calls mmap, blocks taking write lock
+				 * process B thread 1 takes page fault, read lock on own mmap lock
+				 * process B thread 2 calls mmap, blocks taking write lock
+				 * process A thread 1 blocks taking read lock on process B
+				 * process B thread 1 blocks taking read lock on process A
+				 *
+				 * Disable page faults to prevent potential deadlock
+				 * and retry the copy outside the mmap_lock.
+				 */
+				pagefault_disable();
+				ret = copy_from_user(page_kaddr + offset,
+						     (const void __user *)src_addr,
+						     pgsize);
+				pagefault_enable();
+				kunmap_local(page_kaddr);
+
+				/* fallback to copy_from_user outside mmap_lock */
+				if (unlikely(ret)) {
+					*foliop = folio;
+					ret = -ENOENT;
+					/* don't free the page */
+					goto out_unacct_blocks;
+				}
+
+				flush_dcache_folio(folio);
+			} else {		/* ZEROPAGE */
+				page_kaddr = kmap_local_folio(folio, 0);
+				memset(page_kaddr + offset, 0, pgsize);
+				kunmap_local(page_kaddr);
 			}
-
-			flush_dcache_folio(folio);
-		} else {		/* ZEROPAGE */
-			page_kaddr = kmap_local_folio(folio, 0);
-			memset(page_kaddr + offset, 0, pgsize);
-			kunmap_local(page_kaddr);
+		} else {
+			folio = *foliop;
+			VM_BUG_ON_FOLIO(folio_test_large(folio), folio);
+			*foliop = NULL;
 		}
-	} else {
-		folio = *foliop;
-		VM_BUG_ON_FOLIO(folio_test_large(folio), folio);
-		*foliop = NULL;
-	}
 
-	VM_BUG_ON(folio_test_locked(folio));
-	VM_BUG_ON(folio_test_swapbacked(folio));
-	__folio_set_locked(folio);
-	__folio_set_swapbacked(folio);
-	__folio_mark_uptodate(folio);
+		VM_BUG_ON(folio_test_locked(folio));
+		VM_BUG_ON(folio_test_swapbacked(folio));
+		__folio_set_locked(folio);
+		__folio_set_swapbacked(folio);
+		__folio_mark_uptodate(folio);
 
-	ret = -EFAULT;
-	max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
-	if (unlikely(pgoff >= max_off))
-		goto out_release;
+		ret = -EFAULT;
+		max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
+		if (unlikely(pgoff >= max_off))
+			goto out_release;
 
-	ret = mem_cgroup_charge(folio, dst_vma->vm_mm, gfp);
-	if (ret)
-		goto out_release;
-	ret = shmem_add_to_page_cache(folio, mapping, pgoff, NULL, gfp);
-	if (ret) {
-		if (ret == -EEXIST && ppps_compat) {
-			folio_unlock(folio);
-			folio_put(folio);
-			goto repeat;
+		ret = mem_cgroup_charge(folio, dst_vma->vm_mm, gfp);
+		if (ret)
+			goto out_release;
+		ret = shmem_add_to_page_cache(folio, mapping, pgoff, NULL, gfp);
+		if (ret) {
+			if (ret == -EEXIST && ppps_compat) {
+				folio_unlock(folio);
+				folio_put(folio);
+				continue;
+			}
+			goto out_release;
 		}
-		goto out_release;
+
+		break;
 	}
 
 	if (ppps_compat) {
