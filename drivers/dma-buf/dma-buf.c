@@ -2227,17 +2227,10 @@ int dma_buf_mmap_offset(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 			u64 offset)
 {
 	u64 mmap_size;
-	unsigned int slice;
-	unsigned long pgoff;
 	int ret;
 
 	if (WARN_ON(!dmabuf || !vma))
 		return -EINVAL;
-
-	if (!IS_ALIGNED(offset, MM_PAGE_SIZE(vma->vm_mm)))
-		return -EINVAL;
-	if (offset >> PAGE_SHIFT > ULONG_MAX)
-		return -EOVERFLOW;
 
 	/* check if buffer supports mmap */
 	if (!dmabuf->ops->mmap)
@@ -2250,11 +2243,10 @@ int dma_buf_mmap_offset(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 		return -EINVAL;
 
 	/* readjust the vma */
-	pgoff = offset >> PAGE_SHIFT;
-	slice = vma_offset_to_slice(vma, offset);
+	ret = vma_set_file_offset(vma, offset);
+	if (ret)
+		return ret;
 	vma_set_file(vma, dmabuf->file);
-	vma->vm_pgoff = pgoff;
-	vma_set_slice_off(vma, slice);
 
 	ret = dmabuf->ops->mmap(dmabuf, vma);
 	if (!ret && vma->vm_file == dmabuf->file) {

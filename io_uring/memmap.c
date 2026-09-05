@@ -177,7 +177,7 @@ void *__io_uaddr_map(struct page ***pages, unsigned short *npages,
 {
 	struct mm_struct *mm = current->mm;
 	struct page **page_array;
-	unsigned int page_offset = 0;
+	struct page_span span = {};
 	unsigned int nr_pages;
 	void *page_addr;
 	int ret;
@@ -204,9 +204,9 @@ void *__io_uaddr_map(struct page ***pages, unsigned short *npages,
 		if (!page_array)
 			return ERR_PTR(-ENOMEM);
 
-		ret = pin_user_pages_with_offsets(mm, uaddr, 1,
-						  FOLL_WRITE | FOLL_LONGTERM,
-						  page_array, &page_offset);
+		ret = pin_user_pages_range(mm, uaddr, size, 1,
+					   FOLL_WRITE | FOLL_LONGTERM,
+					   page_array, &span);
 		if (ret != 1) {
 			kvfree(page_array);
 			return ERR_PTR(ret < 0 ? ret : -EFAULT);
@@ -224,7 +224,7 @@ void *__io_uaddr_map(struct page ***pages, unsigned short *npages,
 		*pages = page_array;
 		*npages = nr_pages;
 		*map_base = page_addr;
-		return page_addr + page_offset;
+		return page_addr + span.offset;
 	}
 
 	io_pages_free(&page_array, nr_pages);

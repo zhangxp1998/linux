@@ -1100,6 +1100,75 @@ static inline unsigned int vma_offset_to_slice(const struct vm_area_struct *vma,
 }
 
 /*
+ * Complete stored VMA offset. Use byte-addressed helpers below to manipulate
+ * it; the pair also preserves full-width pgoff values when saving/restoring
+ * driver-specific offset encodings. No conversion through loff_t is needed.
+ */
+struct vma_offset {
+	pgoff_t pgoff;
+	unsigned int slice;
+};
+
+static inline struct vma_offset vma_get_offset(const struct vm_area_struct *vma)
+{
+	return (struct vma_offset){ vma->vm_pgoff, vma_slice_off(vma) };
+}
+
+/* Caller owns an unpublished VMA or holds the locks for changing its offset. */
+static inline void vma_set_offset(struct vm_area_struct *vma,
+				  struct vma_offset offset)
+{
+	vma->vm_pgoff = offset.pgoff;
+	vma_set_slice_off(vma, offset.slice);
+}
+
+/* Advance by process-page-aligned bytes, keeping pgoff full-width. */
+static inline struct vma_offset vma_offset_advance(struct mm_struct *mm,
+						   struct vma_offset offset,
+						   bool sliced,
+						   unsigned long bytes)
+{
+	unsigned long pages = bytes >> MM_PAGE_SHIFT(mm);
+
+	if (sliced) {
+		pages += offset.slice;
+		offset.slice = pages & PPPS_SLICE_MASK;
+		pages >>= PPPS_SLICE_SHIFT;
+	}
+	offset.pgoff += pages;
+	return offset;
+}
+
+/* Offset at a process-page-aligned address in a VMA, including its end. */
+static inline struct vma_offset vma_offset_at(const struct vm_area_struct *vma,
+					      unsigned long address)
+{
+	return (struct vma_offset){
+		vma_linear_page_index(vma, address),
+		vma_address_to_slice(vma, address),
+	};
+}
+
+/*
+ * Set a file/object offset in bytes, including before ->mmap installs vm_ops.
+ * Anonymous indices and driver selectors are not file offsets: use their
+ * own domain helpers, or vma_get/set_offset() for a lossless save/restore.
+ * Failure leaves both fields unchanged.
+ */
+static inline int vma_set_file_offset(struct vm_area_struct *vma, u64 bytes)
+{
+	if (!IS_ALIGNED(bytes, MM_PAGE_SIZE(vma->vm_mm)))
+		return -EINVAL;
+	if ((bytes >> PAGE_SHIFT) > ULONG_MAX)
+		return -EOVERFLOW;
+	vma_set_offset(vma, (struct vma_offset){
+				    bytes >> PAGE_SHIFT,
+				    vma_offset_to_slice(vma, bytes),
+			    });
+	return 0;
+}
+
+/*
  * Indicate if the VMA is a heap for the given task; for
  * /proc/PID/maps that is the heap of the main task.
  */
@@ -2740,6 +2809,10 @@ long get_user_pages_remote(struct mm_struct *mm,
 			   unsigned long start, unsigned long nr_pages,
 			   unsigned int gup_flags, struct page **pages,
 			   int *locked);
+long pin_user_pages_remote(struct mm_struct *mm,
+			   unsigned long start, unsigned long nr_pages,
+			   unsigned int gup_flags, struct page **pages,
+			   int *locked);
 /* Array capacity needed for a byte range, without rounding overflow. */
 static inline unsigned long
 mm_user_range_pages(struct mm_struct *mm, unsigned long start, size_t length)
@@ -2762,10 +2835,6 @@ long get_user_pages_range(struct mm_struct *mm, unsigned long start,
 			  unsigned int gup_flags, struct page **pages,
 			  struct page_span *spans);
 
-long pin_user_pages_remote(struct mm_struct *mm,
-			   unsigned long start, unsigned long nr_pages,
-			   unsigned int gup_flags, struct page **pages,
-			   int *locked);
 long pin_user_pages_with_offsets(struct mm_struct *mm, unsigned long start,
 				 unsigned long nr_pages, unsigned int gup_flags,
 				 struct page **pages, unsigned int *offsets);
@@ -2890,6 +2959,50 @@ static inline unsigned long get_mm_counter_sum(struct mm_struct *mm, int member)
 	return percpu_counter_sum_positive(&mm->rss_stat[member]);
 }
 
+/*
+ * Raw RSS counters do not share a unit: file/shmem/swap count process PTEs,
+ * anon counts native pages. Keep that representation private to
+ * accounting; readers pass bytes across subsystem boundaries.
+ */
+static inline u64 mm_counter_to_bytes(struct mm_struct *mm, int member,
+				      unsigned long count)
+{
+	unsigned int shift = member != MM_ANONPAGES ?
+				     MM_PAGE_SHIFT(mm) :
+				     PAGE_SHIFT;
+
+	return (u64)count << shift;
+}
+
+static inline u64 get_mm_counter_bytes(struct mm_struct *mm, int member)
+{
+	return mm_counter_to_bytes(mm, member, get_mm_counter(mm, member));
+}
+
+/* Preserve the caller's choice of approximate read versus full sum. */
+static inline u64 get_mm_counter_sum_bytes(struct mm_struct *mm, int member)
+{
+	return mm_counter_to_bytes(mm, member, get_mm_counter_sum(mm, member));
+}
+
+static inline unsigned long get_mm_counter_kb(struct mm_struct *mm, int member)
+{
+	return get_mm_counter_bytes(mm, member) >> 10;
+}
+
+static inline u64 mm_process_pages_to_bytes(struct mm_struct *mm,
+					    unsigned long pages)
+{
+	return (u64)pages << MM_PAGE_SHIFT(mm);
+}
+
+static inline u64 get_mm_rss_bytes(struct mm_struct *mm)
+{
+	return get_mm_counter_bytes(mm, MM_FILEPAGES) +
+	       get_mm_counter_bytes(mm, MM_ANONPAGES) +
+	       get_mm_counter_bytes(mm, MM_SHMEMPAGES);
+}
+
 void mm_trace_rss_stat(struct mm_struct *mm, int member);
 
 static inline void add_mm_counter(struct mm_struct *mm, int member, long value)
@@ -2942,10 +3055,7 @@ static inline unsigned long mm_native_to_process_pages(struct mm_struct *mm,
 
 static inline unsigned long get_mm_rss(struct mm_struct *mm)
 {
-	return get_mm_counter(mm, MM_FILEPAGES) +
-		mm_native_to_process_pages(mm,
-					   get_mm_counter(mm, MM_ANONPAGES)) +
-		get_mm_counter(mm, MM_SHMEMPAGES);
+	return get_mm_rss_bytes(mm) >> MM_PAGE_SHIFT(mm);
 }
 
 static inline unsigned long get_mm_hiwater_rss(struct mm_struct *mm)
@@ -3136,6 +3246,16 @@ static inline unsigned long mm_pgtables_bytes(const struct mm_struct *mm)
 static inline void mm_inc_nr_ptes(struct mm_struct *mm) {}
 static inline void mm_dec_nr_ptes(struct mm_struct *mm) {}
 #endif
+
+/* Round the combined footprint once, not each file/shmem component. */
+static inline unsigned long get_mm_oom_pages(struct mm_struct *mm)
+{
+	u64 bytes =
+		get_mm_rss_bytes(mm) + get_mm_counter_bytes(mm, MM_SWAPENTS);
+
+	return DIV_ROUND_UP_ULL(bytes, PAGE_SIZE) +
+	       mm_pgtables_bytes(mm) / PAGE_SIZE;
+}
 
 int __pte_alloc(struct mm_struct *mm, pmd_t *pmd);
 int __pte_alloc_kernel(pmd_t *pmd);

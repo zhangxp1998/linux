@@ -816,8 +816,7 @@ static int uio_mmap_dma_coherent(struct vm_area_struct *vma)
 	struct uio_device *idev = vma->vm_private_data;
 	struct uio_mem *mem;
 	void *addr;
-	pgoff_t saved_pgoff;
-	unsigned int saved_slice;
+	struct vma_offset saved_offset;
 	int ret = 0;
 	int mi;
 
@@ -843,10 +842,8 @@ static int uio_mmap_dma_coherent(struct vm_area_struct *vma)
 	 * UIO uses offset to index into the maps for a device.
 	 * We need to clear vm_pgoff for dma_mmap_coherent.
 	 */
-	saved_pgoff = vma->vm_pgoff;
-	saved_slice = vma_slice_off(vma);
-	vma->vm_pgoff = 0;
-	vma_set_slice_off(vma, 0);
+	saved_offset = vma_get_offset(vma);
+	vma_set_offset(vma, (struct vma_offset){});
 
 	addr = (void *)(uintptr_t)mem->addr;
 	ret = dma_mmap_coherent(mem->dma_device,
@@ -854,8 +851,7 @@ static int uio_mmap_dma_coherent(struct vm_area_struct *vma)
 				addr,
 				mem->dma_addr,
 				vma->vm_end - vma->vm_start);
-	vma->vm_pgoff = saved_pgoff;
-	vma_set_slice_off(vma, saved_slice);
+	vma_set_offset(vma, saved_offset);
 
 	return ret;
 }

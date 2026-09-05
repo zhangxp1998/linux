@@ -55,6 +55,7 @@ documentation, or deleted if it has served its purpose.
    page_frags
    page_owner
    page_table_check
+   ppps-interfaces
    remap_file_pages
    slub
    split_page_table_lock

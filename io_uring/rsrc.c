@@ -960,47 +960,40 @@ static bool io_try_coalesce_buffer(struct page ***pages, int *nr_pages,
 }
 
 static struct page **io_pin_compat_buffer(unsigned long uaddr, size_t len,
-					  unsigned int **offsets_out,
+					  struct page_span **spans_out,
 					  int *nr_pages_out)
 {
 	struct mm_struct *mm = current->mm;
-	unsigned long page_size = MM_PAGE_SIZE(mm);
-	unsigned long first_offset;
-	unsigned int *offsets;
+	struct page_span *spans;
 	struct page **pages;
 	unsigned long nr_pages;
 	long pinned;
 
 	uaddr = untagged_addr(uaddr);
-	first_offset = mm_offset_in_page(mm, uaddr);
-	nr_pages = DIV_ROUND_UP(first_offset + len, page_size);
+	nr_pages = mm_user_range_pages(mm, uaddr, len);
 	if (nr_pages > INT_MAX)
 		return ERR_PTR(-EOVERFLOW);
 
 	pages = kvmalloc_array(nr_pages, sizeof(*pages), GFP_KERNEL_ACCOUNT);
 	if (!pages)
 		return ERR_PTR(-ENOMEM);
-	offsets = kvmalloc_array(nr_pages, sizeof(*offsets),
-				 GFP_KERNEL_ACCOUNT);
-	if (!offsets) {
+	spans = kvmalloc_array(nr_pages, sizeof(*spans), GFP_KERNEL_ACCOUNT);
+	if (!spans) {
 		kvfree(pages);
 		return ERR_PTR(-ENOMEM);
 	}
 
-	pinned = pin_user_pages_with_offsets(mm, uaddr, nr_pages,
-					     FOLL_WRITE | FOLL_LONGTERM,
-					     pages, offsets);
-	if (pinned > 0)
-		offsets[0] += first_offset;
+	pinned = pin_user_pages_range(mm, uaddr, len, nr_pages,
+				      FOLL_WRITE | FOLL_LONGTERM, pages, spans);
 	if (pinned != nr_pages) {
 		if (pinned > 0)
 			unpin_user_pages(pages, pinned);
-		kvfree(offsets);
+		kvfree(spans);
 		kvfree(pages);
 		return ERR_PTR(pinned < 0 ? pinned : -EFAULT);
 	}
 
-	*offsets_out = offsets;
+	*spans_out = spans;
 	*nr_pages_out = nr_pages;
 	return pages;
 }
@@ -1011,9 +1004,8 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 {
 	struct io_mapped_ubuf *imu = NULL;
 	struct page **pages = NULL;
-	unsigned int *compat_offsets = NULL;
+	struct page_span *compat_spans = NULL;
 	unsigned long off;
-	unsigned long first_offset = 0;
 	size_t size;
 	int ret, nr_pages, i;
 	struct io_imu_folio_data data;
@@ -1025,9 +1017,8 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 
 	ret = -ENOMEM;
 	if (ppps_mm_is_compat(current->mm)) {
-		first_offset = mm_offset_in_page(current->mm, iov->iov_base);
 		pages = io_pin_compat_buffer((unsigned long)iov->iov_base,
-					     iov->iov_len, &compat_offsets,
+					     iov->iov_len, &compat_spans,
 					     &nr_pages);
 	} else {
 		pages = io_pin_pages((unsigned long)iov->iov_base, iov->iov_len,
@@ -1040,7 +1031,7 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 	}
 
 	/* If it's huge page(s), try to coalesce them into fewer bvec entries */
-	if (compat_offsets)
+	if (compat_spans)
 		coalesced = false;
 	else
 		coalesced = io_try_coalesce_buffer(&pages, &nr_pages, &data);
@@ -1058,13 +1049,13 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 	imu->ubuf = (unsigned long) iov->iov_base;
 	imu->len = iov->iov_len;
 	imu->nr_bvecs = nr_pages;
-	imu->folio_shift = compat_offsets ? MM_PAGE_SHIFT(current->mm) :
-					   PAGE_SHIFT;
+	imu->folio_shift = compat_spans ? MM_PAGE_SHIFT(current->mm) :
+					  PAGE_SHIFT;
 	if (coalesced)
 		imu->folio_shift = data.folio_shift;
 	refcount_set(&imu->refs, 1);
-	if (compat_offsets)
-		off = compat_offsets[0];
+	if (compat_spans)
+		off = compat_spans[0].offset;
 	else {
 		off = (unsigned long)iov->iov_base & ~PAGE_MASK;
 		if (coalesced)
@@ -1076,11 +1067,9 @@ static int io_sqe_buffer_register(struct io_ring_ctx *ctx, struct iovec *iov,
 	for (i = 0; i < nr_pages; i++) {
 		size_t vec_len;
 
-		if (compat_offsets) {
-			off = compat_offsets[i];
-			vec_len = min_t(size_t, size,
-					MM_PAGE_SIZE(current->mm) -
-					(i ? 0 : first_offset));
+		if (compat_spans) {
+			off = compat_spans[i].offset;
+			vec_len = compat_spans[i].length;
 		} else {
 			vec_len = min_t(size_t, size,
 					(1UL << imu->folio_shift) - off);
@@ -1097,7 +1086,7 @@ done:
 				unpin_user_folio(page_folio(pages[i]), 1);
 		}
 	}
-	kvfree(compat_offsets);
+	kvfree(compat_spans);
 	kvfree(pages);
 	return ret;
 }

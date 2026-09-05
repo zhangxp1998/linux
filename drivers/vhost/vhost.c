@@ -2411,7 +2411,7 @@ static int set_bit_to_user(int nr, void __user *addr)
 {
 	unsigned long log = (unsigned long)addr;
 	struct mm_struct *mm = current->mm;
-	unsigned int page_offset = 0;
+	struct page_span span;
 	struct page *page;
 	void *base;
 	int bit;
@@ -2420,13 +2420,12 @@ static int set_bit_to_user(int nr, void __user *addr)
 	if (!mm)
 		return -EFAULT;
 
-	/* Offset of the process page in its native page, plus that of @log. */
-	r = pin_user_pages_with_offsets(mm, log, 1, FOLL_WRITE, &page,
-					&page_offset);
+	/* Locate the log byte in the pinned native page. */
+	r = pin_user_pages_range(mm, log, 1, 1, FOLL_WRITE, &page, &span);
 	if (r != 1)
 		return r < 0 ? r : -EFAULT;
 
-	bit = nr + (page_offset + mm_offset_in_page(mm, log)) * 8;
+	bit = nr + span.offset * 8;
 	base = kmap_atomic(page);
 	set_bit(bit, base);
 	kunmap_atomic(base);

@@ -1165,6 +1165,7 @@ static ssize_t iov_iter_extract_compat_page(struct iov_iter *i,
 {
 	struct mm_struct *mm = current->mm;
 	size_t offset = mm_offset_in_page(mm, addr);
+	struct page_span span;
 	int res;
 
 	maxsize = min(maxsize, MM_PAGE_SIZE(mm) - offset);
@@ -1172,12 +1173,13 @@ static ssize_t iov_iter_extract_compat_page(struct iov_iter *i,
 		return -ENOMEM;
 
 	addr = untagged_addr(addr);
-	*start = mm_user_slice_offset(mm, addr);
-	res = pin ? pin_user_pages_fast(addr, 1, gup_flags, *pages) :
-		    get_user_pages_fast(addr, 1, gup_flags, *pages);
+	res = pin ? pin_user_pages_range(mm, addr, maxsize, 1, gup_flags,
+					 *pages, &span) :
+		    get_user_pages_range(mm, addr, maxsize, 1, gup_flags,
+					 *pages, &span);
 	if (unlikely(res <= 0))
 		return res;
-	*start += offset;
+	*start = span.offset;
 	iov_iter_advance(i, maxsize);
 	return maxsize;
 }
