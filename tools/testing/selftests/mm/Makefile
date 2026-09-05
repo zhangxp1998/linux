@@ -46,7 +46,7 @@ CFLAGS += -U_FORTIFY_SOURCE
 # PPPS (per-process page size) tests.  Those needing a kernel-side fixture get
 # it from the modules in ppps_modules/, loaded by ../ppps/ppps_run_module.sh.
 PPPS_TESTS := \
-	aio_ring_ppps anon_pageout_ppps anon_vma_name_ppps \
+	aio_ring_ppps anon_pageout_ppps anon_vma_name_ppps ashmem_ppps \
 	bpf_array_mmap_ppps bpf_ringbuf_mmap_ppps bpf_stack_build_id_ppps \
 	dma_mmap_ppps elf_core_ppps \
 	exec_user_args_ppps fadvise_dontneed_ppps fault_in_ppps \
@@ -296,6 +296,7 @@ $(OUTPUT)/process_madvise_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 $(OUTPUT)/exec_aslr_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 $(OUTPUT)/fork_filemap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 $(OUTPUT)/munmap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+$(OUTPUT)/ashmem_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 
 $(OUTPUT)/gup_longterm: LDLIBS += $(IOURING_EXTRA_LIBS)
 

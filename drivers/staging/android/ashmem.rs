@@ -24,8 +24,6 @@ use kernel::{
     ioctl::_IOC_SIZE,
     miscdevice::{loff_t, IovIter, Kiocb, MiscDevice, MiscDeviceOptions, MiscDeviceRegistration},
     mm::virt::{flags as vma_flags, VmaNew},
-    page::{page_align, PAGE_MASK, PAGE_SIZE},
-    page_size_compat::__page_align,
     prelude::*,
     seq_file::{seq_print, SeqFile},
     sync::{new_mutex, Mutex, UniqueArc},
@@ -45,6 +43,13 @@ const PROT_READ: usize = bindings::PROT_READ as usize;
 const PROT_EXEC: usize = bindings::PROT_EXEC as usize;
 const PROT_WRITE: usize = bindings::PROT_WRITE as usize;
 const PROT_MASK: usize = PROT_EXEC | PROT_READ | PROT_WRITE;
+
+/*
+ * An ashmem fd can be shared by native and compat processes. Keep range indices in the smallest
+ * page unit supported by PPPS so that both kinds of caller describe the same byte ranges.
+ */
+pub(crate) const ASHMEM_RANGE_PAGE_SHIFT: usize = bindings::PAGE_SHIFT_COMPAT as usize;
+pub(crate) const ASHMEM_RANGE_PAGE_SIZE: usize = 1usize << ASHMEM_RANGE_PAGE_SHIFT;
 
 mod ashmem_shrinker;
 
@@ -181,7 +186,7 @@ impl MiscDevice for Ashmem {
         }
 
         // Requested mapping size larger than object size.
-        if vma.end() - vma.start() > __page_align(asma.size) {
+        if vma.end() - vma.start() > vma.mm().uapi_page_align(asma.size) {
             return Err(EINVAL);
         }
 
@@ -271,9 +276,16 @@ impl MiscDevice for Ashmem {
             bindings::ASHMEM_SET_PROT_MASK => me.set_prot_mask(arg),
             bindings::ASHMEM_GET_PROT_MASK => me.get_prot_mask(),
             bindings::ASHMEM_GET_FILE_ID => me.get_file_id(UserSlice::new(arg, size).writer()),
-            ASHMEM_PIN | ASHMEM_UNPIN | ASHMEM_GET_PIN_STATUS => {
-                me.pin_unpin(cmd, UserSlice::new(arg, size).reader())
+            ASHMEM_PIN | ASHMEM_UNPIN => {
+                me.pin_unpin(cmd, Some(UserSlice::new(arg, size).reader()))
             }
+            ASHMEM_GET_PIN_STATUS => me.pin_unpin(
+                cmd,
+                Some(UserSlice::new(
+                    arg,
+                    core::mem::size_of::<bindings::ashmem_pin>(),
+                ).reader()),
+            ),
             bindings::ASHMEM_PURGE_ALL_CACHES => me.purge_all_caches(),
             _ => Err(ENOTTY),
         }
@@ -405,8 +417,8 @@ impl Ashmem {
         Ok(0)
     }
 
-    fn pin_unpin(&self, cmd: u32, mut reader: UserSliceReader) -> Result<isize> {
-        let (offset, cmd_len) = {
+    fn pin_unpin(&self, cmd: u32, reader: Option<UserSliceReader>) -> Result<isize> {
+        let (offset, cmd_len) = if let Some(mut reader) = reader {
             #[allow(dead_code)] // spurious warning because it is never explicitly constructed
             #[repr(transparent)]
             struct AshmemPin(bindings::ashmem_pin);
@@ -414,7 +426,13 @@ impl Ashmem {
             unsafe impl kernel::types::FromBytes for AshmemPin {}
             let AshmemPin(pin) = reader.read()?;
             (pin.offset as usize, pin.len as usize)
+        } else {
+            (0, 0)
         };
+
+        let current = current!();
+        let mm = current.mm().ok_or(EINVAL)?;
+        let page_mask = mm.page_mask();
 
         // If `pin`/`unpin` needs a new range, they will take it from this `Option`. Otherwise,
         // they will leave it here, and it gets dropped after the mutexes are released.
@@ -437,13 +455,13 @@ impl Ashmem {
             None => return Err(EINVAL),
         };
 
-        let max_size = page_align(asma.size);
+        let max_size = mm.page_align(asma.size);
         let remaining = max_size.checked_sub(offset).ok_or(EINVAL)?;
 
         // Per custom, you can pass zero for len to mean "everything onward".
         let len = if cmd_len == 0 { remaining } else { cmd_len };
 
-        if (offset | len) & !PAGE_MASK != 0 {
+        if (offset | len) & !page_mask != 0 {
             return Err(EINVAL);
         }
         let len_plus_offset = offset.checked_add(len).ok_or(EINVAL)?;
@@ -459,8 +477,8 @@ impl Ashmem {
             };
         }
 
-        let pgstart = offset / PAGE_SIZE;
-        let pgend = pgstart + (len / PAGE_SIZE) - 1;
+        let pgstart = offset >> ASHMEM_RANGE_PAGE_SHIFT;
+        let pgend = pgstart + (len >> ASHMEM_RANGE_PAGE_SHIFT) - 1;
 
         match cmd {
             ASHMEM_PIN => {
