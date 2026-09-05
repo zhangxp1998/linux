@@ -50,7 +50,7 @@ PPPS_TESTS := \
 	bpf_array_mmap_ppps bpf_ringbuf_mmap_ppps bpf_stack_build_id_ppps \
 	dma_mmap_ppps elf_core_ppps \
 	exec_user_args_ppps fadvise_dontneed_ppps fault_in_ppps \
-	file_cow_ppps filemap_eof_ppps folio_within_range_ppps \
+	file_cow_ppps file_cow_refs_ppps filemap_eof_ppps folio_within_range_ppps \
 	fork_filemap_ppps fork_page_size_ppps fork_pinned_anon_ppps \
 	futex_shared_ppps \
 	gup_retry_ppps hole_anon_ppps io_uring_fixed_buffer_ppps \
@@ -60,7 +60,7 @@ PPPS_TESTS := \
 	mglru_folded_ppps mglru_ppps mincore_ppps mixed_context_switch_ppps \
 	mixed_mm_access_ppps mlock_large_file_ppps mlock_reclaim_ppps \
 	mmap_action_cleanup_ppps mmap_hint_ppps mmap_page_zero_ppps \
-	mmu_notifier_ppps mremap_commit_ppps mremap_hint_ppps \
+	mmu_notifier_ppps mremap_commit_ppps mremap_hint_ppps mremap_split_ppps \
 	mremap_pgoff_ppps mremap_rlimit_ppps msync_offset_ppps munmap_ppps \
 	oom_anon_score_ppps oom_score_ppps oom_trace_ppps packed_anon_ppps \
 	packed_swap_ppps page_range_ppps pagemap_exclusive_ppps pagewalk_ppps pci_mmap_ppps \
@@ -229,6 +229,7 @@ $(eval $(call ppps_test_hdrs,folio_within_range_ppps,folio_within_range_ppps.h))
 $(eval $(call ppps_test_hdrs,gup_retry_ppps,gup_retry_ppps.h))
 $(eval $(call ppps_test_hdrs,iov_iter_ppps,iov_iter_ppps.h))
 $(eval $(call ppps_test_hdrs,page_range_ppps,iov_iter_ppps.h page_range_ppps.h))
+$(eval $(call ppps_test_hdrs,file_cow_refs_ppps,iov_iter_ppps.h page_range_ppps.h))
 $(eval $(call ppps_test_hdrs,mmu_notifier_ppps,mmu_notifier_ppps.h))
 $(eval $(call ppps_test_hdrs,pagewalk_ppps,pagewalk_ppps.h))
 $(eval $(call ppps_test_hdrs,vm_map_pages_ppps,vm_map_pages_ppps.h))

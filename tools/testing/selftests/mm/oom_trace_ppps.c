@@ -15,6 +15,7 @@
 #define CHILD_MAP_SIZE (32UL * 1024 * 1024)
 #define TRACE_ENABLE "/sys/kernel/tracing/events/oom/mark_victim/enable"
 #define TRACE_FILE "/sys/kernel/tracing/trace"
+#define TRACING_ON "/sys/kernel/tracing/tracing_on"
 
 struct victim_stats {
 	long total_vm;
@@ -154,10 +155,11 @@ static int run_test(void)
 {
 	struct victim_ready ready = { 0 };
 	struct victim_stats trace_stats = { 0 };
-	long expected_anon_physical;
 	long expected_anon, expected_file, expected_shmem, expected_total;
 	unsigned long kernel_page_size;
 	char *trace = NULL;
+	char saved_tracing_on[2] = { 0 };
+	int trace_fd;
 	bool anon_matches;
 	bool child_ready;
 	bool trace_ready;
@@ -165,16 +167,25 @@ static int run_test(void)
 	bool shared_matches;
 	int pipefd[2];
 	int status = 0;
+	int attempts;
+	bool victim_killed = false;
 	pid_t child;
 
 	ksft_print_header();
 	ksft_set_plan(7);
 
+	trace_fd = open(TRACING_ON, O_RDONLY | O_CLOEXEC);
+	if (trace_fd < 0 || read(trace_fd, saved_tracing_on, 1) != 1)
+		ksft_exit_fail_msg("cannot read tracing state: %s\n", strerror(errno));
+	close(trace_fd);
 	trace_ready = !write_text("/proc/self/oom_score_adj", "-1000") &&
+		!write_text(TRACING_ON, "1") &&
 		!write_text(TRACE_ENABLE, "1") && !clear_trace();
 	ksft_test_result(trace_ready, "enable OOM victim tracing\n");
-	if (!trace_ready)
+	if (!trace_ready) {
+		write_text(TRACING_ON, saved_tracing_on);
 		ksft_exit_fail_msg("trace setup failed: %s\n", strerror(errno));
+	}
 	if (pipe(pipefd))
 		ksft_exit_fail_msg("pipe failed: %s\n", strerror(errno));
 
@@ -203,16 +214,31 @@ static int run_test(void)
 	errno = 0;
 	if (write_text("/proc/sysrq-trigger", "f"))
 		kill(child, SIGKILL);
-	waitpid(child, &status, 0);
-	ksft_test_result(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL,
+	/* A busy VM can select a different victim; never hang waiting for ours. */
+	for (attempts = 0; attempts < 50; attempts++) {
+		pid_t reaped = waitpid(child, &status, WNOHANG);
+
+		if (reaped == child) {
+			victim_killed = WIFSIGNALED(status) &&
+				WTERMSIG(status) == SIGKILL;
+			break;
+		}
+		if (reaped < 0 && errno != EINTR)
+			break;
+		usleep(100000);
+	}
+	if (!victim_killed) {
+		kill(child, SIGKILL);
+		waitpid(child, &status, 0);
+	}
+	ksft_test_result(victim_killed,
 			 "force OOM to kill the selected child\n");
 
 	trace = read_trace();
 	if (trace)
 		found = find_victim_stats(trace, child, &trace_stats);
 	ksft_test_result(found, "capture the OOM mark_victim record\n");
-	expected_anon_physical = expected_anon * kernel_page_size /
-		PROCESS_PAGE_SIZE;
+	/* /proc status and trace both already report anonymous bytes in KB. */
 	ksft_print_msg("native_page=%lu; status total=%ld anon=%ld file=%ld shmem=%ld kB; "
 		       "trace total=%ld anon=%ld file=%ld shmem=%ld kB\n",
 		       kernel_page_size, expected_total, expected_anon,
@@ -225,13 +251,13 @@ static int run_test(void)
 		within_tolerance(trace_stats.shmem_rss, expected_shmem);
 	ksft_test_result(found && shared_matches,
 			 "report file and shmem RSS in process-page bytes\n");
-	anon_matches = within_tolerance(trace_stats.anon_rss,
-					expected_anon_physical);
+	anon_matches = within_tolerance(trace_stats.anon_rss, expected_anon);
 	ksft_test_result(found && anon_matches,
 			 "report anonymous RSS in native physical bytes\n");
 
 	free(trace);
 	write_text(TRACE_ENABLE, "0");
+	write_text(TRACING_ON, saved_tracing_on);
 	ksft_finished();
 }
 
