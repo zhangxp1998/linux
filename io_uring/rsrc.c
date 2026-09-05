@@ -780,61 +780,40 @@ bool io_check_coalesce_buffer(struct page **page_array, int nr_pages,
 }
 
 static struct page **io_pin_compat_buffer(unsigned long uaddr, size_t len,
-					  unsigned int **offsets_out,
+					  struct page_span **spans_out,
 					  int *nr_pages_out)
 {
 	struct mm_struct *mm = current->mm;
-	unsigned long page_size = MM_PAGE_SIZE(mm);
-	unsigned long first_offset;
-	unsigned long page_addr;
-	unsigned int *offsets;
+	struct page_span *spans;
 	struct page **pages;
 	unsigned long nr_pages;
-	unsigned long i;
 	long pinned;
 
 	uaddr = untagged_addr(uaddr);
-	first_offset = mm_offset_in_page(mm, uaddr);
-	nr_pages = DIV_ROUND_UP(first_offset + len, page_size);
+	nr_pages = mm_user_range_pages(mm, uaddr, len);
 	if (nr_pages > INT_MAX)
 		return ERR_PTR(-EOVERFLOW);
 
 	pages = kvmalloc_array(nr_pages, sizeof(*pages), GFP_KERNEL_ACCOUNT);
 	if (!pages)
 		return ERR_PTR(-ENOMEM);
-	offsets = kvmalloc_array(nr_pages, sizeof(*offsets),
-				 GFP_KERNEL_ACCOUNT);
-	if (!offsets) {
+	spans = kvmalloc_array(nr_pages, sizeof(*spans), GFP_KERNEL_ACCOUNT);
+	if (!spans) {
 		kvfree(pages);
 		return ERR_PTR(-ENOMEM);
 	}
 
-	page_addr = uaddr - first_offset;
-	mmap_read_lock(mm);
-	pinned = pin_user_pages(uaddr, nr_pages,
-				FOLL_WRITE | FOLL_LONGTERM, pages);
-	for (i = 0; pinned > 0 && i < pinned; i++, page_addr += page_size) {
-		struct vm_area_struct *vma = vma_lookup(mm, page_addr);
-
-		if (!vma) {
-			unpin_user_pages(pages, pinned);
-			pinned = -EFAULT;
-			break;
-		}
-		offsets[i] = vma_page_slice_offset(vma, pages[i], page_addr);
-	}
-	if (pinned > 0)
-		offsets[0] += first_offset;
-	mmap_read_unlock(mm);
+	pinned = pin_user_pages_range(mm, uaddr, len, nr_pages,
+				      FOLL_WRITE | FOLL_LONGTERM, pages, spans);
 	if (pinned != nr_pages) {
 		if (pinned > 0)
 			unpin_user_pages(pages, pinned);
-		kvfree(offsets);
+		kvfree(spans);
 		kvfree(pages);
 		return ERR_PTR(pinned < 0 ? pinned : -EFAULT);
 	}
 
-	*offsets_out = offsets;
+	*spans_out = spans;
 	*nr_pages_out = nr_pages;
 	return pages;
 }
@@ -846,9 +825,8 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	struct io_mapped_ubuf *imu = NULL;
 	struct page **pages = NULL;
 	struct io_rsrc_node *node;
-	unsigned int *compat_offsets = NULL;
+	struct page_span *compat_spans = NULL;
 	unsigned long off;
-	unsigned long first_offset = 0;
 	size_t size;
 	int ret, nr_pages, i;
 	struct io_imu_folio_data data;
@@ -863,9 +841,8 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 
 	ret = -ENOMEM;
 	if (ppps_mm_is_compat(current->mm)) {
-		first_offset = mm_offset_in_page(current->mm, iov->iov_base);
 		pages = io_pin_compat_buffer((unsigned long)iov->iov_base,
-					     iov->iov_len, &compat_offsets,
+					     iov->iov_len, &compat_spans,
 					     &nr_pages);
 	} else {
 		pages = io_pin_pages((unsigned long)iov->iov_base, iov->iov_len,
@@ -878,7 +855,7 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	}
 
 	/* If it's huge page(s), try to coalesce them into fewer bvec entries */
-	if (!compat_offsets && nr_pages > 1 &&
+	if (!compat_spans && nr_pages > 1 &&
 	    io_check_coalesce_buffer(pages, nr_pages, &data)) {
 		if (data.nr_pages_mid != 1)
 			coalesced = io_coalesce_buffer(&pages, &nr_pages, &data);
@@ -897,7 +874,7 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	/* store original address for later verification */
 	imu->ubuf = (unsigned long) iov->iov_base;
 	imu->len = iov->iov_len;
-	imu->folio_shift = compat_offsets ? MM_PAGE_SHIFT(current->mm) :
+	imu->folio_shift = compat_spans ? MM_PAGE_SHIFT(current->mm) :
 					   PAGE_SHIFT;
 	imu->release = io_release_ubuf;
 	imu->priv = imu;
@@ -907,8 +884,8 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 		imu->folio_shift = data.folio_shift;
 	refcount_set(&imu->refs, 1);
 
-	if (compat_offsets)
-		off = compat_offsets[0];
+	if (compat_spans)
+		off = compat_spans[0].offset;
 	else {
 		off = (unsigned long)iov->iov_base & ~PAGE_MASK;
 		if (coalesced)
@@ -921,11 +898,9 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	for (i = 0; i < nr_pages; i++) {
 		size_t vec_len;
 
-		if (compat_offsets) {
-			off = compat_offsets[i];
-			vec_len = min_t(size_t, size,
-					MM_PAGE_SIZE(current->mm) -
-					(i ? 0 : first_offset));
+		if (compat_spans) {
+			off = compat_spans[i].offset;
+			vec_len = compat_spans[i].length;
 		} else {
 			vec_len = min_t(size_t, size,
 					(1UL << imu->folio_shift) - off);
@@ -945,7 +920,7 @@ done:
 		io_cache_free(&ctx->node_cache, node);
 		node = ERR_PTR(ret);
 	}
-	kvfree(compat_offsets);
+	kvfree(compat_spans);
 	kvfree(pages);
 	return node;
 }

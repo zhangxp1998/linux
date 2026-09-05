@@ -60,42 +60,6 @@ static inline pte_t ppps_pte_inherit(pte_t new, pte_t old)
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 
-/* Temporary compatibility helpers used until all VMA users consume byte offsets. */
-static inline unsigned int vma_slice_offset(struct vm_area_struct *vma,
-					   unsigned long addr)
-{
-	if (!ppps_mm_is_compat(vma->vm_mm) || vma_is_anonymous(vma))
-		return 0;
-	return (((addr - vma->vm_start) >> PAGE_SHIFT_COMPAT) +
-		vma_slice_off(vma)) & PPPS_SLICE_MASK;
-}
-
-static inline bool ppps_vma_validate_uffd_alignment(
-		const struct vm_area_struct *vma, unsigned long start,
-		unsigned long end)
-{
-	return IS_ALIGNED(start, MM_PAGE_SIZE(vma->vm_mm)) &&
-	       IS_ALIGNED(end, MM_PAGE_SIZE(vma->vm_mm));
-}
-
-static inline pgoff_t mmap_pgoff_offset(struct mm_struct *mm, pgoff_t pgoff,
-					vm_flags_t vm_flags, struct file *file)
-{
-	if (ppps_mm_is_compat(mm) && (file || (vm_flags & VM_SHARED)))
-		return pgoff >> PPPS_SLICE_SHIFT;
-	return pgoff;
-}
-
-static inline unsigned int mmap_slice_offset(struct mm_struct *mm,
-					     pgoff_t pgoff,
-					     vm_flags_t vm_flags,
-					     struct file *file)
-{
-	if (ppps_mm_is_compat(mm) && (file || (vm_flags & VM_SHARED)))
-		return pgoff & PPPS_SLICE_MASK;
-	return 0;
-}
-
 /* Tuple geometry. */
 /* Return zero to use the generic walk end (also for native mms). */
 unsigned long ppps_pvmw_walk_end(struct page_vma_mapped_walk *pvmw);
@@ -195,33 +159,6 @@ int ppps_vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
 			 struct page **pages, unsigned long *num);
 
 #else /* !CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
-
-static inline unsigned int vma_slice_offset(struct vm_area_struct *vma,
-					   unsigned long addr)
-{
-	return 0;
-}
-
-static inline bool ppps_vma_validate_uffd_alignment(
-		const struct vm_area_struct *vma, unsigned long start,
-		unsigned long end)
-{
-	return true;
-}
-
-static inline pgoff_t mmap_pgoff_offset(struct mm_struct *mm, pgoff_t pgoff,
-					vm_flags_t vm_flags, struct file *file)
-{
-	return pgoff;
-}
-
-static inline unsigned int mmap_slice_offset(struct mm_struct *mm,
-					     pgoff_t pgoff,
-					     vm_flags_t vm_flags,
-					     struct file *file)
-{
-	return 0;
-}
 
 static inline unsigned long
 ppps_pvmw_walk_end(struct page_vma_mapped_walk *pvmw)

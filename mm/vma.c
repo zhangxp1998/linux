@@ -53,8 +53,7 @@ struct mmap_state {
 		.vmi = vmi_,						\
 		.addr = addr_,						\
 		.end = (addr_) + (len_),				\
-		.pgoff = mmap_pgoff_offset(mm_, pgoff_, vm_flags_, file_), \
-		.slice_off = mmap_slice_offset(mm_, pgoff_, vm_flags_, file_), \
+		.pgoff = pgoff_, \
 		.pglen = MM_PHYS_PFN(mm_, len_),			\
 		.vm_flags = vm_flags_,					\
 		.file = file_,						\
@@ -539,8 +538,7 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		new->vm_end = addr;
 	} else {
 		new->vm_start = addr;
-		new->vm_pgoff = vma_pgoff_offset(vma, addr);
-		vma_set_slice_off(new, vma_slice_offset(vma, addr));
+		vma_set_offset(new, vma_offset_at(vma, addr));
 	}
 
 	err = -ENOMEM;
@@ -587,8 +585,7 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 
 	if (new_below) {
 		vma->vm_start = addr;
-		vma->vm_pgoff = vma_pgoff_offset(new, addr);
-		vma_set_slice_off(vma, vma_slice_offset(new, addr));
+		vma_set_offset(vma, vma_offset_at(new, addr));
 	} else {
 		vma->vm_end = addr;
 	}
@@ -734,23 +731,20 @@ void validate_mm(struct mm_struct *mm)
 static void vmg_adjust_set_range(struct vma_merge_struct *vmg)
 {
 	struct vm_area_struct *adjust;
-	pgoff_t pgoff;
-	unsigned int slice_off;
+	struct vma_offset offset;
 
 	if (vmg->__adjust_middle_start) {
 		adjust = vmg->middle;
-		pgoff = vma_pgoff_offset(adjust, vmg->end);
-		slice_off = vma_slice_offset(adjust, vmg->end);
+		offset = vma_offset_at(adjust, vmg->end);
 	} else if (vmg->__adjust_next_start) {
 		adjust = vmg->next;
-		pgoff = vma_pgoff_offset(vmg->middle, vmg->end);
-		slice_off = vma_slice_offset(vmg->middle, vmg->end);
+		offset = vma_offset_at(vmg->middle, vmg->end);
 	} else {
 		return;
 	}
 
-	vma_set_range(adjust, vmg->end, adjust->vm_end, pgoff);
-	vma_set_slice_off(adjust, slice_off);
+	vma_set_range(adjust, vmg->end, adjust->vm_end, offset.pgoff);
+	vma_set_offset(adjust, offset);
 }
 
 /*
@@ -795,7 +789,8 @@ static int commit_merge(struct vma_merge_struct *vmg)
 	vma_adjust_trans_huge(vma, vmg->start, vmg->end,
 			      vmg->__adjust_middle_start ? vmg->middle : NULL);
 	vma_set_range(vma, vmg->start, vmg->end, vmg->pgoff);
-	vma_set_slice_off(vma, vmg->slice_off);
+	vma_set_offset(vma, (struct vma_offset){
+		vmg->pgoff, vmg->slice_off });
 	vmg_adjust_set_range(vmg);
 	vma_iter_store_overwrite(vmg->vmi, vmg->target);
 
@@ -2006,12 +2001,14 @@ out:
  */
 static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *b)
 {
+	struct vma_offset end = vma_offset_at(a, b->vm_start);
+
 	return a->vm_end == b->vm_start &&
 		mpol_equal(vma_policy(a), vma_policy(b)) &&
 		a->vm_file == b->vm_file &&
 		!((a->vm_flags ^ b->vm_flags) & ~(VM_ACCESS_FLAGS | VM_SOFTDIRTY)) &&
-		b->vm_pgoff == a->vm_pgoff +
-			((b->vm_start - a->vm_start) >> MM_PAGE_SHIFT(a->vm_mm));
+		b->vm_pgoff == end.pgoff &&
+		(!ppps_vma_has_slices(a) || vma_slice_off(b) == end.slice);
 }
 
 /*
@@ -2557,7 +2554,8 @@ static int __mmap_new_vma(struct mmap_state *map, struct vm_area_struct **vmap)
 
 	vma_iter_config(vmi, map->addr, map->end);
 	vma_set_range(vma, map->addr, map->end, map->pgoff);
-	vma_set_slice_off(vma, map->slice_off);
+	vma_set_offset(vma, (struct vma_offset){
+		map->pgoff, map->slice_off });
 	vm_flags_init(vma, map->vm_flags);
 	vma->vm_page_prot = map->page_prot;
 
@@ -2738,6 +2736,9 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
 	bool have_mmap_prepare = file && file->f_op->mmap_prepare;
 	VMA_ITERATOR(vmi, mm, addr);
 	MMAP_STATE(map, mm, &vmi, addr, len, pgoff, vm_flags, file);
+
+	map.pgoff = ppps_split_mmap_pgoff(mm, pgoff, vm_flags, file,
+					 &map.slice_off);
 
 	map.check_ksm_early = can_set_ksm_flags_early(&map);
 

@@ -2050,7 +2050,7 @@ static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
 {
 	phys_addr_t page_phys = __pte_to_phys(pte) & PAGE_MASK;
 	phys_addr_t target_phys = page_phys + (slice_idx * PAGE_SIZE_COMPAT);
-	pte_t clean_pte = clear_pte_slice_offset(pte);
+	pte_t clean_pte = pte_mkslice(pte, 0);
 
 	(void)folio;
 
