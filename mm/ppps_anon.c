@@ -1864,7 +1864,8 @@ static vm_fault_t ppps_file_cow_wp(struct vm_fault *vmf,
 	vm_fault_t ret;
 	bool multi_folio;
 
-	if (WARN_ON_ONCE(vmf->flags & FAULT_FLAG_UNSHARE))
+	/* Long-term read-only GUP can unshare private file mappings. */
+	if (vmf->flags & FAULT_FLAG_UNSHARE)
 		return wp_page_copy(vmf);
 
 	delayacct_wpcopy_start();
