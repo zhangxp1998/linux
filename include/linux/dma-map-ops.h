@@ -14,6 +14,8 @@
 struct cma;
 struct iommu_ops;
 
+int dma_mmap_pfn(struct vm_area_struct *vma, size_t size, unsigned long pfn);
+
 struct dma_map_ops {
 	void *(*alloc)(struct device *dev, size_t size,
 			dma_addr_t *dma_handle, gfp_t gfp,
