@@ -6,9 +6,12 @@
  */
 
 #include "dm-verity-fec.h"
+#include <linux/atomic.h>
 #include <linux/math64.h>
 
 #define DM_MSG_PREFIX	"verity-fec"
+
+static atomic_t fec_cache_id = ATOMIC_INIT(0);
 
 /*
  * When correcting a block, the FEC implementation performs optimally when it
@@ -593,6 +596,7 @@ int verity_fec_ctr(struct dm_verity *v)
 	struct dm_verity_fec *f = v->fec;
 	struct dm_target *ti = v->ti;
 	u64 hash_blocks;
+	char cache_name[64];
 	int ret;
 
 	if (!verity_fec_is_enabled(v)) {
@@ -706,7 +710,10 @@ int verity_fec_ctr(struct dm_verity *v)
 		return ret;
 	}
 
-	f->cache = kmem_cache_create("dm_verity_fec_buffers",
+	/* Tables can coexist during reload, including for the same device. */
+	snprintf(cache_name, sizeof(cache_name), "dm_verity_fec_buffers-%u",
+		 (unsigned int)atomic_inc_return(&fec_cache_id));
+	f->cache = kmem_cache_create(cache_name,
 				     f->rs_k << DM_VERITY_FEC_BUF_RS_BITS,
 				     0, 0, NULL);
 	if (!f->cache) {
