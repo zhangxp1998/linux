@@ -2654,6 +2654,28 @@ long get_user_pages_remote(struct mm_struct *mm,
 			   unsigned long start, unsigned long nr_pages,
 			   unsigned int gup_flags, struct page **pages,
 			   int *locked);
+/* Array capacity needed for a byte range, without rounding overflow. */
+static inline unsigned long
+mm_user_range_pages(struct mm_struct *mm, unsigned long start, size_t length)
+{
+	unsigned long tail;
+
+	if (!length)
+		return 0;
+	tail = offset_in_page(start) + offset_in_page(length);
+	return (length >> PAGE_SHIFT) +
+	       DIV_ROUND_UP(tail, PAGE_SIZE);
+}
+
+long pin_user_pages_range(struct mm_struct *mm, unsigned long start,
+			  size_t length, unsigned long capacity,
+			  unsigned int gup_flags, struct page **pages,
+			  struct page_span *spans);
+long get_user_pages_range(struct mm_struct *mm, unsigned long start,
+			  size_t length, unsigned long capacity,
+			  unsigned int gup_flags, struct page **pages,
+			  struct page_span *spans);
+
 long pin_user_pages_remote(struct mm_struct *mm,
 			   unsigned long start, unsigned long nr_pages,
 			   unsigned int gup_flags, struct page **pages,
