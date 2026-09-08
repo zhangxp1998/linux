@@ -8,12 +8,17 @@
 struct frame_vector {
 	unsigned int nr_allocated;	/* Number of frames we have space for */
 	unsigned int nr_frames;	/* Number of frames stored in ptrs array */
-	unsigned int frame_size;	/* Userspace-visible size of each frame */
 	bool got_ref;		/* Did we pin pages by getting page ref? */
 	bool is_pfns;		/* Does array contain pages or pfns? */
 	void *ptrs[];		/* Array of pinned pfns / pages. Use
 				 * pfns_vector_pages() or pfns_vector_pfns()
 				 * for access */
+};
+
+/* Private metadata allocated after the ABI-visible ptrs[] array. */
+struct frame_vector_tail {
+	unsigned int frame_size;
+	struct page_span spans[];
 };
 
 struct frame_vector *frame_vector_create(unsigned int nr_frames);
@@ -33,19 +38,27 @@ static inline unsigned int frame_vector_count(struct frame_vector *vec)
 
 static inline unsigned int frame_vector_frame_size(struct frame_vector *vec)
 {
-	return vec->frame_size;
+	struct frame_vector_tail *tail =
+		(struct frame_vector_tail *)&vec->ptrs[vec->nr_allocated];
+
+	return tail->frame_size;
 }
 
 static inline void frame_vector_set_frame_size(struct frame_vector *vec,
 					unsigned int frame_size)
 {
-	vec->frame_size = frame_size;
+	struct frame_vector_tail *tail =
+		(struct frame_vector_tail *)&vec->ptrs[vec->nr_allocated];
+
+	tail->frame_size = frame_size;
 }
 
 static inline struct page_span *frame_vector_spans(struct frame_vector *vec)
 {
-	/* frame_vector_create() allocates the spans right after ptrs[]. */
-	return (struct page_span *)&vec->ptrs[vec->nr_allocated];
+	struct frame_vector_tail *tail =
+		(struct frame_vector_tail *)&vec->ptrs[vec->nr_allocated];
+
+	return tail->spans;
 }
 
 static inline unsigned int

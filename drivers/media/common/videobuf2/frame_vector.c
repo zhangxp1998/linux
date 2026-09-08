@@ -168,6 +168,8 @@ struct frame_vector *frame_vector_create(unsigned int nr_frames)
 		return NULL;
 	if (check_mul_overflow((size_t)nr_frames, sizeof(struct page_span),
 			       &spans_size) ||
+	    check_add_overflow(spans_size, sizeof(struct frame_vector_tail),
+			       &spans_size) ||
 	    check_add_overflow(ptrs_size, spans_size, &size))
 		return NULL;
 	/*
