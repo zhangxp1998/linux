@@ -243,10 +243,7 @@ static int __dma_mmap_from_coherent(struct dma_coherent_mem *mem,
 
 		*ret = -ENXIO;
 		if (off < count && user_count <= count - off) {
-			unsigned long pfn = mem->pfn_base + start + off;
-			*ret = remap_pfn_range(vma, vma->vm_start, pfn,
-					       user_count << PAGE_SHIFT,
-					       vma->vm_page_prot);
+			*ret = dma_mmap_pfn(vma, size, mem->pfn_base + start);
 		}
 		return 1;
 	}
