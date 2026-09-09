@@ -9,6 +9,7 @@
  *
  * (part of code stolen from loop.c)
  */
+#include <linux/ppps.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/sched.h>
@@ -666,21 +667,21 @@ static inline char *ublk_queue_cmd_buf(struct ublk_device *ub, int q_id)
 	return ublk_get_queue(ub, q_id)->io_cmd_buf;
 }
 
-static inline int __ublk_queue_cmd_buf_size(int depth, size_t page_size)
+static inline int __ublk_queue_cmd_buf_size(int depth)
 {
-	return round_up(depth * sizeof(struct ublksrv_io_desc), page_size);
+	return round_up(depth * sizeof(struct ublksrv_io_desc), __PAGE_SIZE);
 }
 
 static inline int ublk_queue_cmd_buf_size(struct ublk_device *ub, int q_id)
 {
 	struct ublk_queue *ubq = ublk_get_queue(ub, q_id);
 
-	return __ublk_queue_cmd_buf_size(ubq->q_depth, PAGE_SIZE);
+	return __ublk_queue_cmd_buf_size(ubq->q_depth);
 }
 
 static int ublk_max_cmd_buf_size(void)
 {
-	return __ublk_queue_cmd_buf_size(UBLK_MAX_QUEUE_DEPTH, PAGE_SIZE);
+	return __ublk_queue_cmd_buf_size(UBLK_MAX_QUEUE_DEPTH);
 }
 
 /*
@@ -746,6 +747,9 @@ static void ublk_store_owner_uid_gid(unsigned int *owner_uid,
 static int ublk_open(struct gendisk *disk, blk_mode_t mode)
 {
 	struct ublk_device *ub = disk->private_data;
+
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
 
 	if (capable(CAP_SYS_ADMIN))
 		return 0;
@@ -1382,6 +1386,9 @@ static int ublk_ch_open(struct inode *inode, struct file *filp)
 	struct ublk_device *ub = container_of(inode->i_cdev,
 			struct ublk_device, cdev);
 
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
 	if (test_and_set_bit(UB_STATE_OPEN, &ub->state))
 		return -EBUSY;
 	filp->private_data = ub;
@@ -1401,12 +1408,13 @@ static int ublk_ch_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct ublk_device *ub = filp->private_data;
 	size_t sz = vma->vm_end - vma->vm_start;
-	size_t mmap_sz = __ublk_queue_cmd_buf_size(ub->dev_info.queue_depth,
-						   MM_PAGE_SIZE(vma->vm_mm));
 	unsigned max_sz = ublk_max_cmd_buf_size();
 	unsigned long pfn;
 	loff_t end, phys_off = vma_file_offset(vma);
 	int q_id, ret = 0;
+
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return -EOPNOTSUPP;
 
 	spin_lock(&ub->lock);
 	if (!ub->mm)
@@ -1430,7 +1438,7 @@ static int ublk_ch_mmap(struct file *filp, struct vm_area_struct *vma)
 			__func__, q_id, current->pid, vma->vm_start,
 			(unsigned long long)phys_off, (unsigned long)sz);
 
-	if (sz != mmap_sz)
+	if (sz != ublk_queue_cmd_buf_size(ub, q_id))
 		return -EINVAL;
 
 	pfn = virt_to_phys(ublk_queue_cmd_buf(ub, q_id)) >> PAGE_SHIFT;
@@ -1979,6 +1987,9 @@ static int ublk_ch_uring_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags)
 		return 0;
 	}
 
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
 	/* well-implemented server won't run into unlocked */
 	if (unlikely(issue_flags & IO_URING_F_UNLOCKED)) {
 		io_uring_cmd_complete_in_task(cmd, ublk_ch_uring_cmd_cb);
@@ -2013,6 +2024,9 @@ static struct request *ublk_check_and_get_req(struct kiocb *iocb,
 	struct request *req;
 	size_t buf_off;
 	u16 tag, q_id;
+
+	if (ppps_mm_is_compat(current->mm))
+		return ERR_PTR(-EOPNOTSUPP);
 
 	if (!ub)
 		return ERR_PTR(-EACCES);
@@ -3026,6 +3040,9 @@ static int ublk_ctrl_uring_cmd(struct io_uring_cmd *cmd,
 	u32 cmd_op = cmd->cmd_op;
 	int ret = -EINVAL;
 
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
 	if (issue_flags & IO_URING_F_NONBLOCK)
 		return -EAGAIN;
 
@@ -3103,8 +3120,17 @@ static int ublk_ctrl_uring_cmd(struct io_uring_cmd *cmd,
 	return ret;
 }
 
+/* The server ABI only supports native-page-size processes. */
+static int ublk_ctrl_open(struct inode *inode, struct file *file)
+{
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
+	return nonseekable_open(inode, file);
+}
+
 static const struct file_operations ublk_ctl_fops = {
-	.open		= nonseekable_open,
+	.open		= ublk_ctrl_open,
 	.uring_cmd      = ublk_ctrl_uring_cmd,
 	.owner		= THIS_MODULE,
 	.llseek		= noop_llseek,

@@ -1,3 +1,0 @@
-# SPDX-License-Identifier: GPL-2.0
-ccflags-y += -I$(srctree)/drivers/vfio/platform
-obj-m += vfio_platform_mmap_ppps_module.o

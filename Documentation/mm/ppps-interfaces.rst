@@ -77,3 +77,25 @@ Do not round the file and shmem components independently. These reads are
 not atomic snapshots and do not change the synchronization or rounding
 guarantees of the underlying counters. Storage units and proc/trace ABIs
 are unchanged.
+
+Native-only device APIs
+======================
+
+The ublk server/control API, VFIO and KVM host API are outside the PPPS
+compat interface. A process with a PPPS 4K mm receives -EOPNOTSUPP when it
+opens their device nodes. Their command/ioctl and mmap entry points also
+reject compat callers using inherited or transferred native-opened FDs;
+ublk channel read/write operations are checked as well. Release and request
+cancellation still run normally. Normal VFS and security permission checks
+may reject access before a driver is reached.
+
+Use ppps_mm_is_compat() on the current or mapping mm for these checks, not
+the personality bit (which selects the next exec) or the 32-bit syscall ABI.
+Native processes, including native 4K kernels without PPPS, retain their
+existing interfaces. KVM guest page sizes are unaffected. Access to ordinary
+files on filesystems backed by ublk is not restricted by this device policy;
+the kernel block I/O path is not gated on the submitting worker's mm.
+
+The policy avoids compat device mappings; it is not a new security boundary
+for already-delegated generic block FDs, metadata operations or shared memory.
+Android device permissions and SELinux remain responsible for app isolation.
