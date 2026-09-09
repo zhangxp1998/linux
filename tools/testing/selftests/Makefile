@@ -115,7 +115,6 @@ TARGETS += tmpfs
 TARGETS += tpm2
 TARGETS += tty
 TARGETS += uevent
-TARGETS += ublk
 TARGETS += user_events
 TARGETS += vDSO
 TARGETS += vfio
