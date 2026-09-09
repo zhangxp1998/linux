@@ -81,6 +81,7 @@ TARGETS += pidfd
 TARGETS += pid_namespace
 TARGETS += power_supply
 TARGETS += powerpc
+TARGETS += ppps
 TARGETS += prctl
 TARGETS += proc
 TARGETS += pstore
