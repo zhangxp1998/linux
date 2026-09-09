@@ -2,6 +2,8 @@
 /*
  * Copyright (c) 2023 Intel Corporation.
  */
+#include <linux/ppps.h>
+#include <linux/mm.h>
 #include <linux/vfio.h>
 #include <linux/iommufd.h>
 
@@ -26,6 +28,9 @@ int vfio_device_fops_cdev_open(struct inode *inode, struct file *filep)
 						  struct vfio_device, cdev);
 	struct vfio_device_file *df;
 	int ret;
+
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
 
 	/* Paired with the put in vfio_device_fops_release() */
 	if (!vfio_device_try_get_registration(device))

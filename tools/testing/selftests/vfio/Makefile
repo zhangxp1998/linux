@@ -6,11 +6,6 @@ TEST_GEN_PROGS += vfio_iommufd_setup_test
 TEST_GEN_PROGS += vfio_pci_device_test
 TEST_GEN_PROGS += vfio_pci_driver_test
 
-TEST_GEN_PROGS += vfio_platform_mmap_ppps
-TEST_PROGS += vfio_platform_mmap_ppps.sh
-TEST_FILES += ../ppps/ppps_run_module.sh
-TEST_GEN_MODS_DIR += ppps_modules
-
 TEST_PROGS_EXTENDED := run.sh
 include ../lib.mk
 include lib/libvfio.mk
