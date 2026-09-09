@@ -6,6 +6,7 @@
  *     Author: Alex Williamson <alex.williamson@redhat.com>
  */
 
+#include <linux/ppps.h>
 #include <linux/anon_inodes.h>
 #include <linux/errno.h>
 #include <linux/file.h>
@@ -410,6 +411,9 @@ static long pviommufd_ioctl(struct file *filp, unsigned int ioctl,
 {
 	struct kvm_vfio_iommu_config config;
 	__u32 usize;
+
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
 
 	switch (ioctl) {
 	case KVM_PVIOMMU_SET_CONFIG:

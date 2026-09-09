@@ -12,6 +12,7 @@
 
 #include <kvm/iodev.h>
 
+#include <linux/ppps.h>
 #include <linux/kvm_host.h>
 #include <linux/kvm.h>
 #include <linux/module.h>
@@ -124,7 +125,8 @@ static long kvm_vcpu_ioctl(struct file *file, unsigned int ioctl,
 #ifdef CONFIG_KVM_COMPAT
 static long kvm_vcpu_compat_ioctl(struct file *file, unsigned int ioctl,
 				  unsigned long arg);
-#define KVM_COMPAT(c)	.compat_ioctl	= (c)
+#define KVM_COMPAT(c)	.compat_ioctl	= (c),	\
+			.open		= kvm_dev_open
 #else
 /*
  * For architectures that don't implement a compat infrastructure,
@@ -134,15 +136,28 @@ static long kvm_vcpu_compat_ioctl(struct file *file, unsigned int ioctl,
  *   passed to a compat task, let the ioctls fail.
  */
 static long kvm_no_compat_ioctl(struct file *file, unsigned int ioctl,
-				unsigned long arg) { return -EINVAL; }
-
-static int kvm_no_compat_open(struct inode *inode, struct file *file)
+				unsigned long arg)
 {
-	return is_compat_task() ? -ENODEV : 0;
+	return ppps_mm_is_compat(current->mm) ? -EOPNOTSUPP : -EINVAL;
 }
+
 #define KVM_COMPAT(c)	.compat_ioctl	= kvm_no_compat_ioctl,	\
-			.open		= kvm_no_compat_open
+			.open		= kvm_dev_open
 #endif
+
+/* KVM's userspace mappings require native page geometry. */
+static int kvm_dev_open(struct inode *inode, struct file *file)
+{
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
+#ifndef CONFIG_KVM_COMPAT
+	if (is_compat_task())
+		return -ENODEV;
+#endif
+
+	return 0;
+}
 
 static void kvm_io_bus_destroy(struct kvm_io_bus *bus);
 
@@ -993,7 +1008,6 @@ static umode_t kvm_stats_debugfs_mode(const struct kvm_stats_desc *desc)
 		return 0644;
 	}
 }
-
 
 static void kvm_destroy_vm_debugfs(struct kvm *kvm)
 {
@@ -4057,60 +4071,38 @@ void kvm_vcpu_on_spin(struct kvm_vcpu *me, bool yield_to_kernel_mode)
 }
 EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_vcpu_on_spin);
 
-static bool kvm_page_in_dirty_ring(struct kvm *kvm, struct mm_struct *mm,
+static bool kvm_page_in_dirty_ring(struct kvm *kvm,
 				   unsigned long pgoff)
 {
 #ifdef CONFIG_HAVE_KVM_DIRTY_RING
 	return (pgoff >= KVM_DIRTY_LOG_PAGE_OFFSET) &&
 	    (pgoff < KVM_DIRTY_LOG_PAGE_OFFSET +
-	     kvm->dirty_ring_size / MM_PAGE_SIZE(mm));
+	     kvm->dirty_ring_size / PAGE_SIZE);
 #else
 	return false;
 #endif
 }
 
-static unsigned long kvm_vcpu_fault_pgoff(struct vm_fault *vmf)
-{
-	struct vm_area_struct *vma = vmf->vma;
-
-	if (!ppps_mm_is_compat(vma->vm_mm))
-		return vmf->pgoff;
-
-	return (vma_file_offset(vma) + vmf->address - vma->vm_start) >>
-		MM_PAGE_SHIFT(vma->vm_mm);
-}
-
 static vm_fault_t kvm_vcpu_fault(struct vm_fault *vmf)
 {
 	struct kvm_vcpu *vcpu = vmf->vma->vm_file->private_data;
-	struct vm_area_struct *vma = vmf->vma;
-	unsigned long pgoff = kvm_vcpu_fault_pgoff(vmf);
-	unsigned int slice = 0;
 	struct page *page;
 
-	if (pgoff == 0)
+	if (vmf->pgoff == 0)
 		page = virt_to_page(vcpu->run);
 #ifdef CONFIG_X86
-	else if (pgoff == KVM_PIO_PAGE_OFFSET)
+	else if (vmf->pgoff == KVM_PIO_PAGE_OFFSET)
 		page = virt_to_page(vcpu->arch.pio_data);
 #endif
 #ifdef CONFIG_KVM_MMIO
-	else if (pgoff == KVM_COALESCED_MMIO_PAGE_OFFSET)
+	else if (vmf->pgoff == KVM_COALESCED_MMIO_PAGE_OFFSET)
 		page = virt_to_page(vcpu->kvm->coalesced_mmio_ring);
 #endif
-	else if (kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_mm, pgoff)) {
-		unsigned long offset = (pgoff - KVM_DIRTY_LOG_PAGE_OFFSET) <<
-			MM_PAGE_SHIFT(vma->vm_mm);
-
+	else if (kvm_page_in_dirty_ring(vcpu->kvm, vmf->pgoff))
 		page = kvm_dirty_ring_get_page(&vcpu->dirty_ring,
-					       offset >> PAGE_SHIFT);
-		slice = vma_offset_to_slice(vma, offset);
-	} else {
+				vmf->pgoff - KVM_DIRTY_LOG_PAGE_OFFSET);
+	else
 		return kvm_arch_vcpu_fault(vcpu, vmf);
-	}
-
-	if (ppps_mm_is_compat(vma->vm_mm))
-		return vmf_insert_page_slice(vma, vmf->address, page, slice);
 
 	get_page(page);
 	vmf->page = page;
@@ -4124,19 +4116,16 @@ static const struct vm_operations_struct kvm_vcpu_vm_ops = {
 static int kvm_vcpu_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct kvm_vcpu *vcpu = file->private_data;
-	unsigned long start_pgoff = vma_file_offset(vma) >>
-		MM_PAGE_SHIFT(vma->vm_mm);
-	unsigned long pages = (vma->vm_end - vma->vm_start) >>
-		MM_PAGE_SHIFT(vma->vm_mm);
+	unsigned long pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
 
-	if ((kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_mm, start_pgoff) ||
-	     kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_mm,
-				    start_pgoff + pages - 1)) &&
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return -EOPNOTSUPP;
+
+	if ((kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_pgoff) ||
+	     kvm_page_in_dirty_ring(vcpu->kvm, vma->vm_pgoff + pages - 1)) &&
 	    ((vma->vm_flags & VM_EXEC) || !(vma->vm_flags & VM_SHARED)))
 		return -EINVAL;
 
-	if (ppps_mm_is_compat(vma->vm_mm))
-		vm_flags_set(vma, VM_MIXEDMAP);
 	vma->vm_ops = &kvm_vcpu_vm_ops;
 	return 0;
 }
@@ -4338,6 +4327,9 @@ static ssize_t kvm_vcpu_stats_read(struct file *file, char __user *user_buffer,
 {
 	struct kvm_vcpu *vcpu = file->private_data;
 
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
 	return kvm_stats_read(vcpu->stats_id, &kvm_vcpu_stats_header,
 			&kvm_vcpu_stats_desc[0], &vcpu->stat,
 			sizeof(vcpu->stat), user_buffer, size, offset);
@@ -4464,6 +4456,9 @@ static long kvm_vcpu_ioctl(struct file *filp,
 	int r;
 	struct kvm_fpu *fpu = NULL;
 	struct kvm_sregs *kvm_sregs = NULL;
+
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
 
 	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
 		return -EIO;
@@ -4708,6 +4703,9 @@ static long kvm_vcpu_compat_ioctl(struct file *filp,
 	void __user *argp = compat_ptr(arg);
 	int r;
 
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
 	if (vcpu->kvm->mm != current->mm || vcpu->kvm->vm_dead)
 		return -EIO;
 
@@ -4747,6 +4745,9 @@ static int kvm_device_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct kvm_device *dev = filp->private_data;
 
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return -EOPNOTSUPP;
+
 	if (dev->ops->mmap)
 		return dev->ops->mmap(dev, vma);
 
@@ -4773,6 +4774,9 @@ static long kvm_device_ioctl(struct file *filp, unsigned int ioctl,
 			     unsigned long arg)
 {
 	struct kvm_device *dev = filp->private_data;
+
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
 
 	if (dev->kvm->mm != current->mm || dev->kvm->vm_dead)
 		return -EIO;
@@ -4995,10 +4999,10 @@ static int kvm_vm_ioctl_enable_dirty_log_ring(struct kvm *kvm, u32 size)
 	if (!size || (size & (size - 1)))
 		return -EINVAL;
 
-	/* Should be bigger to keep the reserved entries, or a process page */
+	/* Should be bigger to keep the reserved entries, or a page */
 	if (size < kvm_dirty_ring_get_rsvd_entries(kvm) *
 	    sizeof(struct kvm_dirty_gfn) ||
-	    size < MM_PAGE_SIZE(current->mm))
+	    size < PAGE_SIZE)
 		return -EINVAL;
 
 	if (size > KVM_DIRTY_RING_MAX_ENTRIES *
@@ -5142,6 +5146,9 @@ static ssize_t kvm_vm_stats_read(struct file *file, char __user *user_buffer,
 {
 	struct kvm *kvm = file->private_data;
 
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
 	return kvm_stats_read(kvm->stats_id, &kvm_vm_stats_header,
 				&kvm_vm_stats_desc[0], &kvm->stat,
 				sizeof(kvm->stat), user_buffer, size, offset);
@@ -5198,6 +5205,9 @@ static long kvm_vm_ioctl(struct file *filp,
 	struct kvm *kvm = filp->private_data;
 	void __user *argp = (void __user *)arg;
 	int r;
+
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
 
 	if (kvm->mm != current->mm || kvm->vm_dead)
 		return -EIO;
@@ -5463,6 +5473,9 @@ static long kvm_vm_compat_ioctl(struct file *filp,
 	struct kvm *kvm = filp->private_data;
 	int r;
 
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
 	if (kvm->mm != current->mm || kvm->vm_dead)
 		return -EIO;
 
@@ -5572,6 +5585,9 @@ static long kvm_dev_ioctl(struct file *filp,
 {
 	int r = -EINVAL;
 
+	if (ppps_mm_is_compat(current->mm))
+		return -EOPNOTSUPP;
+
 	switch (ioctl) {
 	case KVM_GET_API_VERSION:
 		if (arg)
@@ -5587,12 +5603,12 @@ static long kvm_dev_ioctl(struct file *filp,
 	case KVM_GET_VCPU_MMAP_SIZE:
 		if (arg)
 			goto out;
-		r = MM_PAGE_SIZE(current->mm); /* struct kvm_run */
+		r = PAGE_SIZE; /* struct kvm_run */
 #ifdef CONFIG_X86
-		r += MM_PAGE_SIZE(current->mm); /* pio data page */
+		r += PAGE_SIZE; /* pio data page */
 #endif
 #ifdef CONFIG_KVM_MMIO
-		r += MM_PAGE_SIZE(current->mm); /* coalesced mmio ring page */
+		r += PAGE_SIZE; /* coalesced mmio ring page */
 #endif
 		break;
 	default:
