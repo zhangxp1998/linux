@@ -40,20 +40,12 @@ static int coalesced_mmio_in_range(struct kvm_coalesced_mmio_dev *dev,
 	return 1;
 }
 
-static unsigned int kvm_coalesced_mmio_max(struct kvm *kvm)
-{
-	return (MM_PAGE_SIZE(kvm->mm) -
-		sizeof(struct kvm_coalesced_mmio_ring)) /
-		sizeof(struct kvm_coalesced_mmio);
-}
-
 static int coalesced_mmio_write(struct kvm_vcpu *vcpu,
 				struct kvm_io_device *this, gpa_t addr,
 				int len, const void *val)
 {
 	struct kvm_coalesced_mmio_dev *dev = to_mmio(this);
 	struct kvm_coalesced_mmio_ring *ring = dev->kvm->coalesced_mmio_ring;
-	unsigned int ring_max = kvm_coalesced_mmio_max(dev->kvm);
 	__u32 insert;
 
 	if (!coalesced_mmio_in_range(dev, addr, len))
@@ -68,8 +60,8 @@ static int coalesced_mmio_write(struct kvm_vcpu *vcpu,
 	 * between an empty ring and a full ring.
 	 */
 	insert = READ_ONCE(ring->last);
-	if (insert >= ring_max ||
-	    (insert + 1) % ring_max == READ_ONCE(ring->first)) {
+	if (insert >= KVM_COALESCED_MMIO_MAX ||
+	    (insert + 1) % KVM_COALESCED_MMIO_MAX == READ_ONCE(ring->first)) {
 		spin_unlock(&dev->kvm->ring_lock);
 		return -EOPNOTSUPP;
 	}
@@ -81,7 +73,7 @@ static int coalesced_mmio_write(struct kvm_vcpu *vcpu,
 	memcpy(ring->coalesced_mmio[insert].data, val, len);
 	ring->coalesced_mmio[insert].pio = dev->zone.pio;
 	smp_wmb();
-	ring->last = (insert + 1) % ring_max;
+	ring->last = (insert + 1) % KVM_COALESCED_MMIO_MAX;
 	spin_unlock(&dev->kvm->ring_lock);
 	return 0;
 }
