@@ -1,24 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process writing one process page through a shared mmap of a
+ * fresh exFAT file advances the on-disk valid data length by exactly 4K.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
+#include "kselftest_ppps.h"
 
-#define PROCESS_PAGE_SIZE 4096UL
+
 #define FILE_SIZE (16 * PROCESS_PAGE_SIZE)
 
 static uint32_t get_le32(const unsigned char *p)
@@ -108,18 +101,13 @@ static int run_test(const char *device, const char *mountpoint)
 	int fd = -1;
 	int ret = EXIT_FAILURE;
 
-	printf("TAP version 13\n1..4\n");
-	if (sysconf(_SC_PAGESIZE) != PROCESS_PAGE_SIZE) {
-		printf("not ok 1 - process uses 4K pages\n");
-		goto out;
-	}
-	printf("ok 1 - process uses 4K pages\n");
-
+	ppps_require_compat();
+	printf("TAP version 13\n1..3\n");
 	if (mount(device, mountpoint, "exfat", 0, NULL)) {
-		printf("not ok 2 - mount exFAT image: %s\n", strerror(errno));
+		printf("not ok 1 - mount exFAT image: %s\n", strerror(errno));
 		goto out;
 	}
-	printf("ok 2 - mount exFAT image\n");
+	printf("ok 1 - mount exFAT image\n");
 
 	if (snprintf(path, sizeof(path), "%s/ppps-vdl.bin", mountpoint) >=
 	    (int)sizeof(path)) {
@@ -136,7 +124,7 @@ static int run_test(const char *device, const char *mountpoint)
 	mapping[0] = 0x5a;
 	if (msync(mapping, PROCESS_PAGE_SIZE, MS_SYNC) || fsync(fd) || syncfs(fd))
 		goto mounted;
-	printf("ok 3 - write one process page through shared mmap\n");
+	printf("ok 2 - write one process page through shared mmap\n");
 
 	munmap(mapping, PROCESS_PAGE_SIZE);
 	mapping = MAP_FAILED;
@@ -145,21 +133,21 @@ static int run_test(const char *device, const char *mountpoint)
 	if (umount(mountpoint))
 		goto out;
 	if (read_valid_data_length(device, &valid_size)) {
-		printf("not ok 4 - read exFAT valid data length: %s\n",
+		printf("not ok 3 - read exFAT valid data length: %s\n",
 		       strerror(errno));
 		goto out;
 	}
 	if (valid_size != PROCESS_PAGE_SIZE) {
-		printf("not ok 4 - mmap advances valid data by one process page # got %llu\n",
+		printf("not ok 3 - mmap advances valid data by one process page # got %llu\n",
 		       (unsigned long long)valid_size);
 		goto out;
 	}
-	printf("ok 4 - mmap advances valid data by one process page\n");
+	printf("ok 3 - mmap advances valid data by one process page\n");
 	ret = EXIT_SUCCESS;
 	goto out;
 
 mounted:
-	printf("not ok 3 - write one process page through shared mmap: %s\n",
+	printf("not ok 2 - write one process page through shared mmap: %s\n",
 	       strerror(errno));
 	if (mapping != MAP_FAILED)
 		munmap(mapping, PROCESS_PAGE_SIZE);
@@ -172,21 +160,11 @@ out:
 
 int main(int argc, char **argv)
 {
-	int persona;
+	const char *mode = ppps_run_mode(argc, argv, NULL);
 
-	if (argc == 4 && !strcmp(argv[1], "--run"))
+	if (argc == 4 && mode && !strcmp(mode, "--run"))
 		return run_test(argv[2], argv[3]);
 	if (argc != 3)
 		return EXIT_FAILURE;
-
-	persona = personality(0xffffffffUL);
-	if (persona < 0 ||
-	    personality((unsigned long)persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0) {
-		perror("personality");
-		return EXIT_FAILURE;
-	}
-	execl("/proc/self/exe", "mmap-valid-size-ppps", "--run", argv[1],
-	      argv[2], NULL);
-	perror("exec");
-	return EXIT_FAILURE;
+	exec_compat(argv[0], "--run", argv[1], argv[2], NULL);
 }

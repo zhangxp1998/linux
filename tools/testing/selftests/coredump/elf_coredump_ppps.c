@@ -1,51 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
+/* Check that a 4K PPPS process uses a 4K ELF core-dump threshold. */
 #define _GNU_SOURCE
 
-/* Check that a 4K PPPS process uses a 4K ELF core-dump threshold. */
-
-#include <errno.h>
-#include <fcntl.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mount.h>
-#include <sys/personality.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
-#define CORE_LIMIT (2 * USER_PAGE_SIZE)
+#define CORE_LIMIT (2 * PROCESS_PAGE_SIZE)
 #define CORE_PATTERN_PATH "/proc/sys/kernel/core_pattern"
-
-static bool write_all(int fd, const char *buffer, size_t length)
-{
-	while (length) {
-		ssize_t written = write(fd, buffer, length);
-
-		if (written < 0) {
-			if (errno == EINTR)
-				continue;
-			return false;
-		}
-		if (!written)
-			return false;
-		buffer += written;
-		length -= written;
-	}
-	return true;
-}
 
 static bool set_core_pattern(const char *pattern, size_t length)
 {
@@ -54,7 +21,7 @@ static bool set_core_pattern(const char *pattern, size_t length)
 
 	if (fd < 0)
 		return false;
-	ok = write_all(fd, pattern, length);
+	ok = write_full(fd, pattern, length);
 	if (close(fd))
 		ok = false;
 	return ok;
@@ -86,11 +53,7 @@ static int run_test(void)
 	pid_t child;
 
 	ksft_print_header();
-	ksft_set_plan(2);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process page size is 4K\n");
-	if (sysconf(_SC_PAGESIZE) != USER_PAGE_SIZE)
-		return KSFT_FAIL;
+	ksft_set_plan(1);
 
 	pattern_length = save_core_pattern(original_pattern,
 					   sizeof(original_pattern));
@@ -159,23 +122,10 @@ out_restore:
 
 int main(int argc, char **argv)
 {
-	int persona;
-
 	if (access("/proc/self", F_OK) &&
 	    mount("proc", "/proc", "proc", 0, NULL)) {
 		perror("mount proc");
 		return KSFT_FAIL;
 	}
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-
-	persona = personality(0xffffffffUL);
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0) {
-		printf("1..0 # SKIP 4K process personality is unavailable\n");
-		return KSFT_SKIP;
-	}
-	execl("/proc/self/exe", argv[0], "--run", NULL);
-	perror("exec");
-	return KSFT_FAIL;
+	return ppps_compat_main(argc, argv, run_test);
 }

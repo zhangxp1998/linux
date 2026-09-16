@@ -1,28 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process maps the PFNMAP fixture at a 4K file offset, faults
+ * it in and installs it as guest memory; the guest then reads that faulted
+ * process page.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/kvm.h>
-#include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
 
-#define USER_PAGE_SIZE 4096UL
-#define NATIVE_16K_SIZE 16384UL
 #define PFNMAP_SIZE (32UL * 1024 * 1024)
 #define PFNMAP_GPA 0x80000000ULL
 #define GUEST_CODE_GPA 0x40000000ULL
@@ -60,7 +51,7 @@ static bool setup_guest(int vm_fd, int vcpu_fd, void *pfnmap,
 	struct kvm_userspace_memory_region code_region = {
 		.slot = 0,
 		.guest_phys_addr = GUEST_CODE_GPA,
-		.memory_size = NATIVE_16K_SIZE,
+		.memory_size = NATIVE_PAGE_SIZE,
 	};
 	struct kvm_vcpu_init init = {};
 	uintptr_t code_addr;
@@ -69,13 +60,13 @@ static bool setup_guest(int vm_fd, int vcpu_fd, void *pfnmap,
 	    ioctl(vcpu_fd, KVM_ARM_VCPU_INIT, &init))
 		return false;
 
-	*guest_reservation = mmap(NULL, 2 * NATIVE_16K_SIZE,
+	*guest_reservation = mmap(NULL, 2 * NATIVE_PAGE_SIZE,
 				  PROT_READ | PROT_WRITE,
 				  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (*guest_reservation == MAP_FAILED)
 		return false;
-	code_addr = ((uintptr_t)*guest_reservation + NATIVE_16K_SIZE - 1) &
-		    ~(NATIVE_16K_SIZE - 1);
+	code_addr = ((uintptr_t)*guest_reservation + NATIVE_PAGE_SIZE - 1) &
+		    ~(NATIVE_PAGE_SIZE - 1);
 	memcpy((void *)code_addr, guest_code, sizeof(guest_code));
 	code_region.userspace_addr = code_addr;
 	if (ioctl(vm_fd, KVM_SET_USER_MEMORY_REGION, &code_region) ||
@@ -86,7 +77,7 @@ static bool setup_guest(int vm_fd, int vcpu_fd, void *pfnmap,
 		core_reg_id(KVM_REG_ARM_CORE_REG(regs.pc)), GUEST_CODE_GPA) &&
 	       !set_one_reg(vcpu_fd,
 		core_reg_id(KVM_REG_ARM_CORE_REG(regs.regs[1])),
-		PFNMAP_GPA + NATIVE_16K_SIZE) &&
+		PFNMAP_GPA + NATIVE_PAGE_SIZE) &&
 	       !set_one_reg(vcpu_fd,
 		core_reg_id(KVM_REG_ARM_CORE_REG(regs.regs[2])),
 		GUEST_MMIO_GPA);
@@ -134,14 +125,10 @@ static int run_test(void)
 	int ret;
 
 	ksft_print_header();
-	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(7);
 
-	fixture_fd = open("/dev/kvm-pfnmap-ppps", O_RDWR | O_CLOEXEC);
+	fixture_fd = ppps_open_fixture_or_skip("/dev/kvm-pfnmap-ppps", O_RDWR);
 	ksft_test_result(fixture_fd >= 0, "open the PFNMAP fixture\n");
-	if (fixture_fd < 0)
-		goto out;
 
 	reservation = mmap(NULL, 3 * PFNMAP_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -150,7 +137,7 @@ static int run_test(void)
 			 ~(PFNMAP_SIZE - 1);
 		mapping = mmap((void *)target, PFNMAP_SIZE,
 			       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
-			       fixture_fd, USER_PAGE_SIZE);
+			       fixture_fd, PROCESS_PAGE_SIZE);
 	}
 	ksft_test_result(mapping != MAP_FAILED && mapping == (void *)target,
 			 "map a block-aligned PFNMAP at a 4K file offset\n");
@@ -160,8 +147,8 @@ static int run_test(void)
 	if (mapping == MAP_FAILED)
 		goto out;
 
-	kvm_fd = open("/dev/kvm", O_RDWR | O_CLOEXEC);
-	ret = kvm_fd < 0 ? -1 : ioctl(kvm_fd, KVM_GET_API_VERSION, 0);
+	kvm_fd = ppps_open_fixture_or_skip("/dev/kvm", O_RDWR);
+	ret = ioctl(kvm_fd, KVM_GET_API_VERSION, 0);
 	ksft_test_result(ret == KVM_API_VERSION, "open the arm64 KVM API\n");
 	if (ret != KVM_API_VERSION)
 		goto out;
@@ -189,7 +176,7 @@ out:
 	if (kvm_fd >= 0)
 		close(kvm_fd);
 	if (guest_reservation != MAP_FAILED)
-		munmap(guest_reservation, 2 * NATIVE_16K_SIZE);
+		munmap(guest_reservation, 2 * NATIVE_PAGE_SIZE);
 	if (reservation != MAP_FAILED)
 		munmap(reservation, 3 * PFNMAP_SIZE);
 	if (fixture_fd >= 0)
@@ -197,25 +184,4 @@ out:
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "kvm_pfnmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)
