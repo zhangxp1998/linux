@@ -17,6 +17,7 @@
 #define TEST_LENGTH (2 * PROCESS_PAGE_SIZE)
 #define VB2_USERPTR_VMALLOC 1
 #define VB2_USERPTR_DMA_SG 2
+#define VB2_USERPTR_CAPTURE 3
 
 struct vb2_userptr_request {
 	uint64_t user_addr;
@@ -75,7 +76,7 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(7);
+	ksft_set_plan(8);
 	mapping = map_test_area(&reservation);
 	ksft_test_result(mapping != MAP_FAILED,
 			 "map a native-aligned four-page test area\n");
@@ -106,6 +107,23 @@ static int run_test(void)
 	ksft_test_result(dma_sg_ok && region[0] == 0x71 &&
 			 region[PROCESS_PAGE_SIZE] == 0x82,
 			 "DMA-SG backend writes both USERPTR pages\n");
+	{
+		bool capture_ok;
+		size_t i;
+
+		memset(region, 0x96, TEST_LENGTH);
+		capture_ok = fd >= 0 && run_backend(fd, region,
+					VB2_USERPTR_CAPTURE, 0x96, 0x96);
+		for (i = 0; i < TEST_LENGTH; i++) {
+			unsigned char expected = i == 0 ? 0x31 :
+				(i == PROCESS_PAGE_SIZE ? 0x5a : 0x96);
+
+			if (region[i] != expected)
+				capture_ok = false;
+		}
+		ksft_test_result(capture_ok,
+				 "short and cancelled captures preserve unwritten bytes\n");
+	}
 	ksft_test_result(mapping[0] == 0xa0 &&
 			 mapping[3 * PROCESS_PAGE_SIZE] == 0xb0,
 			 "both backends leave adjacent 4K pages unchanged\n");

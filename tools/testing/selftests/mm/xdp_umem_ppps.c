@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * AF_XDP UMEM registration by a 4K compat process accepts a one-4K-page UMEM
- * both with an untagged address and with a top-byte-tagged one.
+ * both with an untagged address and with a top-byte-tagged one.  The UMEM is
+ * a shared memfd page: packed compat anonymous memory cannot back a UMEM.
  */
 #define _GNU_SOURCE
 
 #include <linux/if_xdp.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include "kselftest_ppps.h"
 
@@ -40,11 +42,15 @@ static int run_test(void)
 	uint64_t tagged;
 	int untagged_result;
 	int tagged_result;
+	int fd;
 
 	ksft_print_header();
 	ksft_set_plan(4);
+	fd = memfd_create("xdp-umem-ppps", MFD_CLOEXEC);
+	if (fd < 0 || ftruncate(fd, NATIVE_PAGE_SIZE))
+		ksft_exit_fail_msg("memfd failed: %s\n", strerror(errno));
 	mapping = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
-		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		       MAP_SHARED, fd, 0);
 	if (mapping == MAP_FAILED)
 		ksft_exit_fail_msg("mmap failed: %s\n", strerror(errno));
 	memset(mapping, 0x5a, PROCESS_PAGE_SIZE);
@@ -69,6 +75,7 @@ static int run_test(void)
 			 "register the same tagged AF_XDP UMEM (%s)\n",
 			 tagged_result ? strerror(-tagged_result) : "ok");
 	munmap(mapping, NATIVE_PAGE_SIZE);
+	close(fd);
 	ksft_finished();
 }
 
