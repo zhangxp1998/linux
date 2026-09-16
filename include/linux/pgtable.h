@@ -58,6 +58,20 @@ static inline unsigned long pte_page_offset(pte_t pte)
 #endif
 
 /*
+ * Re-point @pte at process-page slice @slice of the native page it maps.
+ * Only PPPS encodes sub-page slices in PTEs; elsewhere @slice is always 0.
+ */
+#ifndef pte_mkslice
+static inline pte_t pte_mkslice(pte_t pte, unsigned int slice)
+{
+	(void)slice;
+	return pte;
+}
+
+#define pte_mkslice pte_mkslice
+#endif
+
+/*
  * This defines the generic helper for accessing PMD page
  * table page. Although platforms can still override this
  * via their respective <asm/pgtable.h>.
