@@ -1242,7 +1242,8 @@ static void __folio_set_anon(struct folio *folio, struct vm_area_struct *vma,
 	 * A folio becomes a PPPS tuple when its VMA range shares tuples, or when
 	 * the caller pre-marked it as the copy of an existing tuple.
 	 */
-	bool ppps_compat = false; /* Enabled with generic tuple lifecycle. */
+	bool ppps_compat = folio_test_ppps_compat_anon(folio) ||
+		ppps_vma_address_shares_tuple(vma, address);
 
 	BUG_ON(!anon_vma);
 

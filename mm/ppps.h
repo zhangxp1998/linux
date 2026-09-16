@@ -98,8 +98,6 @@ bool ppps_anon_tuple_is_complete(struct vm_area_struct *vma,
 bool ppps_anon_tuple_within(struct vm_area_struct *vma, struct folio *folio,
 			    pte_t *ptep, unsigned long address,
 			    unsigned long start, unsigned long end);
-int ppps_anon_installable_run(struct vm_area_struct *vma, pte_t *ptep,
-			      unsigned long address, unsigned long *base);
 
 /* The one decision point for writing into a packed folio in place. */
 bool ppps_anon_try_reuse_folio(struct folio *folio, struct vm_area_struct *vma);
@@ -318,15 +316,6 @@ static inline bool ppps_anon_tuple_within(struct vm_area_struct *vma,
 		unsigned long start, unsigned long end)
 {
 	return true;
-}
-
-static inline int ppps_anon_installable_run(struct vm_area_struct *vma,
-					    pte_t *ptep,
-					    unsigned long address,
-					    unsigned long *base)
-{
-	*base = address;
-	return 1;
 }
 
 static inline bool ppps_anon_tuple_has_folio_hint(struct vm_fault *vmf)
