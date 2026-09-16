@@ -1,29 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * Truncating a memfd at a native-page boundary under a 4K compat process's
+ * two-slice mapping keeps the slice below the new EOF readable and makes the
+ * slice at the new EOF fault with SIGBUS.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <linux/memfd.h>
 #include <setjmp.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define MAPPING_OFFSET	(3 * USER_PAGE_SIZE)
-#define MAPPING_SIZE	(2 * USER_PAGE_SIZE)
-#define FILE_SIZE	(8 * USER_PAGE_SIZE)
-#define TRUNCATED_SIZE	(4 * USER_PAGE_SIZE)
+#define MAPPING_OFFSET	(3 * PROCESS_PAGE_SIZE)
+#define MAPPING_SIZE	(2 * PROCESS_PAGE_SIZE)
+#define FILE_SIZE	(8 * PROCESS_PAGE_SIZE)
+#define TRUNCATED_SIZE	(4 * PROCESS_PAGE_SIZE)
 
 static sigjmp_buf fault_env;
 
@@ -34,14 +27,14 @@ static unsigned char page_pattern(unsigned int page)
 
 static bool initialize_file(int fd)
 {
-	unsigned char page[USER_PAGE_SIZE];
+	unsigned char page[PROCESS_PAGE_SIZE];
 	unsigned int i;
 
-	for (i = 0; i < FILE_SIZE / USER_PAGE_SIZE; i++) {
+	for (i = 0; i < FILE_SIZE / PROCESS_PAGE_SIZE; i++) {
 		ssize_t written;
 
 		memset(page, page_pattern(i), sizeof(page));
-		written = pwrite(fd, page, sizeof(page), i * USER_PAGE_SIZE);
+		written = pwrite(fd, page, sizeof(page), i * PROCESS_PAGE_SIZE);
 		if (written != (ssize_t)sizeof(page)) {
 			ksft_print_msg("pwrite page %u returned %zd: %s\n", i,
 				       written, strerror(errno));
@@ -77,9 +70,7 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(5);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(4);
 
 	fd = memfd_create("truncate-ppps", MFD_CLOEXEC);
 	if (fd < 0)
@@ -92,7 +83,7 @@ static int run_test(void)
 		ksft_exit_fail_msg("mmap failed: %s\n", strerror(errno));
 
 	initial_contents = mapping[0] == page_pattern(3) &&
-			   mapping[USER_PAGE_SIZE] == page_pattern(4);
+			   mapping[PROCESS_PAGE_SIZE] == page_pattern(4);
 	ksft_test_result(initial_contents,
 			 "sliced mapping initially exposes both file pages\n");
 
@@ -106,7 +97,7 @@ static int run_test(void)
 	sigemptyset(&action.sa_mask);
 	if (sigaction(SIGBUS, &action, NULL))
 		ksft_exit_fail_msg("sigaction failed: %s\n", strerror(errno));
-	truncated_readable = read_byte(&mapping[USER_PAGE_SIZE],
+	truncated_readable = read_byte(&mapping[PROCESS_PAGE_SIZE],
 				       &truncated_value);
 	ksft_test_result(!truncated_readable,
 			 "file data at the new EOF is unmapped and faults with SIGBUS\n");
@@ -118,25 +109,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "truncate_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

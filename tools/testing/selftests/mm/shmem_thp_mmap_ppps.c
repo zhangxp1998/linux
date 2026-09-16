@@ -1,27 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * With shmem THP forced on, a 4K compat process's large memfd mappings are
+ * placed PMD-aligned on every sampled exec despite address randomization.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/memfd.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define MIN_ARM64_PMD_SIZE (2UL * 1024 * 1024)
 #define MAPPING_SIZE (64UL * 1024 * 1024)
 #define SAMPLE_COUNT 16
@@ -108,8 +98,7 @@ static bool collect_samples(unsigned int *aligned)
 					_exit(126);
 				close(pipefd[1]);
 			}
-			execl("/proc/self/exe", "shmem_thp_mmap_ppps", "--sample",
-			      NULL);
+			ppps_execl(true, NULL, "--sample", NULL);
 			_exit(127);
 		}
 		close(pipefd[1]);
@@ -137,15 +126,14 @@ static int run_test(void)
 	bool collected;
 	bool restored;
 
+	ppps_require_compat();
 	ksft_print_header();
 	if (!aslr_enabled())
 		ksft_exit_skip("address randomization is disabled\n");
 	if (!get_shmem_policy(original_policy, sizeof(original_policy)) ||
 	    !set_shmem_policy("force"))
 		ksft_exit_skip("could not enable shmem THP policy\n");
-	ksft_set_plan(4);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(3);
 
 	collected = collect_samples(&aligned);
 	ksft_test_result(collected, "collect memfd mmap bases across exec\n");
@@ -156,17 +144,6 @@ static int run_test(void)
 	restored = set_shmem_policy(original_policy);
 	ksft_test_result(restored, "restore shmem THP policy\n");
 	ksft_finished();
-}
-
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("could not enable 4K compatibility mode\n");
-	execl("/proc/self/exe", "shmem_thp_mmap_ppps", "--compat", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
 }
 
 static int sample(void)
@@ -190,11 +167,13 @@ static int sample(void)
 
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--compat"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_compat(argv[0], PPPS_RUN_FLAG, NULL);
+	if (argc == 2 && !strcmp(mode, PPPS_RUN_FLAG))
 		return run_test();
-	if (argc == 2 && !strcmp(argv[1], "--sample"))
+	if (argc == 2 && !strcmp(mode, "--sample"))
 		return sample();
 	return EXIT_FAILURE;
 }

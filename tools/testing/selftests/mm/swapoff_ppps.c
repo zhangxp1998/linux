@@ -1,28 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * swapoff(2) issued by a native (16K) process restores the swapped 4K PTEs
+ * of a compat child with their contents intact and leaves that device
+ * disabled (other swap devices may stay active).  Requires PPPS_SWAP_DEVICE.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/swap.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
 #define TEST_PAGES	32
-#define MAPPING_SIZE	(TEST_PAGES * USER_PAGE_SIZE)
-#define RESERVE_SIZE	(MAPPING_SIZE + 2 * USER_PAGE_SIZE)
+#define MAPPING_SIZE	(TEST_PAGES * PROCESS_PAGE_SIZE)
+#define RESERVE_SIZE	(MAPPING_SIZE + 2 * PROCESS_PAGE_SIZE)
 #define POLL_ATTEMPTS	200
 #define SWAPOFF_TIMEOUT	3
 
@@ -34,6 +27,29 @@ struct child_status {
 	unsigned long rss_bytes;
 	unsigned long swap_bytes;
 };
+
+static bool swap_device_active(const char *device)
+{
+	size_t device_len = strlen(device);
+	char *line = NULL;
+	size_t capacity = 0;
+	bool active = false;
+	FILE *swaps;
+
+	swaps = fopen("/proc/swaps", "re");
+	if (!swaps)
+		return false;
+	while (getline(&line, &capacity, swaps) >= 0) {
+		if (!strncmp(line, device, device_len) &&
+		    (line[device_len] == ' ' || line[device_len] == '\t')) {
+			active = true;
+			break;
+		}
+	}
+	free(line);
+	fclose(swaps);
+	return active;
+}
 
 static bool swap_info(unsigned long *total_bytes, unsigned long *free_bytes)
 {
@@ -140,40 +156,6 @@ static bool page_out_mapping(void *mapping, unsigned long *rss_bytes,
 	return false;
 }
 
-static bool write_full(int fd, const void *buffer, size_t size)
-{
-	const char *position = buffer;
-
-	while (size) {
-		ssize_t written = write(fd, position, size);
-
-		if (written < 0 && errno == EINTR)
-			continue;
-		if (written <= 0)
-			return false;
-		position += written;
-		size -= written;
-	}
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t size)
-{
-	char *position = buffer;
-
-	while (size) {
-		ssize_t bytes = read(fd, position, size);
-
-		if (bytes < 0 && errno == EINTR)
-			continue;
-		if (bytes <= 0)
-			return false;
-		position += bytes;
-		size -= bytes;
-	}
-	return true;
-}
-
 static int run_compat_child(int ready_fd, int command_fd)
 {
 	struct child_status status = {
@@ -189,13 +171,13 @@ static int run_compat_child(int ready_fd, int command_fd)
 	reservation = mmap(NULL, RESERVE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	mapping = reservation == MAP_FAILED ? MAP_FAILED :
-		mmap(reservation + USER_PAGE_SIZE, MAPPING_SIZE,
+		mmap(reservation + PROCESS_PAGE_SIZE, MAPPING_SIZE,
 		     PROT_READ | PROT_WRITE,
 		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 	if (mapping != MAP_FAILED) {
 		madvise(mapping, MAPPING_SIZE, MADV_NOHUGEPAGE);
 		for (i = 0; i < TEST_PAGES; i++)
-			mapping[i * USER_PAGE_SIZE] = 0x40 + i;
+			mapping[i * PROCESS_PAGE_SIZE] = 0x40 + i;
 		status.mapped = true;
 		status.isolated = vma_span(mapping, &span) &&
 				  span == MAPPING_SIZE;
@@ -211,7 +193,7 @@ static int run_compat_child(int ready_fd, int command_fd)
 		preserved = false;
 	} else {
 		for (i = 0; i < TEST_PAGES; i++) {
-			if (mapping[i * USER_PAGE_SIZE] !=
+			if (mapping[i * PROCESS_PAGE_SIZE] !=
 			    (unsigned char)(0x40 + i)) {
 				preserved = false;
 				break;
@@ -250,9 +232,9 @@ static int run_parent(void)
 	pid_t pid;
 
 	ksft_print_header();
-	ksft_set_plan(9);
 	if (!swap_device)
 		ksft_exit_skip("PPPS_SWAP_DEVICE is not set\n");
+	ksft_set_plan(9);
 	if (!swap_info(&total_swap, &free_swap))
 		ksft_exit_fail_msg("could not read /proc/meminfo\n");
 	ksft_test_result(total_swap && free_swap, "swap device is active\n");
@@ -265,18 +247,11 @@ static int run_parent(void)
 	if (pid < 0)
 		ksft_exit_fail_msg("fork failed: %s\n", strerror(errno));
 	if (!pid) {
-		int persona;
-
 		close(ready_pipe[0]);
 		close(command_pipe[1]);
-		persona = personality(0xffffffffUL);
-		if (persona < 0 ||
-		    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-			_exit(127);
 		snprintf(ready_fd, sizeof(ready_fd), "%d", ready_pipe[1]);
 		snprintf(command_fd, sizeof(command_fd), "%d", command_pipe[0]);
-		execl("/proc/self/exe", "swapoff_ppps", "--child", ready_fd,
-		      command_fd, NULL);
+		ppps_execl(true, NULL, "--child", ready_fd, command_fd, NULL);
 		_exit(127);
 	}
 
@@ -291,7 +266,7 @@ static int run_parent(void)
 		ksft_exit_fail_msg("compat child did not report status\n");
 	}
 	ksft_print_msg("swapoff caller page size: %ld\n", sysconf(_SC_PAGESIZE));
-	ksft_test_result(child.page_size == USER_PAGE_SIZE,
+	ksft_test_result(child.page_size == PROCESS_PAGE_SIZE,
 			 "child process uses 4K pages\n");
 	ksft_test_result(child.mapped && child.isolated,
 			 "map an isolated anonymous VMA in the child\n");
@@ -319,34 +294,22 @@ static int run_parent(void)
 	ksft_test_result(child_waited && WIFEXITED(child_wait_status) &&
 			 WEXITSTATUS(child_wait_status) == EXIT_SUCCESS,
 			 "restored child pages preserve their contents\n");
-	disabled = swap_info(&total_swap, &free_swap) && !total_swap;
+	disabled = !swap_device_active(swap_device);
 	ksft_test_result(disabled, "swap device is disabled\n");
 	ksft_test_result(!swapoff_ret && disabled,
 			 "swapoff leaves no compat swap PTEs\n");
 	ksft_finished();
 }
 
-static int exec_native_parent(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality clear failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "swapoff_ppps", "--parent", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_native_parent();
-	if (argc == 2 && !strcmp(argv[1], "--parent"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_native(argv[0], "--parent", NULL);
+	if (argc == 2 && !strcmp(mode, "--parent"))
 		return run_parent();
-	if (argc == 4 && !strcmp(argv[1], "--child"))
+	if (argc == 4 && !strcmp(mode, "--child"))
 		return run_compat_child(atoi(argv[2]), atoi(argv[3]));
 	return EXIT_FAILURE;
 }

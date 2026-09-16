@@ -1,26 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * smaps "Swap:" of a 4K compat process's shmem VMA counts only the swapped
+ * 4K slices the VMA itself maps, for shared and private mappings alike.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define VMA_SIZE	(4 * USER_PAGE_SIZE)
-#define RESERVE_SIZE	(16 * USER_PAGE_SIZE)
-#define FILE_SIZE	(16 * USER_PAGE_SIZE)
+#define VMA_SIZE	(4 * PROCESS_PAGE_SIZE)
+#define RESERVE_SIZE	(16 * PROCESS_PAGE_SIZE)
+#define FILE_SIZE	(16 * PROCESS_PAGE_SIZE)
 #define POLL_ATTEMPTS	100
 
 static bool swap_info(unsigned long *total_bytes, unsigned long *free_bytes)
@@ -49,51 +40,25 @@ static bool swap_info(unsigned long *total_bytes, unsigned long *free_bytes)
 
 static bool vma_swap_bytes(const void *address, unsigned long *swap_bytes)
 {
-	unsigned long target = (unsigned long)address;
-	unsigned long start, end, swap_kb;
-	char *line = NULL;
-	size_t capacity = 0;
-	bool found = false;
-	bool in_target = false;
-	FILE *smaps;
-
-	smaps = fopen("/proc/self/smaps", "re");
-	if (!smaps)
-		return false;
-	while (getline(&line, &capacity, smaps) >= 0) {
-		if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
-			in_target = target >= start && target < end;
-			continue;
-		}
-		if (in_target && sscanf(line, "Swap: %lu kB", &swap_kb) == 1) {
-			*swap_bytes = swap_kb * 1024;
-			found = true;
-			break;
-		}
-	}
-	free(line);
-	fclose(smaps);
-	return found;
+	return ppps_smaps_bytes(address, 1, "Swap", swap_bytes);
 }
 
-static bool page_out_mapping(void *mapping, unsigned long *swap_delta)
+/*
+ * Page out @mapping and wait until its smaps Swap: shows the swapped bytes.
+ * (SwapFree is not a usable signal: the per-CPU swap slot caches take slots
+ * from the free count long before a page is written to them.)
+ */
+static bool page_out_mapping(void *mapping, unsigned long *swap_bytes)
 {
-	unsigned long free_before;
-	unsigned long free_after;
-	unsigned long total;
 	unsigned int attempt;
 
-	if (!swap_info(&total, &free_before))
-		return false;
 	if (madvise(mapping, VMA_SIZE, MADV_PAGEOUT))
 		return false;
 	for (attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
-		if (!swap_info(&total, &free_after))
+		if (!vma_swap_bytes(mapping, swap_bytes))
 			return false;
-		if (free_after < free_before) {
-			*swap_delta = free_before - free_after;
+		if (*swap_bytes)
 			return true;
-		}
 		usleep(10000);
 	}
 	return false;
@@ -104,7 +69,6 @@ static int run_test(void)
 	unsigned long total_swap;
 	unsigned long free_swap;
 	unsigned long outside_swap = 0;
-	unsigned long swap_delta = 0;
 	unsigned long target_swap = 0;
 	unsigned long slice_swap = 0;
 	unsigned long private_swap = 0;
@@ -116,9 +80,7 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(6);
 	if (!swap_info(&total_swap, &free_swap))
 		ksft_exit_fail_msg("could not read /proc/meminfo\n");
 	if (!total_swap)
@@ -143,21 +105,19 @@ static int run_test(void)
 				   strerror(errno));
 	ksft_test_result(true, "map separate inside and outside shmem ranges\n");
 
-	for (offset = 0; offset < VMA_SIZE; offset += USER_PAGE_SIZE)
-		outside[offset] = 0x40 + offset / USER_PAGE_SIZE;
-	paged_out = page_out_mapping(outside, &swap_delta);
+	for (offset = 0; offset < VMA_SIZE; offset += PROCESS_PAGE_SIZE)
+		outside[offset] = 0x40 + offset / PROCESS_PAGE_SIZE;
+	paged_out = page_out_mapping(outside, &outside_swap);
 	ksft_test_result(paged_out, "page out only the range outside the target VMA\n");
-	if (!vma_swap_bytes(outside, &outside_swap))
-		ksft_exit_fail_msg("could not read outside VMA swap usage\n");
 	if (!vma_swap_bytes(target, &target_swap))
 		ksft_exit_fail_msg("could not read target VMA swap usage\n");
 	ksft_test_result(paged_out && !target_swap,
 			 "exclude swapped shmem pages outside the target VMA\n");
-	ksft_print_msg("swap delta=%lu outside Swap=%lu target Swap=%lu bytes\n",
-		       swap_delta, outside_swap, target_swap);
+	ksft_print_msg("outside Swap=%lu target Swap=%lu bytes\n",
+		       outside_swap, target_swap);
 
 	munmap(outside, VMA_SIZE);
-	outside = mmap(reservation + 2 * VMA_SIZE, USER_PAGE_SIZE,
+	outside = mmap(reservation + 2 * VMA_SIZE, PROCESS_PAGE_SIZE,
 		       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
 		       fd, VMA_SIZE);
 	if (outside == MAP_FAILED)
@@ -165,12 +125,12 @@ static int run_test(void)
 				   strerror(errno));
 	if (!vma_swap_bytes(outside, &slice_swap))
 		ksft_exit_fail_msg("could not read shmem slice swap usage\n");
-	ksft_test_result(slice_swap == USER_PAGE_SIZE,
+	ksft_test_result(slice_swap == PROCESS_PAGE_SIZE,
 			 "account only the mapped process-page shmem slice\n");
 	ksft_print_msg("single-slice Swap=%lu bytes\n", slice_swap);
 
-	munmap(outside, USER_PAGE_SIZE);
-	outside = mmap(reservation + 2 * VMA_SIZE, USER_PAGE_SIZE,
+	munmap(outside, PROCESS_PAGE_SIZE);
+	outside = mmap(reservation + 2 * VMA_SIZE, PROCESS_PAGE_SIZE,
 		       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED,
 		       fd, VMA_SIZE);
 	if (outside == MAP_FAILED)
@@ -178,7 +138,7 @@ static int run_test(void)
 				   strerror(errno));
 	if (!vma_swap_bytes(outside, &private_swap))
 		ksft_exit_fail_msg("could not read private shmem swap usage\n");
-	ksft_test_result(private_swap == USER_PAGE_SIZE,
+	ksft_test_result(private_swap == PROCESS_PAGE_SIZE,
 			 "account a private process-page shmem hole\n");
 	ksft_print_msg("private single-slice Swap=%lu bytes\n", private_swap);
 
@@ -187,25 +147,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "shmem_swap_usage_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

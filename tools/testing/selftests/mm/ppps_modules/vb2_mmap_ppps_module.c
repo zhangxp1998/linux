@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 
-#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/fcntl.h>
@@ -9,6 +8,8 @@
 #include <linux/videodev2.h>
 #include <media/videobuf2-core.h>
 #include <media/videobuf2-vmalloc.h>
+
+#include "../../ppps/ppps_misc_module.h"
 
 #define TEST_PLANE_SIZE (6 * SZ_1K)
 #define VB2_MMAP_PPPS_EXPBUF _IO('v', 0x70)
@@ -67,14 +68,7 @@ static const struct file_operations test_fops = {
 	.unlocked_ioctl = test_ioctl,
 };
 
-static struct miscdevice test_device = {
-	.minor = MISC_DYNAMIC_MINOR,
-	.name = "vb2_mmap_ppps",
-	.fops = &test_fops,
-	.mode = 0600,
-};
-
-static int __init test_init(void)
+static int test_setup(void)
 {
 	unsigned int count = 1;
 	int ret;
@@ -90,24 +84,14 @@ static int __init test_init(void)
 		return ret;
 	ret = vb2_core_reqbufs(&test_queue, VB2_MEMORY_MMAP, 0, &count);
 	if (ret)
-		goto release_queue;
-	ret = misc_register(&test_device);
-	if (ret)
-		goto release_queue;
-	return 0;
-
-release_queue:
-	vb2_core_queue_release(&test_queue);
+		vb2_core_queue_release(&test_queue);
 	return ret;
 }
 
-static void __exit test_exit(void)
+static void test_teardown(void)
 {
-	misc_deregister(&test_device);
 	vb2_core_queue_release(&test_queue);
 }
 
-module_init(test_init);
-module_exit(test_exit);
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("videobuf2 mmap PPPS regression fixture");
+PPPS_MISC_MODULE("vb2_mmap_ppps", &test_fops, 0600, test_setup, test_teardown,
+		 "videobuf2 mmap PPPS regression fixture");

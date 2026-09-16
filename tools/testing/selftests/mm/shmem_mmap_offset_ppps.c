@@ -1,27 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process mapping a huge=always tmpfs file from a 4K file
+ * offset gets an address that is PMD-aligned relative to that offset.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define THP_SIZE_PATH "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size"
 
 static unsigned long read_thp_size(void)
@@ -42,7 +31,7 @@ static unsigned long read_thp_size(void)
 	buffer[bytes] = '\0';
 	errno = 0;
 	size = strtoul(buffer, &end, 10);
-	if (errno || end == buffer || size < USER_PAGE_SIZE ||
+	if (errno || end == buffer || size < PROCESS_PAGE_SIZE ||
 	    (size & (size - 1)))
 		return 0;
 	return size;
@@ -51,18 +40,17 @@ static unsigned long read_thp_size(void)
 static int run_test(int fd, const char *mount_path)
 {
 	unsigned long thp_size = read_thp_size();
-	const off_t offset = USER_PAGE_SIZE;
+	const off_t offset = PROCESS_PAGE_SIZE;
 	size_t length;
 	void *mapping;
 	bool aligned;
 
+	ppps_require_compat();
 	if (!thp_size)
 		ksft_exit_skip("PMD THP size is unavailable\n");
 	length = 2 * thp_size;
 	ksft_print_header();
-	ksft_set_plan(3);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(2);
 	mapping = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED,
 		       fd, offset);
 	ksft_test_result(mapping != MAP_FAILED,
@@ -83,32 +71,20 @@ static int run_test(int fd, const char *mount_path)
 	ksft_finished();
 }
 
-static int exec_compat(int fd, const char *mount_path)
-{
-	char fd_string[32];
-	int persona;
-
-	persona = personality(0xffffffffUL);
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	snprintf(fd_string, sizeof(fd_string), "%d", fd);
-	execl("/proc/self/exe", "shmem_mmap_offset_ppps", "--run",
-	      fd_string, mount_path, NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
+/*
+ * The tmpfs mount and test file are prepared by the top-level invocation
+ * and handed to the compat re-exec as "--run <fd> <mount_path>".
+ */
 int main(int argc, char **argv)
 {
+	const char *mode = ppps_run_mode(argc, argv, NULL);
 	char mount_path[] = "./shmem-mmap-offset-ppps-XXXXXX";
 	char file_path[sizeof(mount_path) + 16];
+	char fd_string[32];
 	unsigned long thp_size;
 	int fd;
 
-	if (argc == 4 && !strcmp(argv[1], "--run"))
+	if (mode && argc == 4 && !strcmp(mode, PPPS_RUN_FLAG))
 		return run_test(atoi(argv[2]), argv[3]);
 	if (argc != 1)
 		return EXIT_FAILURE;
@@ -130,7 +106,8 @@ int main(int argc, char **argv)
 		ksft_exit_fail_msg("open %s failed: %s\n", file_path,
 				   strerror(errno));
 	unlink(file_path);
-	if (ftruncate(fd, USER_PAGE_SIZE + 2 * thp_size))
+	if (ftruncate(fd, PROCESS_PAGE_SIZE + 2 * thp_size))
 		ksft_exit_fail_msg("ftruncate failed: %s\n", strerror(errno));
-	return exec_compat(fd, mount_path);
+	snprintf(fd_string, sizeof(fd_string), "%d", fd);
+	exec_compat(argv[0], PPPS_RUN_FLAG, fd_string, mount_path, NULL);
 }

@@ -1,31 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat userfaultfd handler resolves a native (16K) owner's missing
+ * faults with a one-native-page UFFDIO_COPY and UFFDIO_ZEROPAGE, and the
+ * owner reads back all four source slices and the zeroed page.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/userfaultfd.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE	0x10000000
-#endif
-
-#define COMPAT_PAGE_SIZE	4096UL
-#define NATIVE_PAGE_SIZE	16384UL
 #define TEST_SIZE		(2 * NATIVE_PAGE_SIZE)
-#define SOURCE_ADDRESS		(0x40000000UL + COMPAT_PAGE_SIZE)
+#define SOURCE_ADDRESS		(0x40000000UL + PROCESS_PAGE_SIZE)
 #define TEST_VALUE		0x6b
 
 struct handler_report {
@@ -37,44 +27,6 @@ struct handler_report {
 	int zero_result;
 	int zero_error;
 };
-
-static bool write_full(int fd, const void *buffer, size_t length)
-{
-	const unsigned char *pos = buffer;
-
-	while (length) {
-		ssize_t written = write(fd, pos, length);
-
-		if (written < 0) {
-			if (errno == EINTR)
-				continue;
-			return false;
-		}
-		pos += written;
-		length -= written;
-	}
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t length)
-{
-	unsigned char *pos = buffer;
-
-	while (length) {
-		ssize_t bytes = read(fd, pos, length);
-
-		if (bytes < 0) {
-			if (errno == EINTR)
-				continue;
-			return false;
-		}
-		if (!bytes)
-			return false;
-		pos += bytes;
-		length -= bytes;
-	}
-	return true;
-}
 
 static bool buffer_is_value(const unsigned char *buffer, size_t length,
 			    unsigned char value)
@@ -139,16 +91,12 @@ static int exec_compat_handler(int uffd, unsigned long destination,
 	char destination_arg[32];
 	char report_fd_arg[16];
 	char uffd_arg[16];
-	int persona = personality(0xffffffffUL);
 
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
 	snprintf(uffd_arg, sizeof(uffd_arg), "%d", uffd);
 	snprintf(destination_arg, sizeof(destination_arg), "%lu", destination);
 	snprintf(report_fd_arg, sizeof(report_fd_arg), "%d", report_fd);
-	execl("/proc/self/exe", "userfaultfd_mixed_ppps", "--handler",
-	      uffd_arg, destination_arg, report_fd_arg, NULL);
+	ppps_execl(true, NULL, "--handler", uffd_arg, destination_arg,
+		   report_fd_arg, NULL);
 	return EXIT_FAILURE;
 }
 
@@ -206,7 +154,7 @@ static int run_native_owner(void)
 	waitpid(handler, &handler_status, 0);
 	ksft_print_msg("owner page size=%ld, handler page size=%ld\n",
 		       sysconf(_SC_PAGESIZE), report.page_size);
-	ksft_test_result(report.page_size == COMPAT_PAGE_SIZE,
+	ksft_test_result(report.page_size == PROCESS_PAGE_SIZE,
 			 "start a 4K compat userfaultfd handler\n");
 	ksft_test_result(!report.copy_result &&
 			 report.copied == NATIVE_PAGE_SIZE,
@@ -237,24 +185,15 @@ static int run_native_owner(void)
 	ksft_finished();
 }
 
-static int exec_native_owner(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
-	execl("/proc/self/exe", "userfaultfd_mixed_ppps", "--owner", NULL);
-	return EXIT_FAILURE;
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_native_owner();
-	if (argc == 2 && !strcmp(argv[1], "--owner"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_native(argv[0], "--owner", NULL);
+	if (argc == 2 && !strcmp(mode, "--owner"))
 		return run_native_owner();
-	if (argc == 5 && !strcmp(argv[1], "--handler"))
+	if (argc == 5 && !strcmp(mode, "--handler"))
 		return run_compat_handler(atoi(argv[2]),
 					  strtoul(argv[3], NULL, 10),
 					  atoi(argv[4]));
