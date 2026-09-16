@@ -987,7 +987,7 @@ static unsigned long mremap_get_unmapped_area(struct file *file,
 static pgoff_t mremap_pgoff(struct vm_area_struct *vma, unsigned long addr)
 {
 	if (vma->vm_file) {
-		loff_t offset = vma_file_offset(vma) + addr - vma->vm_start;
+		loff_t offset = vma_addr_file_offset(vma, addr);
 
 		return offset >> MM_PAGE_SHIFT(vma->vm_mm);
 	}
@@ -1236,16 +1236,15 @@ static void unmap_source_vma(struct vma_remap_struct *vrm)
 static int copy_vma_and_data(struct vma_remap_struct *vrm,
 			     struct vm_area_struct **new_vma_ptr)
 {
-	pgoff_t new_pgoff = vma_pgoff_offset(vrm->vma, vrm->addr);
-	unsigned int new_slice_off = vma_slice_offset(vrm->vma, vrm->addr);
 	unsigned long moved_len;
 	struct vm_area_struct *vma = vrm->vma;
 	struct vm_area_struct *new_vma;
+	struct ppps_mremap_folios *ppps_folios;
 	int err = 0;
 	PAGETABLE_MOVE(pmc, NULL, NULL, vrm->addr, vrm->new_addr, vrm->old_len);
 
-	new_vma = copy_vma(&vma, vrm->new_addr, vrm->new_len, new_pgoff,
-			   new_slice_off, &pmc.need_rmap_locks);
+	new_vma = copy_vma(&vma, vrm->new_addr, vrm->new_len, vrm->addr,
+			   &pmc.need_rmap_locks);
 	if (!new_vma) {
 		vrm_uncharge(vrm);
 		*new_vma_ptr = NULL;
@@ -1259,12 +1258,25 @@ static int copy_vma_and_data(struct vma_remap_struct *vrm,
 	pmc.old = vma;
 	pmc.new = new_vma;
 
+	ppps_folios = ppps_anon_mremap_prepare(vma, vrm->addr,
+						vrm->new_addr, vrm->old_len);
+	if (IS_ERR(ppps_folios)) {
+		err = PTR_ERR(ppps_folios);
+		ppps_folios = NULL;
+		moved_len = 0;
+		goto revert;
+	}
 	moved_len = move_page_tables(&pmc);
 	if (moved_len < vrm->old_len)
 		err = -ENOMEM;
-	else if (vma->vm_ops && vma->vm_ops->mremap)
+	if (!err && vma->vm_ops && vma->vm_ops->mremap)
 		err = vma->vm_ops->mremap(new_vma);
+	/* No fallible operation may follow a committed slice rearrangement. */
+	if (!err && ppps_vma_shares_tuple(new_vma))
+		err = ppps_anon_reslice_range(vma->vm_mm, vrm->addr,
+					      vrm->new_addr, vrm->old_len);
 
+revert:
 	if (unlikely(err)) {
 		PAGETABLE_MOVE(pmc_revert, new_vma, vma, vrm->new_addr,
 			       vrm->addr, moved_len);
@@ -1284,6 +1296,7 @@ static int copy_vma_and_data(struct vma_remap_struct *vrm,
 		mremap_userfaultfd_prep(new_vma, vrm->uf);
 	}
 
+	ppps_anon_mremap_finish(ppps_folios);
 	fixup_hugetlb_reservations(vma);
 
 	*new_vma_ptr = new_vma;
