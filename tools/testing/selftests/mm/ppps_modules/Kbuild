@@ -23,3 +23,4 @@ obj-m += vb2_userptr_ppps_module.o
 endif
 endif
 obj-m += sg_page_slices_ppps_module.o
+obj-m += vmalloc_align_ppps_module.o
