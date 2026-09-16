@@ -1450,3 +1450,207 @@ void ppps_anon_swapin_install(const struct ppps_anon_swapin_ctx *ctx,
 /*
  * Write protection faults
  */
+
+void ppps_anon_unmap_begin(struct ppps_anon_unmap_ctx *ctx,
+		struct vm_area_struct *vma, struct folio *folio,
+		unsigned long *address, unsigned long *end)
+{
+	*ctx = (struct ppps_anon_unmap_ctx) {
+		.compat = ppps_mm_is_compat(vma->vm_mm) &&
+			  folio_test_ppps_compat_anon(folio),
+		.last = true,
+	};
+	if (ctx->compat) {
+		*address = ppps_tuple_base(vma, *address);
+		/* Sharing write-protects every alias, including adjacent VMAs. */
+		*end = *address + PAGE_SIZE;
+	}
+}
+
+/**
+ * ppps_anon_unmap_sample - sample exclusivity before clearing a PTE
+ * @ctx: state of the current folio/VMA walk
+ * @folio: folio containing @subpage
+ * @subpage: native subpage selected by the present PTE
+ * @pvmw: current locked PTE walk, including the VMA and address
+ *
+ * Caller holds the tuple PTL. Write-protect all present aliases before the
+ * first share; no rmap, reference or counter changes. After the first
+ * successful share, retain the pre-share answer for its siblings.
+ * Across VMA callbacks, recover that answer from migration entries of this
+ * same folio under the tuple PTL, without sharing the folio a second time.
+ * Ordinary swap entries do not establish migration exclusivity.
+ *
+ * Return: exclusivity to encode in this slice's swap/migration entry.
+ */
+bool ppps_anon_unmap_sample(struct ppps_anon_unmap_ctx *ctx,
+		struct folio *folio, struct page *subpage,
+		struct page_vma_mapped_walk *pvmw)
+{
+	pte_t *base_ptep;
+	unsigned int i;
+
+	if (!ctx->compat)
+		return folio_test_anon(folio) && PageAnonExclusive(subpage);
+	VM_BUG_ON_FOLIO(subpage != &folio->page, folio);
+	if (ctx->shared)
+		return ctx->exclusive;
+	ctx->exclusive = PageAnonExclusive(&folio->page);
+	if (ctx->exclusive) {
+		unsigned long base = ppps_tuple_base(pvmw->vma, pvmw->address);
+		bool changed = false;
+
+		/*
+		 * Every slice shares PageAnonExclusive.  GUP-fast must see
+		 * a PTE change (or a read-only, nonexclusive mapping) before
+		 * the caller shares the folio.  Keep these PTEs read-only
+		 * even if this walk aborts after sharing an earlier slice.
+		 */
+		base_ptep = ppps_tuple_base_ptep(pvmw->vma, pvmw->pte,
+						pvmw->address);
+		for (i = 0; base_ptep && i < PPPS_SLICES_PER_PAGE; i++) {
+			pte_t pte = ptep_get(base_ptep + i);
+
+			if (ppps_anon_pte_folio(pte) != folio || !pte_write(pte))
+				continue;
+			ptep_set_wrprotect(pvmw->vma->vm_mm,
+					   base + i * PAGE_SIZE_COMPAT,
+					   base_ptep + i);
+			changed = true;
+		}
+		if (changed)
+			flush_tlb_range(pvmw->vma, base, base + PAGE_SIZE);
+		return true;
+	}
+
+	/* A preceding VMA may already have shared this tuple for migration. */
+	base_ptep = ppps_tuple_base_ptep(pvmw->vma, pvmw->pte, pvmw->address);
+	for (i = 0; base_ptep && i < PPPS_SLICES_PER_PAGE; i++) {
+		pte_t pte = ptep_get(base_ptep + i);
+		swp_entry_t entry;
+
+		if (pte_present(pte) || pte_none(pte))
+			continue;
+		entry = pte_to_swp_entry(pte);
+		if (!is_migration_entry(entry) ||
+		    pfn_swap_entry_folio(entry) != folio)
+			continue;
+		ctx->exclusive = !is_readable_migration_entry(entry);
+		ctx->shared = true;
+		break;
+	}
+	return ctx->exclusive;
+}
+
+/**
+ * ppps_anon_unmap_clear - record ownership after clearing a PTE
+ * @ctx: state of the current folio/VMA walk
+ * @vma: VMA of the cleared PTE
+ * @folio: folio formerly mapped by the PTE
+ * @ptep: cleared PTE, still under the caller's PTL
+ * @address: address of @ptep
+ *
+ * Only records whether this was the last present slice of (mm, tuple, folio).
+ * The caller still owns PTE replacement/restoration, RSS and the successful
+ * remove_rmap -> mlock_drain_local -> folio_put tail. On abort, restore the
+ * PTE and discard this result: do not execute that successful tail.
+ */
+void ppps_anon_unmap_clear(struct ppps_anon_unmap_ctx *ctx,
+		struct vm_area_struct *vma, struct folio *folio,
+		pte_t *ptep, unsigned long address)
+{
+	if (ctx->compat) {
+		VM_BUG_ON_FOLIO(!pte_none(ptep_get(ptep)), folio);
+		ctx->last = ppps_anon_slice_last(vma, folio, ptep, address);
+	}
+}
+
+/**
+ * ppps_anon_unmap_last - query the successful clear's rmap/RSS ownership
+ * @ctx: state sampled by ppps_anon_unmap_clear(), not an aborted clear
+ *
+ * Return: true for native walks, or the last present compat slice.
+ */
+bool ppps_anon_unmap_last(const struct ppps_anon_unmap_ctx *ctx)
+{
+	return ctx->last;
+}
+
+/**
+ * ppps_anon_unmap_can_batch - test whether native batching is permitted
+ * @ctx: initialized walk state
+ *
+ * Compat aliases share one rmap/reference. Invalidate each alias synchronously
+ * before the last one releases it. This also excludes native PTE batching.
+ * No changes to PTEs, locks, references or counters.
+ *
+ * Return: true for native walks only.
+ */
+bool ppps_anon_unmap_can_batch(const struct ppps_anon_unmap_ctx *ctx)
+{
+	return !ctx->compat;
+}
+
+/**
+ * ppps_anon_unmap_needs_share - decide whether to run the rmap share step
+ * @ctx: current walk state, with exclusivity already sampled under the PTL
+ *
+ * Return: true for native walks or a tuple not yet successfully shared.
+ * Caller must also test its sampled anon_exclusive value. No side effects.
+ */
+bool ppps_anon_unmap_needs_share(const struct ppps_anon_unmap_ctx *ctx)
+{
+	return !ctx->compat || !ctx->shared;
+}
+
+/**
+ * ppps_anon_unmap_commit_share - commit the successful rmap share step
+ * @ctx: current walk state
+ *
+ * Call under the PTL, after clearing the PTE and successfully completing the
+ * conditional folio_try_share_anon_rmap_pte(). Never call on its abort path.
+ * Only updates private state; the caller owns all PTE/ref/rmap/RSS changes.
+ */
+void ppps_anon_unmap_commit_share(struct ppps_anon_unmap_ctx *ctx)
+{
+	if (ctx->compat)
+		ctx->shared = true;
+}
+
+/**
+ * ppps_anon_fault_anon_prepare - prepare a missing anonymous slice/run
+ * @vmf: revalidated fault with the PTE mapped and PTL held
+ * @foliop: charged, uptodate preallocation; replaced on reuse
+ * @nr_pages: process-PTE count, adjusted for a new compat run
+ * @addr: run start, adjusted with vmf->pte for a new compat run
+ *
+ * Does not install PTEs, alter RSS/rmap/LRU, or release the PTL. On reuse,
+ * clears the selected slice and puts the preallocation; the existing tuple's
+ * reference/rmap/RSS continue to own the returned folio. Otherwise the caller
+ * still owns its preallocation and must establish reference/rmap/RSS/LRU.
+ * Both results continue to generic PTE installation. Native inputs unchanged.
+ *
+ * Return: true if an existing folio was reused, not "fault handled".
+ */
+bool ppps_anon_fault_anon_prepare(struct vm_fault *vmf, struct folio **foliop,
+		int *nr_pages, unsigned long *addr)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct folio *folio;
+
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return false;
+	lockdep_assert_held(vmf->ptl);
+	VM_BUG_ON(pte_present(ptep_get(vmf->pte)));
+	folio = ppps_anon_hole_fill_folio(vma, vmf->pte, *addr, NULL);
+	if (folio) {
+		ppps_anon_clear_slice(vma, folio, *addr);
+		folio_put(*foliop);
+		*foliop = folio;
+		return true;
+	}
+	*nr_pages = ppps_anon_installable_run(vma, vmf->pte, *addr, addr);
+	VM_BUG_ON(*nr_pages < 1 || *nr_pages > PPPS_SLICES_PER_PAGE);
+	vmf->pte -= (vmf->address - *addr) >> PAGE_SHIFT_COMPAT;
+	return false;
+}
