@@ -108,13 +108,6 @@ static inline pgoff_t vma_pgoff_offset(struct vm_area_struct *vma,
 	return vma_linear_page_index(vma, addr);
 }
 
-/* Stored offsets are meaningful only for sliced file/shared VMAs. */
-static inline unsigned int vma_slice_offset(const struct vm_area_struct *vma,
-                                           unsigned long addr)
-{
-	return ppps_vma_has_slices(vma) ? vma_address_to_slice(vma, addr) : 0;
-}
-
 #define VMG_STATE(name, mm_, vmi_, start_, end_, flags_, pgoff_)	\
 	struct vma_merge_struct name = {				\
 		.mm = mm_,						\
@@ -139,7 +132,7 @@ static inline unsigned int vma_slice_offset(const struct vm_area_struct *vma,
 		.end = end_,					\
 		.flags = vma_->vm_flags,			\
 		.pgoff = vma_pgoff_offset(vma_, start_),	\
-		.slice_off = vma_slice_offset(vma_, start_),	\
+		.slice_off = vma_offset_at(vma_, start_).slice,	\
 		.file = vma_->vm_file,				\
 		.anon_vma = vma_->anon_vma,			\
 		.policy = vma_policy(vma_),			\

@@ -1033,10 +1033,11 @@ static inline bool vma_is_anonymous(struct vm_area_struct *vma)
 	return !vma->vm_ops;
 }
 
-/* Compat file/shared VMAs are the only ones whose PTEs carry vm_slice_off. */
+/* File/shared offsets stay sliced, even before ->mmap installs vm_ops. */
 static inline bool ppps_vma_has_slices(const struct vm_area_struct *vma)
 {
-	return ppps_mm_is_compat(vma->vm_mm) && vma->vm_ops;
+	return ppps_mm_is_compat(vma->vm_mm) &&
+		(vma->vm_file || vma->vm_ops || (vma->vm_flags & VM_SHARED));
 }
 
 /* Which process-page slice of its native page does @address map?  0 natively. */
@@ -1045,7 +1046,7 @@ static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma
 {
 	if (!ppps_mm_is_compat(vma->vm_mm))
 		return 0;
-	if (!vma->vm_ops)	/* anonymous: sliced by address alone */
+	if (!ppps_vma_has_slices(vma)) /* anonymous: sliced by address alone */
 		return (address >> PAGE_SHIFT_COMPAT) & PPPS_SLICE_MASK;
 	return (((address - vma->vm_start) >> PAGE_SHIFT_COMPAT) +
 		vma_slice_off(vma)) & PPPS_SLICE_MASK;
@@ -1096,6 +1097,75 @@ static inline unsigned int vma_offset_to_slice(const struct vm_area_struct *vma,
 	if (!ppps_mm_is_compat(vma->vm_mm))
 		return 0;
 	return (off & ~PAGE_MASK) >> PAGE_SHIFT_COMPAT;
+}
+
+/*
+ * Complete stored VMA offset. Use byte-addressed helpers below to manipulate
+ * it; the pair also preserves full-width pgoff values when saving/restoring
+ * driver-specific offset encodings. No conversion through loff_t is needed.
+ */
+struct vma_offset {
+	pgoff_t pgoff;
+	unsigned int slice;
+};
+
+static inline struct vma_offset vma_get_offset(const struct vm_area_struct *vma)
+{
+	return (struct vma_offset){ vma->vm_pgoff, vma_slice_off(vma) };
+}
+
+/* Caller owns an unpublished VMA or holds the locks for changing its offset. */
+static inline void vma_set_offset(struct vm_area_struct *vma,
+				  struct vma_offset offset)
+{
+	vma->vm_pgoff = offset.pgoff;
+	vma_set_slice_off(vma, offset.slice);
+}
+
+/* Advance by process-page-aligned bytes, keeping pgoff full-width. */
+static inline struct vma_offset vma_offset_advance(struct mm_struct *mm,
+						   struct vma_offset offset,
+						   bool sliced,
+						   unsigned long bytes)
+{
+	unsigned long pages = bytes >> MM_PAGE_SHIFT(mm);
+
+	if (sliced) {
+		pages += offset.slice;
+		offset.slice = pages & PPPS_SLICE_MASK;
+		pages >>= PPPS_SLICE_SHIFT;
+	}
+	offset.pgoff += pages;
+	return offset;
+}
+
+/* Offset at a process-page-aligned address in a VMA, including its end. */
+static inline struct vma_offset vma_offset_at(const struct vm_area_struct *vma,
+					      unsigned long address)
+{
+	return (struct vma_offset){
+		vma_linear_page_index(vma, address),
+		ppps_vma_has_slices(vma) ? vma_address_to_slice(vma, address) : 0,
+	};
+}
+
+/*
+ * Set a file/object offset in bytes, including before ->mmap installs vm_ops.
+ * Anonymous indices and driver selectors are not file offsets: use their
+ * own domain helpers, or vma_get/set_offset() for a lossless save/restore.
+ * Failure leaves both fields unchanged.
+ */
+static inline int vma_set_file_offset(struct vm_area_struct *vma, u64 bytes)
+{
+	if (!IS_ALIGNED(bytes, MM_PAGE_SIZE(vma->vm_mm)))
+		return -EINVAL;
+	if ((bytes >> PAGE_SHIFT) > ULONG_MAX)
+		return -EOVERFLOW;
+	vma_set_offset(vma, (struct vma_offset){
+				    bytes >> PAGE_SHIFT,
+				    vma_offset_to_slice(vma, bytes),
+			    });
+	return 0;
 }
 
 /*
@@ -2083,22 +2153,8 @@ static inline struct folio *pfn_folio(unsigned long pfn)
 	return page_folio(pfn_to_page(pfn));
 }
 
-/*
- * folio_mk_pte_slice - Construct a PTE pointing to a specific subpage slice
- * @folio: the backing folio
- * @pte: the base PTE (aligned to host page)
- * @slice_idx: the index of the subpage slice within the host page
- *
- * Preserve the native page selected by the base PTE and adjust its physical
- * address to the requested process-page slice.
- */
-static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
-				       unsigned int slice_idx)
-{
-	return pte_mkslice(pte, slice_idx);
-}
-
 #ifdef CONFIG_MMU
+/* @pte re-pointed at the slice that @addr maps in @vma (see pte_mkslice()). */
 static inline pte_t vma_pte_mkslice(const struct vm_area_struct *vma, pte_t pte,
 				    unsigned long addr)
 {
@@ -3732,7 +3788,7 @@ extern unsigned long stack_guard_gap;
 
 static inline unsigned long mm_stack_guard_gap(const struct mm_struct *mm)
 {
-	return (stack_guard_gap >> PAGE_SHIFT) << MM_UAPI_PAGE_SHIFT(mm);
+	return (stack_guard_gap >> PAGE_SHIFT) << MM_PAGE_SHIFT(mm);
 }
 
 /* Generic expand stack which grows the stack according to GROWS{UP,DOWN} */
@@ -3830,7 +3886,7 @@ static inline unsigned long vma_native_pages(const struct vm_area_struct *vma)
 /* log2 of the unit vm_pgoff counts in: process pages for anonymous VMAs. */
 static inline unsigned int vma_pgoff_shift(const struct vm_area_struct *vma)
 {
-	return vma->vm_ops ? PAGE_SHIFT : MM_PAGE_SHIFT(vma->vm_mm);
+	return ppps_vma_has_slices(vma) ? PAGE_SHIFT : MM_PAGE_SHIFT(vma->vm_mm);
 }
 
 /*

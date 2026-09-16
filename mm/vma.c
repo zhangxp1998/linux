@@ -394,7 +394,7 @@ static int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	} else {
 		new->vm_start = addr;
 		new->vm_pgoff = vma_pgoff_offset(vma, addr);
-		vma_set_slice_off(new, vma_slice_offset(vma, addr));
+		vma_set_slice_off(new, vma_address_to_slice(vma, addr));
 	}
 
 	err = -ENOMEM;
@@ -442,7 +442,7 @@ static int __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	if (new_below) {
 		vma->vm_start = addr;
 		vma->vm_pgoff = vma_pgoff_offset(new, addr);
-		vma_set_slice_off(vma, vma_slice_offset(new, addr));
+		vma_set_slice_off(vma, vma_address_to_slice(new, addr));
 	} else {
 		vma->vm_end = addr;
 	}
@@ -1784,12 +1784,14 @@ out:
  */
 static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *b)
 {
+	struct vma_offset end = vma_offset_at(a, b->vm_start);
+
 	return a->vm_end == b->vm_start &&
 		mpol_equal(vma_policy(a), vma_policy(b)) &&
 		a->vm_file == b->vm_file &&
 		!((a->vm_flags ^ b->vm_flags) & ~(VM_ACCESS_FLAGS | VM_SOFTDIRTY)) &&
-		b->vm_pgoff == a->vm_pgoff +
-			((b->vm_start - a->vm_start) >> MM_PAGE_SHIFT(a->vm_mm));
+		b->vm_pgoff == end.pgoff &&
+		(!ppps_vma_has_slices(a) || vma_slice_off(b) == end.slice);
 }
 
 /*

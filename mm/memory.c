@@ -5569,9 +5569,8 @@ fallback:
 
 unlock:
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
-	if (!ret && vma->vm_file && ppps_mm_is_compat(vma->vm_mm) &&
-	    folio_test_large(folio) && !folio_test_anon(folio))
-		mlock_vma_folio_if_fully_mapped(folio, vma);
+	if (!ret)
+		ppps_file_fault_mlock(vma, folio);
 	return ret;
 }
 

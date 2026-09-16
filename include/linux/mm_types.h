@@ -1570,35 +1570,4 @@ enum {
 	/* See also internal only FOLL flags in mm/internal.h */
 };
 
-#ifndef _LINUX_PPPS_VMA_INDEX_H
-#define _LINUX_PPPS_VMA_INDEX_H
-#ifndef __ASSEMBLY__
-#include <linux/ppps.h>
-
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-static inline unsigned int address_to_slice(struct mm_struct *mm,
-					    unsigned long address,
-					    unsigned long vm_start,
-					    unsigned int vm_slice_off)
-{
-	if (!ppps_mm_is_compat(mm))
-		return 0;
-
-	return (((address - vm_start) >> PAGE_SHIFT_COMPAT) + vm_slice_off) &
-		PPPS_SLICE_MASK;
-}
-
-#else
-static inline unsigned int address_to_slice(struct mm_struct *mm,
-					    unsigned long address,
-					    unsigned long vm_start,
-					    unsigned int vm_slice_off)
-{
-	return 0;
-}
-
-#endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
-#endif /* __ASSEMBLY__ */
-#endif /* _LINUX_PPPS_VMA_INDEX_H */
-
 #endif /* _LINUX_MM_TYPES_H */
