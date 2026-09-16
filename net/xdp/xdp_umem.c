@@ -94,7 +94,11 @@ void xdp_put_umem(struct xdp_umem *umem, bool defer_cleanup)
 static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 {
 	struct mm_struct *mm = current->mm;
+	struct page_span span;
 	unsigned int gup_flags = FOLL_WRITE;
+	unsigned int pin_flags = gup_flags | FOLL_LONGTERM;
+	unsigned long len = umem->size;
+	unsigned long nr = umem->npgs;
 	long npgs;
 	int err;
 
@@ -104,27 +108,25 @@ static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 	if (!umem->pgs)
 		return -ENOMEM;
 
-	mmap_read_lock(mm);
 	if (ppps_mm_is_compat(mm)) {
-		struct vm_area_struct *vma = vma_lookup(mm, address);
-
-		/* vmap() cannot compensate for a subpage backing offset. */
-		if (!vma || vma_address_to_slice(vma, address)) {
+		/* Capture the backing offset under the same lock as the pin. */
+		npgs = pin_user_pages_range(mm, address, len, nr, pin_flags, umem->pgs, &span);
+		if (npgs > 0 && span.offset) {
+			unpin_user_pages(umem->pgs, npgs);
 			npgs = -EOPNOTSUPP;
-			goto unlock;
 		}
+	} else {
+		mmap_read_lock(mm);
+		npgs = pin_user_pages(address, umem->npgs, pin_flags, umem->pgs);
+		mmap_read_unlock(mm);
 	}
-	npgs = pin_user_pages(address, umem->npgs,
-			      gup_flags | FOLL_LONGTERM, &umem->pgs[0]);
-unlock:
-	mmap_read_unlock(mm);
 
 	if (npgs > 0 && ppps_mm_is_compat(mm)) {
 		long i;
 
 		/* A packed anonymous tuple maps address-selected slices. */
 		for (i = 0; i < npgs; i++) {
-			if (!folio_test_ppps_packed_anon(page_folio(umem->pgs[i])))
+			if (!folio_test_ppps_compat_anon(page_folio(umem->pgs[i])))
 				continue;
 			unpin_user_pages(umem->pgs, npgs);
 			npgs = -EOPNOTSUPP;
