@@ -57,15 +57,24 @@ module_name=$(basename "$ko" .ko)
 
 cleanup()
 {
+	status=$?
+	trap - EXIT
 	if [ -n "$created_device" ]; then
 		rm -f "$device"
 	fi
 	if [ -n "$loaded" ]; then
-		rmmod "$module_name" >/dev/null 2>&1 || true
+		if ! rmmod "$module_name"; then
+			echo "$0: failed to unload $module_name" >&2
+			status=1
+		fi
 	fi
 	for dep in $loaded_deps; do
-		rmmod "$dep" >/dev/null 2>&1 || true
+		if ! rmmod "$dep"; then
+			echo "$0: failed to unload $dep" >&2
+			status=1
+		fi
 	done
+	exit "$status"
 }
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -92,6 +101,8 @@ fi
 trap cleanup EXIT
 
 for dep in $deps; do
+	# Do not remove a dependency that was loaded before this invocation.
+	[ -d "/sys/module/$(echo "$dep" | tr - _)" ] && continue
 	if [ -f "./$dep.ko" ]; then
 		insmod "./$dep.ko" || exit 1
 	elif command -v modprobe >/dev/null 2>&1; then
