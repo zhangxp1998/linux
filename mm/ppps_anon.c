@@ -400,7 +400,7 @@ bool ppps_anon_tuple_is_complete(struct vm_area_struct *vma,
  * a fresh folio can populate in one go.  Returns its length and sets @base
  * to its first address.
  */
-int ppps_anon_installable_run(struct vm_area_struct *vma, pte_t *ptep,
+static int ppps_anon_installable_run(struct vm_area_struct *vma, pte_t *ptep,
 			      unsigned long address, unsigned long *base)
 {
 	unsigned long tuple_base = ppps_tuple_base(vma, address);
@@ -442,7 +442,12 @@ int ppps_anon_installable_run(struct vm_area_struct *vma, pte_t *ptep,
  */
 bool ppps_anon_try_reuse_folio(struct folio *folio, struct vm_area_struct *vma)
 {
-	return false;
+	if (PageAnonExclusive(&folio->page))
+		return true;
+	if (!wp_can_reuse_anon_folio(folio, vma))
+		return false;
+	SetPageAnonExclusive(&folio->page);
+	return true;
 }
 
 /*
@@ -1507,6 +1512,237 @@ void ppps_anon_swapin_install(const struct ppps_anon_swapin_ctx *ctx,
  * Write protection faults
  */
 
+enum ppps_anon_wp_type ppps_anon_wp_type(struct vm_area_struct *vma,
+					 struct folio *folio, pte_t pte)
+{
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return PPPS_ANON_WP_NONE;
+	if (folio && folio_test_ppps_compat_anon(folio))
+		return PPPS_ANON_WP_COMPAT;
+	if (!folio && vma_is_anonymous(vma) && is_zero_pfn(pte_pfn(pte)))
+		return PPPS_ANON_WP_ZERO;
+	return PPPS_ANON_WP_NONE;
+}
+
+/* Zero page inside a compat tuple: fill the hole or start a new tuple. */
+static vm_fault_t ppps_wp_zero_tuple_copy(struct vm_fault *vmf)
+{
+	const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
+	struct vm_area_struct *vma = vmf->vma;
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned long address = vmf->address;
+	struct folio *tuple_folio;
+	struct folio *new_folio;
+	struct mmu_notifier_range range;
+	spinlock_t *ptl; /* Protects the faulting PTE and tuple lookup. */
+	pte_t entry;
+	pte_t *ptep;
+	vm_fault_t ret;
+
+	delayacct_wpcopy_start();
+	ret = vmf_anon_prepare(vmf);
+	if (ret)
+		goto out;
+
+	new_folio = ppps_folio_prealloc(mm, vma, address, true);
+	if (!new_folio) {
+		ret = VM_FAULT_OOM;
+		goto out;
+	}
+	__folio_mark_uptodate(new_folio);
+
+	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm, address,
+				address + PAGE_SIZE_COMPAT);
+	mmu_notifier_invalidate_range_start(&range);
+
+	ptep = pte_offset_map_lock(mm, vmf->pmd, address, &ptl);
+	if (!ptep || !pte_same(ptep_get(ptep), vmf->orig_pte)) {
+		if (ptep)
+			pte_unmap_unlock(ptep, ptl);
+		mmu_notifier_invalidate_range_end(&range);
+		folio_put(new_folio);
+		ret = 0;
+		goto out;
+	}
+
+	tuple_folio = ppps_anon_hole_fill_folio(vma, ptep, address);
+	if (tuple_folio) {
+		ppps_anon_clear_slice(vma, tuple_folio, address);
+		folio_put(new_folio);
+		new_folio = tuple_folio;
+	}
+	ptep_clear_flush(vma, address, ptep);
+	ksm_might_unmap_zero_page(mm, vmf->orig_pte);
+	if (!tuple_folio) {
+		add_mm_counter(mm, MM_ANONPAGES, folio_nr_pages(new_folio));
+		folio_add_new_anon_rmap(new_folio, vma, address,
+					RMAP_EXCLUSIVE);
+		folio_add_lru_vma(new_folio, vma);
+	}
+	entry = vma_pte_mkslice(vma, mk_pte(&new_folio->page, vma->vm_page_prot), address);
+	entry = ppps_pte_inherit(pte_sw_mkyoung(entry), vmf->orig_pte);
+	if (!unshare)
+		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+	else
+		entry = pte_wrprotect(entry);
+	set_pte_at(mm, address, ptep, entry);
+	update_mmu_cache_range(vmf, vma, address, ptep, 1);
+
+	pte_unmap_unlock(ptep, ptl);
+	mmu_notifier_invalidate_range_end(&range);
+	ret = 0;
+out:
+	delayacct_wpcopy_end();
+	return ret;
+}
+
+/*
+ * Copy a whole packed tuple.  Every present slice of @old_folio in this
+ * tuple moves to the copy so the (mm, tuple) keeps a single folio.
+ */
+static vm_fault_t ppps_wp_compat_copy(struct vm_fault *vmf,
+				      struct folio *old_folio)
+{
+	const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
+	const int nr_ptes = PPPS_SLICES_PER_PAGE;
+	struct vm_area_struct *vma = vmf->vma;
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned long base = ppps_tuple_base(vma, vmf->address);
+	unsigned int fault_slice = vma_address_to_slice(vma, vmf->address);
+	struct folio *new_folio;
+	struct mmu_notifier_range range;
+	pte_t old_ptes[PPPS_SLICES_PER_PAGE];
+	bool mapped[PPPS_SLICES_PER_PAGE] = {};
+	spinlock_t *ptl; /* Protects the complete packed tuple. */
+	pte_t *ptep;
+	int i;
+
+	delayacct_wpcopy_start();
+	new_folio = ppps_folio_prealloc(mm, vma, vmf->address, false);
+	if (!new_folio) {
+		folio_put(old_folio);
+		delayacct_wpcopy_end();
+		return VM_FAULT_OOM;
+	}
+
+	if (copy_mc_user_highpage(&new_folio->page, &old_folio->page,
+				  base, vma)) {
+		folio_put(new_folio);
+		folio_put(old_folio);
+		delayacct_wpcopy_end();
+		return VM_FAULT_HWPOISON;
+	}
+	kmsan_copy_page_meta(&new_folio->page, &old_folio->page);
+	__folio_mark_uptodate(new_folio);
+
+	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm, base,
+				base + PAGE_SIZE);
+	mmu_notifier_invalidate_range_start(&range);
+
+	ptep = pte_offset_map_lock(mm, vmf->pmd, base, &ptl);
+	if (!ptep || !pte_same(ptep_get(ptep + fault_slice),
+				       vmf->orig_pte)) {
+		if (ptep)
+			pte_unmap_unlock(ptep, ptl);
+		mmu_notifier_invalidate_range_end(&range);
+		folio_put(new_folio);
+		folio_put(old_folio);
+		delayacct_wpcopy_end();
+		return 0;
+	}
+
+	for (i = 0; i < nr_ptes; i++) {
+		old_ptes[i] = ptep_get(ptep + i);
+		mapped[i] = ppps_anon_pte_folio(old_ptes[i]) == old_folio;
+	}
+	if (!mapped[fault_slice]) {
+		pte_unmap_unlock(ptep, ptl);
+		mmu_notifier_invalidate_range_end(&range);
+		folio_put(new_folio);
+		folio_put(old_folio);
+		delayacct_wpcopy_end();
+		return 0;
+	}
+	flush_cache_range(vma, max(base, vma->vm_start),
+			  min(base + PAGE_SIZE, vma->vm_end));
+	for (i = 0; i < nr_ptes; i++) {
+		unsigned long address;
+
+		if (!mapped[i])
+			continue;
+		address = base + i * PAGE_SIZE_COMPAT;
+		ptep_clear_flush(vma, address, ptep + i);
+	}
+
+	/*
+	 * The copy is packed because its source was, whatever this VMA's
+	 * flags say today; mark it before the rmap picks a folio index.
+	 */
+	folio_set_ppps_compat_anon(new_folio);
+	folio_add_new_anon_rmap(new_folio, vma, vmf->address, RMAP_EXCLUSIVE);
+	folio_add_lru_vma(new_folio, vma);
+
+	for (i = 0; i < nr_ptes; i++) {
+		unsigned long address = base + i * PAGE_SIZE_COMPAT;
+		pte_t entry;
+
+		if (!mapped[i])
+			continue;
+		/*
+		 * Preserve per-slice protection across VMA splits without
+		 * requiring the mmap lock in the per-VMA-lock fault path.
+		 */
+		entry = pte_mkslice(mk_pte(&new_folio->page, pte_pgprot(old_ptes[i])), i);
+		entry = ppps_pte_inherit(entry, old_ptes[i]);
+		if (i == fault_slice && !unshare)
+			entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+		else if (!pte_write(old_ptes[i]))
+			entry = pte_wrprotect(entry);
+
+		set_pte_at(mm, address, ptep + i, entry);
+		update_mmu_cache_range(vmf, vma, address, ptep + i, 1);
+	}
+
+	/* Every mapped slice of @old_folio was cleared above. */
+	ppps_anon_slice_unmap(vma, old_folio, ptep + fault_slice,
+			      base + fault_slice * PAGE_SIZE_COMPAT);
+	pte_unmap_unlock(ptep, ptl);
+	mmu_notifier_invalidate_range_end(&range);
+
+	free_swap_cache(old_folio);
+	folio_put(old_folio);
+	delayacct_wpcopy_end();
+	return 0;
+}
+
+/*
+ * Called from do_wp_page() with the old folio referenced and the PTE lock
+ * dropped, exactly like wp_page_copy().
+ */
+vm_fault_t ppps_anon_wp_copy(struct vm_fault *vmf, struct folio *folio,
+			     enum ppps_anon_wp_type type)
+{
+	switch (type) {
+	case PPPS_ANON_WP_COMPAT:
+		return ppps_wp_compat_copy(vmf, folio);
+	case PPPS_ANON_WP_ZERO:
+		return ppps_wp_zero_tuple_copy(vmf);
+	default:
+		return wp_page_copy(vmf);
+	}
+}
+
+/**
+ * ppps_anon_unmap_begin - initialize one folio/VMA reverse-map walk
+ * @ctx: private state, reinitialized for every walk
+ * @vma: VMA protected by the caller's rmap lock
+ * @folio: locked folio with a reference held by the caller
+ * @address: notifier start, narrowed for compat anonymous folios
+ * @end: notifier end, narrowed with @address
+ *
+ * No PTE, reference or accounting changes. Native walks retain their range
+ * and the neutral last=true result, including paths which bypass PTEs.
+ */
 void ppps_anon_unmap_begin(struct ppps_anon_unmap_ctx *ctx,
 		struct vm_area_struct *vma, struct folio *folio,
 		unsigned long *address, unsigned long *end)

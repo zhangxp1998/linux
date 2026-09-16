@@ -31,8 +31,38 @@
 bool ppps_uffd_copy_tuple_ok(struct vm_area_struct *dst_vma, unsigned long dst_addr,
 		unsigned long remaining, uffd_flags_t flags)
 {
-	/* Enabled with generic tuple lifecycle hooks. */
-	return false;
+	if (!ppps_mm_is_compat(dst_vma->vm_mm))
+		return false;
+
+	/* COPY only: zeropage/continue/poison have their own semantics. */
+	if (!uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY))
+		return false;
+
+	/* v1 leaves uffd-wp installs on the single-slice path. */
+	if (flags & MFILL_ATOMIC_WP)
+		return false;
+
+	/*
+	 * Private anonymous only: a folio is only marked packed for
+	 * vma_is_anonymous() VMAs, and private shmem keeps its slice indices.
+	 */
+	if (!vma_is_anonymous(dst_vma) || ppps_vma_has_slices(dst_vma) ||
+	    (dst_vma->vm_flags & VM_SHARED))
+		return false;
+
+	/* Tuple COPY is narrower than the ordinary packed-fault path. */
+	if (dst_vma->vm_flags & (VM_MTE | VM_DROPPABLE | VM_LOCKED |
+				 VM_MERGEABLE))
+		return false;
+
+	/* A tuple must be a whole, native-aligned page inside the VMA. */
+	if (!IS_ALIGNED(dst_addr, PAGE_SIZE) || remaining < PAGE_SIZE)
+		return false;
+	if (dst_addr < dst_vma->vm_start ||
+	    dst_addr + PAGE_SIZE > dst_vma->vm_end)
+		return false;
+
+	return true;
 }
 
 static bool mfill_pte_range_none(pte_t *ptep, unsigned int nr)
@@ -160,8 +190,23 @@ out:
 bool ppps_uffd_move_tuple_ok(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		unsigned long dst_addr, unsigned long src_addr, unsigned long len)
 {
-	/* Enabled with generic tuple lifecycle hooks. */
-	return false;
+	vm_flags_t excluded = VM_MTE | VM_DROPPABLE | VM_LOCKED |
+			      VM_MERGEABLE;
+
+	if (!ppps_mm_is_compat(src_vma->vm_mm))
+		return false;
+	if (!IS_ALIGNED(src_addr, PAGE_SIZE) ||
+	    !IS_ALIGNED(dst_addr, PAGE_SIZE) || len < PAGE_SIZE)
+		return false;
+	if (src_addr < src_vma->vm_start ||
+	    src_addr + PAGE_SIZE > src_vma->vm_end ||
+	    dst_addr < dst_vma->vm_start ||
+	    dst_addr + PAGE_SIZE > dst_vma->vm_end)
+		return false;
+	if ((src_vma->vm_flags | dst_vma->vm_flags) & excluded)
+		return false;
+
+	return true;
 }
 
 /*
