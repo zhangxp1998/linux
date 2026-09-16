@@ -159,10 +159,8 @@ static loff_t vaddr_to_offset(struct vm_area_struct *vma, unsigned long vaddr)
 static unsigned long uprobe_vma_page_offset(struct vm_area_struct *vma,
 					    unsigned long vaddr)
 {
-	struct mm_struct *mm = vma->vm_mm;
-
-	return ((unsigned long)vma_address_to_slice(vma, vaddr) <<
-		MM_PAGE_SHIFT(mm)) + mm_offset_in_page(mm, vaddr);
+	return vma_page_slice_offset(vma, NULL, vaddr) +
+	       mm_offset_in_page(vma->vm_mm, vaddr);
 }
 
 /**
@@ -455,7 +453,9 @@ static int __uprobe_write(struct vm_area_struct *vma,
 	 * When unregistering, we may only zap a PTE if uffd is disabled and
 	 * there are no unexpected folio references ...
 	 */
-	if (is_register || userfaultfd_missing(vma) ||
+	/* A slice does not own the packed folio's rmap/reference alone. */
+	if (is_register || folio_test_ppps_compat_anon(folio) ||
+	    userfaultfd_missing(vma) ||
 	    (folio_ref_count(folio) != folio_expected_ref_count(folio) + 1))
 		goto remap;
 
