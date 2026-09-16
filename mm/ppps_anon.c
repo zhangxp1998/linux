@@ -1199,3 +1199,254 @@ out:
  * Only the first slice of a tuple copied into the child takes a reference and
  * a mapcount; the remaining slices just duplicate their PTEs.
  */
+
+static void ppps_copy_present_pte(struct vm_area_struct *dst_vma,
+				  struct vm_area_struct *src_vma,
+				  pte_t *dst_pte, pte_t *src_pte,
+				  pte_t pte, unsigned long addr)
+{
+	if (is_cow_mapping(src_vma->vm_flags) && pte_write(pte)) {
+		wrprotect_ptes(src_vma->vm_mm, addr, src_pte, 1);
+		pte = pte_wrprotect(pte);
+	}
+	if (src_vma->vm_flags & VM_SHARED)
+		pte = pte_mkclean(pte);
+	pte = pte_mkold(pte);
+	if (!userfaultfd_wp(dst_vma))
+		pte = pte_clear_uffd_wp(pte);
+	set_ptes(dst_vma->vm_mm, addr, dst_pte, pte, 1);
+}
+
+int ppps_anon_copy_present_ptes(struct vm_area_struct *dst_vma,
+				struct vm_area_struct *src_vma,
+				pte_t *dst_pte, pte_t *src_pte,
+				unsigned long addr, int *rss,
+				struct folio *folio, struct folio **prealloc)
+{
+	struct folio *new_folio;
+	pte_t pte = ptep_get(src_pte);
+
+	/* Another slice of the child's tuple already dup'ed the folio. */
+	if (!ppps_anon_slice_takes_ownership(dst_vma, folio, dst_pte, addr)) {
+		ppps_copy_present_pte(dst_vma, src_vma, dst_pte, src_pte,
+				      pte, addr);
+		return 1;
+	}
+
+	folio_get(folio);
+	if (likely(!folio_try_dup_anon_rmap_pte(folio, &folio->page,
+						dst_vma, src_vma))) {
+		if (!ppps_anon_folio_has_other_entries(dst_vma, folio,
+						       dst_pte, addr))
+			rss[MM_ANONPAGES] += folio_nr_pages(folio);
+		ppps_copy_present_pte(dst_vma, src_vma, dst_pte, src_pte,
+				      pte, addr);
+		return 1;
+	}
+
+	/* The folio is pinned: give the child its own copy. */
+	folio_put(folio);
+	new_folio = *prealloc;
+	if (!new_folio)
+		return -EAGAIN;
+	if (copy_mc_user_highpage(&new_folio->page, &folio->page, addr,
+				  src_vma))
+		return -EHWPOISON;
+	*prealloc = NULL;
+	__folio_mark_uptodate(new_folio);
+	folio_add_new_anon_rmap(new_folio, dst_vma, addr, RMAP_EXCLUSIVE);
+	folio_add_lru_vma(new_folio, dst_vma);
+	rss[MM_ANONPAGES] += folio_nr_pages(new_folio);
+	pte = vma_pte_mkslice(dst_vma, mk_pte(&new_folio->page, dst_vma->vm_page_prot), addr);
+	pte = maybe_mkwrite(pte_mkdirty(pte), dst_vma);
+	if (userfaultfd_pte_wp(dst_vma, ptep_get(src_pte)))
+		pte = pte_mkuffd_wp(pte);
+	set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
+	return 1;
+}
+
+/*
+ * Whole-tuple swapin
+ *
+ * A 16K kernel swaps a native page in as a whole, and a packed tuple behaves
+ * the same: the fault on one slice also restores the other slices of the
+ * tuple which are swap PTEs for the same entry inside the faulting VMA.  This
+ * keeps upstream's rule that a folio still reachable through a swap PTE is
+ * never PG_anon_exclusive: the tuple either owns its swap entry completely
+ * after the fault or, when slices in another VMA stay swapped, is mapped as
+ * shared.
+ */
+
+/* Bitmask of the tuple's sibling slices that swap in with @address. */
+static unsigned int ppps_anon_swapin_siblings(struct vm_area_struct *vma, pte_t *ptep,
+				       unsigned long address, swp_entry_t entry)
+{
+	pte_t *base_ptep = ppps_tuple_base_ptep(vma, ptep, address);
+	unsigned long base = ppps_tuple_base(vma, address);
+	unsigned int slice = vma_address_to_slice(vma, address);
+	unsigned int siblings = 0;
+	unsigned int i;
+
+	if (!base_ptep)
+		return 0;
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		unsigned long addr = base + i * PAGE_SIZE_COMPAT;
+		pte_t pte;
+
+		if (i == slice || addr < vma->vm_start || addr >= vma->vm_end)
+			continue;
+		pte = ptep_get(base_ptep + i);
+		if (!is_swap_pte(pte) ||
+		    non_swap_entry(pte_to_swp_entry(pte)) ||
+		    pte_to_swp_entry(pte).val != entry.val)
+			continue;
+		siblings |= 1U << i;
+	}
+	return siblings;
+}
+
+/*
+ * Install the PTEs of @siblings next to the faulting slice, whose new PTE is
+ * @pte: same page, same write permission, each slice's own soft-dirty and
+ * uffd-wp state carried over from its swap PTE.
+ */
+static void ppps_anon_swapin_install_siblings(struct vm_area_struct *vma, struct page *page,
+			      pte_t *ptep, unsigned long address,
+			      unsigned int siblings, pte_t pte)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	pte_t *base_ptep = ptep - vma_address_to_slice(vma, address);
+	unsigned long base = ppps_tuple_base(vma, address);
+	unsigned long mask = siblings;
+	unsigned int i;
+
+	for_each_set_bit(i, &mask, PPPS_SLICES_PER_PAGE) {
+		unsigned long addr = base + i * PAGE_SIZE_COMPAT;
+		pte_t old = ptep_get(base_ptep + i);
+		pte_t entry = mk_pte(page, vma->vm_page_prot);
+
+		entry = vma_pte_mkslice(vma, entry, addr);
+		if (pte_swp_soft_dirty(old))
+			entry = pte_mksoft_dirty(entry);
+		if (pte_swp_uffd_wp(old) && userfaultfd_wp(vma))
+			entry = pte_mkuffd_wp(entry);
+		if (pte_write(pte) && !pte_uffd_wp(entry) &&
+		    !pte_needs_soft_dirty_wp(vma, entry))
+			entry = pte_mkwrite(entry, vma);
+		set_pte_at(mm, addr, base_ptep + i, entry);
+		update_mmu_cache(vma, addr, base_ptep + i);
+	}
+}
+
+/**
+ * ppps_anon_swapin_begin - sample ownership and sibling swap PTEs
+ * @ctx: private state, initialized here even for native faults
+ * @vma: faulting VMA
+ * @folio: locked swap-in folio with a temporary reference
+ * @ptep: faulting swap PTE under the caller's PTL
+ * @address: address of @ptep
+ * @entry: swap entry to restore
+ *
+ * No PTE/ref/rmap/RSS changes. Keep the PTL through release and installation.
+ * The caller chooses the rmap-add variant and releases a redundant temporary
+ * folio reference after unlocking the folio when ownership is already held.
+ */
+void ppps_anon_swapin_begin(struct ppps_anon_swapin_ctx *ctx,
+		struct vm_area_struct *vma, struct folio *folio,
+		pte_t *ptep, unsigned long address, swp_entry_t entry)
+{
+	*ctx = (struct ppps_anon_swapin_ctx) {
+		.compat = ppps_vma_address_shares_tuple(vma, address),
+		.owner = true,
+	};
+	if (ctx->compat) {
+		VM_BUG_ON_FOLIO(pte_present(ptep_get(ptep)), folio);
+		ctx->owner = ppps_anon_slice_takes_ownership(vma, folio,
+							    ptep, address);
+		ctx->siblings = ppps_anon_swapin_siblings(vma, ptep, address,
+							entry);
+	}
+}
+
+/**
+ * ppps_anon_swapin_release - release sibling swap references before reuse
+ * @ctx: state sampled under the still-held PTL
+ * @entry: primary swap entry, already released by swap_free_nr()
+ * @exclusive: caller's candidate exclusivity, possibly cleared here
+ *
+ * Call after arch_swap_restore() and the primary swap_free_nr(), but before
+ * folio_free_swap() or any PTE installation. Release extra swap references
+ * first, then test the remaining count. Rejoining an existing tuple also
+ * clears @exclusive: no rmap addition will establish PG_anon_exclusive.
+ * No folio refs, rmap, RSS or PTEs are changed; native faults leave
+ * @exclusive untouched.
+ */
+void ppps_anon_swapin_release(const struct ppps_anon_swapin_ctx *ctx,
+		swp_entry_t entry, bool *exclusive)
+{
+	unsigned int n;
+
+	if (!ctx->compat)
+		return;
+	for (n = ctx->siblings; n; n &= n - 1)
+		swap_free(entry);
+	/*
+	 * Slices left swapped in another VMA keep the folio shared.  If this
+	 * tuple already has a present slice, the caller skips rmap addition
+	 * and cannot establish RMAP_EXCLUSIVE there.  Keep this swap-in
+	 * read-only and let do_wp_page() establish exclusivity after the
+	 * temporary swap-in reference has been dropped.
+	 */
+	if (*exclusive && (!ctx->owner || __swap_count(entry)))
+		*exclusive = false;
+}
+
+/**
+ * ppps_anon_swapin_takes_ownership - query rmap/RSS/reference ownership
+ * @ctx: initialized swap-in state
+ *
+ * Return: true for native faults or the first present (mm, tuple, folio)
+ * slice. The caller performs the matching accounting and rmap-add variant.
+ */
+bool ppps_anon_swapin_takes_ownership(const struct ppps_anon_swapin_ctx *ctx)
+{
+	return ctx->owner;
+}
+
+/**
+ * ppps_anon_swapin_swap_delta - query the extra swap references released
+ * @ctx: initialized swap-in state
+ *
+ * Return: positive sibling count, excluding the primary generic nr_pages.
+ * Native faults return zero. The caller subtracts it from MM_SWAPENTS.
+ */
+unsigned int ppps_anon_swapin_swap_delta(const struct ppps_anon_swapin_ctx *ctx)
+{
+	return hweight8(ctx->siblings);
+}
+
+/**
+ * ppps_anon_swapin_install - install sibling PTEs after the primary PTE
+ * @ctx: sampled/released swap-in state under the still-held PTL
+ * @vma: faulting VMA
+ * @page: backing native page
+ * @ptep: primary PTE, already installed by generic MM
+ * @address: primary address
+ * @pte: installed primary PTE, supplying the final write permission
+ *
+ * Preserve each sibling's soft-dirty and UFFD-WP state. The caller has already
+ * performed RSS/rmap accounting; no extra folio references are taken. Leaves
+ * all locks held. Native faults have no siblings and do nothing.
+ */
+void ppps_anon_swapin_install(const struct ppps_anon_swapin_ctx *ctx,
+		struct vm_area_struct *vma, struct page *page, pte_t *ptep,
+		unsigned long address, pte_t pte)
+{
+	if (ctx->siblings)
+		ppps_anon_swapin_install_siblings(vma, page, ptep, address,
+						 ctx->siblings, pte);
+}
+
+/*
+ * Write protection faults
+ */
