@@ -69,6 +69,7 @@ static __always_inline unsigned int __page_shift(void)
 #define MM_UAPI_PAGE_ALIGN(mm, addr)	MM_PAGE_ALIGN(mm, addr)
 #define MM_UAPI_PAGE_ALIGNED(mm, addr)	MM_PAGE_ALIGNED(mm, addr)
 #define mm_uapi_offset_in_page(mm, p)	mm_offset_in_page(mm, p)
+#define mm_uapi_offset_in_page_log(mm, p) mm_offset_in_page(mm, p)
 #else
 #define MM_UAPI_PAGE_SHIFT(mm)		((void)(mm), __PAGE_SHIFT)
 #define MM_UAPI_PAGE_SIZE(mm)		((void)(mm), __PAGE_SIZE)
@@ -76,6 +77,7 @@ static __always_inline unsigned int __page_shift(void)
 #define MM_UAPI_PAGE_ALIGN(mm, addr)	((void)(mm), __PAGE_ALIGN(addr))
 #define MM_UAPI_PAGE_ALIGNED(mm, addr)	((void)(mm), __PAGE_ALIGNED(addr))
 #define mm_uapi_offset_in_page(mm, p)	((void)(mm), (unsigned long)(p) & ~__PAGE_MASK)
+#define mm_uapi_offset_in_page_log(mm, p) ((void)(mm), __offset_in_page_log(p))
 #endif
 
 #define __offset_in_page(p)		((unsigned long)(p) & ~__PAGE_MASK)

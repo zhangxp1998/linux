@@ -77,10 +77,6 @@ static inline void cpu_switch_mm(pgd_t *pgd, struct mm_struct *mm)
  * page tables, use the kernel's native translation granule. Under PPPS, TG0
  * may still describe a 4K userspace page table, so update it together with
  * T0SZ before installing one of these page tables.
- *
- * TODO: Add a host-side CVD PSCI power-down model which resumes at the guest
- * entry point, so suspend/resume can exercise this invariant without adding
- * diagnostic hooks to the kernel. Stock QEMU/KVM treats CPU_SUSPEND as WFI.
  */
 static inline void __cpu_set_native_tcr_t0sz(unsigned long t0sz)
 {
@@ -88,10 +84,9 @@ static inline void __cpu_set_native_tcr_t0sz(unsigned long t0sz)
 	unsigned long val = t0sz;
 	unsigned long tcr = read_sysreg(tcr_el1);
 
-#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && \
-	defined(CONFIG_ARM64_16K_PAGES)
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	mask |= TCR_TG0_MASK;
-	val |= TCR_TG0_16K;
+	val |= TCR_TG0_NATIVE;
 #endif
 
 	if ((tcr & mask) == val)

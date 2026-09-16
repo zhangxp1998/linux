@@ -126,13 +126,14 @@ void *swap_cache_get_shadow(swp_entry_t entry)
  * swap_cache_add_folio - Add a folio into the swap cache.
  * @folio: The folio to be added.
  * @entry: The swap entry corresponding to the folio.
- * @gfp: gfp_mask for XArray node allocation.
  * @shadowp: If a shadow is found, return the shadow.
  *
  * Context: Caller must ensure @entry is valid and protect the swap device
  * with reference count or locks.
  * The caller also needs to update the corresponding swap_map slots with
  * SWAP_HAS_CACHE bit to avoid race or conflict.
+ * Newly allocated swap-in folios are not uptodate yet: the caller starts
+ * the read after insertion. Swap-out checks uptodate in folio_alloc_swap().
  */
 void swap_cache_add_folio(struct folio *folio, swp_entry_t entry, void **shadowp)
 {
@@ -688,33 +689,37 @@ static int swap_vma_ra_win(struct vm_fault *vmf, unsigned long *start,
 	struct vm_area_struct *vma = vmf->vma;
 	struct mm_struct *mm = vma->vm_mm;
 	unsigned long ra_val;
-	unsigned long faddr, prev_faddr, left, right;
-	unsigned int page_shift = MM_PAGE_SHIFT(mm);
-	unsigned long page_size = MM_PAGE_SIZE(mm);
+	unsigned long faddr, fpage, prev_page, left, right;
 	unsigned int max_win, hits, prev_win, win;
 
 	max_win = 1 << min(READ_ONCE(page_cluster), SWAP_RA_ORDER_CEILING);
 	if (max_win == 1)
 		return 1;
 
+	/*
+	 * Swap entries and the readahead window are in native pages for
+	 * every process: a compat tuple shares one entry across its slices.
+	 * The fault address itself is recorded unchanged.
+	 */
 	faddr = vmf->address;
+	fpage = faddr & PAGE_MASK;
 	ra_val = GET_SWAP_RA_VAL(vma);
-	prev_faddr = SWAP_RA_ADDR(ra_val);
+	prev_page = SWAP_RA_ADDR(ra_val) & PAGE_MASK;
 	prev_win = SWAP_RA_WIN(ra_val);
 	hits = SWAP_RA_HITS(ra_val);
-	win = __swapin_nr_pages(prev_faddr >> page_shift,
-				faddr >> page_shift, hits, max_win, prev_win);
+	win = __swapin_nr_pages(prev_page >> PAGE_SHIFT, fpage >> PAGE_SHIFT,
+				hits, max_win, prev_win);
 	atomic_long_set(&vma->swap_readahead_info, SWAP_RA_VAL(faddr, win, 0));
 	if (win == 1)
 		return 1;
 
-	if (faddr == prev_faddr + page_size)
-		left = faddr;
-	else if (prev_faddr == faddr + page_size)
-		left = faddr - (win << page_shift) + page_size;
+	if (fpage == prev_page + PAGE_SIZE)
+		left = fpage;
+	else if (prev_page == fpage + PAGE_SIZE)
+		left = fpage - (win << PAGE_SHIFT) + PAGE_SIZE;
 	else
-		left = faddr - (((win - 1) / 2) << page_shift);
-	right = left + (win << page_shift);
+		left = fpage - (((win - 1) / 2) << PAGE_SHIFT);
+	right = left + (win << PAGE_SHIFT);
 	if ((long)left < 0)
 		left = 0;
 	*start = max3(left, vma->vm_start, faddr & MM_PMD_MASK(mm));
