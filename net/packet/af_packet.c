@@ -4622,34 +4622,25 @@ static int packet_mmap(struct file *file, struct socket *sock,
 		for (i = 0; i < rb->pg_vec_len; i++) {
 			struct page *page;
 			void *kaddr = rb->pg_vec[i].buffer;
-			int pg_num;
-			unsigned long block_offset;
+			unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
+			unsigned long off;
 
-			if (ppps_mm_is_compat(vma->vm_mm)) {
-				for (block_offset = 0;
-				     block_offset < rb->block_size;
-				     block_offset += MM_PAGE_SIZE(vma->vm_mm)) {
-					unsigned int slice =
-						offset_in_page(block_offset) >>
-						MM_PAGE_SHIFT(vma->vm_mm);
-
-					page = pgv_to_page(kaddr + block_offset);
-					err = vm_insert_page_slice(vma, start, page,
-								   slice);
-					if (unlikely(err))
-						goto out;
-					start += MM_PAGE_SIZE(vma->vm_mm);
-				}
-				continue;
-			}
-
-			for (pg_num = 0; pg_num < rb->pg_vec_pages; pg_num++) {
-				page = pgv_to_page(kaddr);
-				err = vm_insert_page(vma, start, page);
+			/*
+			 * One PTE per process page.  A compat block may be
+			 * smaller than a native page, so the slice follows
+			 * the block offset rather than the user address.
+			 */
+			for (off = 0; off < rb->block_size; off += page_size) {
+				page = pgv_to_page(kaddr + off);
+				if (ppps_mm_is_compat(vma->vm_mm))
+					err = vm_insert_page_slice(vma, start,
+							page, offset_in_page(off) >>
+							MM_PAGE_SHIFT(vma->vm_mm));
+				else
+					err = vm_insert_page(vma, start, page);
 				if (unlikely(err))
 					goto out;
-				start += PAGE_SIZE;
-				kaddr += PAGE_SIZE;
+				start += page_size;
 			}
 		}
 	}

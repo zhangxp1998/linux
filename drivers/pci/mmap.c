@@ -40,16 +40,15 @@ int pci_mmap_resource_range(struct pci_dev *pdev, int bar,
 	else
 		vma->vm_page_prot = pgprot_device(vma->vm_page_prot);
 
+	vma->vm_ops = &pci_phys_vm_ops;
+
 	if (mmap_state == pci_mmap_io) {
 		ret = pci_iobar_pfn(pdev, bar, vma);
 		if (ret)
 			return ret;
-		vma->vm_ops = &pci_phys_vm_ops;
 		return io_remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 					  map_size, vma->vm_page_prot);
 	}
-
-	vma->vm_ops = &pci_phys_vm_ops;
 
 	return vm_iomap_memory(vma, pci_resource_start(pdev, bar), size);
 }

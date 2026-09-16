@@ -71,7 +71,7 @@ static vm_fault_t udmabuf_insert_pfn(struct vm_area_struct *vma,
 	page_offset = ubuf->spans[index].offset +
 		(offset & ((1UL << ubuf->page_shift) - 1));
 	page = ubuf->pages[index];
-	slice_idx = page_offset >> MM_PAGE_SHIFT(vma->vm_mm);
+	slice_idx = vma_offset_to_slice(vma, page_offset);
 
 	return vmf_insert_pfn_slice(vma, address, page_to_pfn(page), slice_idx);
 }
@@ -602,7 +602,7 @@ static int __init udmabuf_dev_init(void)
 	}
 
 	ret = dma_coerce_mask_and_coherent(udmabuf_misc.this_device,
-					   ~0ULL);
+					   DMA_BIT_MASK(64));
 	if (ret < 0) {
 		pr_err("Could not setup DMA mask for udmabuf device\n");
 		misc_deregister(&udmabuf_misc);
