@@ -32,6 +32,27 @@
 #include "ppps.h"
 #include "swap.h"
 
+static struct folio *ppps_folio_prealloc(struct mm_struct *mm,
+					 struct vm_area_struct *vma,
+					 unsigned long address, bool zero)
+{
+	struct folio *folio;
+
+	if (zero)
+		folio = vma_alloc_zeroed_movable_folio(vma, address);
+	else
+		folio = vma_alloc_folio(GFP_HIGHUSER_MOVABLE, 0, vma,
+					address);
+	if (!folio)
+		return NULL;
+	if (mem_cgroup_charge(folio, mm, GFP_KERNEL)) {
+		folio_put(folio);
+		return NULL;
+	}
+	folio_throttle_swaprate(folio, GFP_KERNEL);
+	return folio;
+}
+
 /*
  * Tuple geometry
  *
@@ -792,3 +813,389 @@ struct ppps_reslice_sources {
 	unsigned long bases[PPPS_SLICES_PER_PAGE];
 	int nr;
 };
+
+static struct folio *ppps_anon_folio_at(struct mm_struct *mm,
+					unsigned long address)
+{
+	struct folio *folio = NULL;
+	spinlock_t *ptl; /* Protects the queried PTE. */
+	pte_t *ptep;
+	pmd_t *pmd;
+
+	pmd = mm_find_pmd(mm, address);
+	if (!pmd)
+		return NULL;
+	ptep = pte_offset_map_lock(mm, pmd, address, &ptl);
+	if (!ptep)
+		return NULL;
+	folio = ppps_anon_pte_folio(ptep_get(ptep));
+	pte_unmap_unlock(ptep, ptl);
+	return folio;
+}
+
+static bool ppps_anon_folio_at_address(struct mm_struct *mm,
+		struct folio *folio, unsigned long address)
+{
+	return ppps_anon_folio_at(mm, address) == folio;
+}
+
+static bool ppps_anon_source_slices_remain(struct mm_struct *mm,
+		struct folio *folio, unsigned long source_base,
+		unsigned long old_addr, unsigned long len)
+{
+	unsigned long old_end = old_addr + len;
+	unsigned int i;
+
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		unsigned long address = source_base + i * PAGE_SIZE_COMPAT;
+
+		if ((address < old_addr || address >= old_end) &&
+		    ppps_anon_folio_at_address(mm, folio, address))
+			return true;
+	}
+	return false;
+}
+
+/*
+ * During a misaligned move, the four logical slices of one source tuple can
+ * temporarily straddle two destination VA tuples.  This helper checks both
+ * the unmoved source positions and the translated destination positions so
+ * the old (mm, tuple) rmap/reference is removed exactly once.
+ */
+static bool ppps_anon_folio_still_mapped(struct mm_struct *mm,
+		struct folio *folio, unsigned long source_base,
+		unsigned long old_addr, unsigned long new_addr,
+		unsigned long len)
+{
+	unsigned long old_end = old_addr + len;
+	unsigned int i;
+
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		unsigned long source = source_base + i * PAGE_SIZE_COMPAT;
+
+		if (ppps_anon_folio_at_address(mm, folio, source))
+			return true;
+		if (source >= old_addr && source < old_end &&
+		    ppps_anon_folio_at_address(mm, folio,
+			new_addr + source - old_addr))
+			return true;
+	}
+	return false;
+}
+
+/* Remember @folio, mapped by @pte, as a source drained from @source. */
+static void ppps_reslice_sources_add(struct ppps_reslice_sources *sources,
+		struct folio *folio, pte_t pte, unsigned long source)
+{
+	int i;
+
+	for (i = 0; i < sources->nr; i++)
+		if (sources->folios[i] == folio)
+			return;
+	folio_get(folio);
+	sources->folios[sources->nr] = folio;
+	sources->bases[sources->nr] = source - pte_page_offset(pte);
+	sources->nr++;
+}
+
+/* Drop the (mm, tuple) rmap and reference of every fully drained source. */
+static void ppps_reslice_sources_drop(struct mm_struct *mm,
+		struct ppps_reslice_sources *sources, unsigned long old_addr,
+		unsigned long new_addr, unsigned long len)
+{
+	int i;
+
+	for (i = 0; i < sources->nr; i++) {
+		struct folio *folio = sources->folios[i];
+		struct vm_area_struct *vma;
+
+		if (!ppps_anon_folio_still_mapped(mm, folio, sources->bases[i],
+						  old_addr, new_addr, len)) {
+			vma = find_vma(mm, sources->bases[i]);
+			if (!vma || sources->bases[i] < vma->vm_start)
+				vma = find_vma(mm, new_addr);
+			if (!WARN_ON_ONCE(!vma)) {
+				folio_remove_rmap_pte(folio, &folio->page, vma);
+				add_mm_counter(mm, MM_ANONPAGES,
+					       -folio_nr_pages(folio));
+				folio_put(folio);
+			}
+		}
+		folio_put(folio);
+	}
+}
+
+static pte_t ppps_anon_reslice_pte(struct vm_area_struct *vma,
+		struct folio *folio, pte_t old, unsigned long address)
+{
+	pte_t entry;
+
+	entry = vma_pte_mkslice(vma, mk_pte(&folio->page, pte_pgprot(old)), address);
+	entry = ppps_pte_inherit(entry, old);
+	if (pte_write(old))
+		return maybe_mkwrite(entry, vma);
+	return pte_wrprotect(entry);
+}
+
+/* Re-point a zero-page PTE whose physical slice no longer matches its VA. */
+static void ppps_anon_reslice_zero_slice(struct mm_struct *mm,
+		struct vm_area_struct *vma, pte_t *ptep,
+		unsigned long address, pte_t old)
+{
+	pte_t entry;
+
+	if (!pte_present(old) || !is_zero_pfn(pte_pfn(old)) ||
+	    pte_page_offset(old) ==
+		vma_address_to_slice(vma, address) * PAGE_SIZE_COMPAT)
+		return;
+	ptep_clear_flush(vma, address, ptep);
+	entry = pte_mkspecial(pfn_pte(my_zero_pfn(address), pte_pgprot(old)));
+	entry = ppps_pte_inherit(entry, old);
+	set_pte_at(mm, address, ptep, entry);
+	update_mmu_cache(vma, address, ptep);
+}
+
+static void ppps_anon_reslice_tuple(struct mm_struct *mm,
+		struct ppps_reslice_tuple *tuple, unsigned long old_addr,
+		unsigned long new_addr, unsigned long len)
+{
+	struct ppps_reslice_sources sources = {};
+	unsigned long end = min(tuple->first + PAGE_SIZE, new_addr + len);
+	unsigned long start = max(tuple->first, new_addr);
+	struct vm_area_struct *vmas[PPPS_SLICES_PER_PAGE] = {};
+	struct folio *pte_folios[PPPS_SLICES_PER_PAGE] = {};
+	unsigned long addresses[PPPS_SLICES_PER_PAGE] = {};
+	pte_t old_ptes[PPPS_SLICES_PER_PAGE] = {};
+	spinlock_t *ptl; /* Protects the destination tuple. */
+	pte_t *ptep;
+	pmd_t *pmd;
+	int rmap_idx = -1;
+	int nr = 0;
+	int i;
+
+	pmd = mm_find_pmd(mm, start);
+	if (WARN_ON_ONCE(!pmd))
+		return;
+	ptep = pte_offset_map_lock(mm, pmd, start, &ptl);
+	if (WARN_ON_ONCE(!ptep))
+		return;
+
+	/* Snapshot the destination slices and stop writes to their sources. */
+	for (; start < end; start += PAGE_SIZE_COMPAT, nr++) {
+		struct vm_area_struct *vma = find_vma(mm, start);
+		pte_t pte = ptep_get(ptep + nr);
+
+		if (WARN_ON_ONCE(!vma || start < vma->vm_start))
+			continue;
+		vmas[nr] = vma;
+		addresses[nr] = start;
+		old_ptes[nr] = pte;
+		pte_folios[nr] = ppps_anon_pte_folio(pte);
+		/*
+		 * Without a replacement folio only the zero-page slices are
+		 * re-pointed below: the packed folio slices already sit in
+		 * their VA-selected slots and must stay mapped.
+		 */
+		if (!pte_folios[nr] || !tuple->folio)
+			continue;
+		if (rmap_idx < 0)
+			rmap_idx = nr;
+		ppps_reslice_sources_add(&sources, pte_folios[nr], pte,
+					 old_addr + start - new_addr);
+		ptep_set_wrprotect(mm, start, ptep + nr);
+		flush_tlb_page(vma, start);
+	}
+
+	if (tuple->folio) {
+		for (i = 0; i < nr; i++) {
+			if (!pte_folios[i])
+				continue;
+			ppps_anon_copy_slice(tuple->folio,
+				vma_address_to_slice(vmas[i], addresses[i]),
+				pte_folios[i],
+				pte_page_offset(old_ptes[i]) >> PAGE_SHIFT_COMPAT);
+		}
+		__folio_mark_uptodate(tuple->folio);
+	}
+
+	for (i = 0; i < nr; i++) {
+		if (!vmas[i])
+			continue;
+		if (!pte_folios[i])
+			ppps_anon_reslice_zero_slice(mm, vmas[i], ptep + i,
+						     addresses[i], old_ptes[i]);
+		else if (tuple->folio)
+			ptep_clear_flush(vmas[i], addresses[i], ptep + i);
+	}
+
+	if (tuple->folio) {
+		if (!WARN_ON_ONCE(rmap_idx < 0)) {
+			add_mm_counter(mm, MM_ANONPAGES,
+				       folio_nr_pages(tuple->folio));
+			folio_add_new_anon_rmap(tuple->folio, vmas[rmap_idx],
+						addresses[rmap_idx],
+						RMAP_EXCLUSIVE);
+			folio_add_lru_vma(tuple->folio, vmas[rmap_idx]);
+		}
+		for (i = 0; i < nr; i++) {
+			pte_t entry;
+
+			if (!pte_folios[i])
+				continue;
+			entry = ppps_anon_reslice_pte(vmas[i], tuple->folio,
+						      old_ptes[i], addresses[i]);
+			set_pte_at(mm, addresses[i], ptep + i, entry);
+			update_mmu_cache(vmas[i], addresses[i], ptep + i);
+		}
+	}
+
+	pte_unmap_unlock(ptep, ptl);
+	ppps_reslice_sources_drop(mm, &sources, old_addr, new_addr, len);
+}
+
+/*
+ * Restore the VA-selected physical slice after mremap.  Complete tuples
+ * moved by a native-page multiple need no work.  A misaligned move is
+ * regrouped one destination tuple at a time, so a 4K-shifted 16K source uses
+ * two 16K folios rather than four singleton native folios.
+ */
+int ppps_anon_reslice_range(struct mm_struct *mm, unsigned long old_addr,
+			     unsigned long new_addr, unsigned long len)
+{
+	struct vm_area_struct *first_vma;
+	unsigned long first;
+	unsigned long last;
+	unsigned long nr_tuples;
+	struct ppps_reslice_tuple *tuples;
+	struct mmu_notifier_range range;
+	unsigned long address;
+	int ret = 0;
+	int i;
+
+	if (!ppps_mm_is_compat(mm) || !len)
+		return 0;
+	mmap_assert_write_locked(mm);
+	first_vma = find_vma(mm, new_addr);
+	if (!first_vma || new_addr < first_vma->vm_start)
+		return -EFAULT;
+	if (!ppps_vma_shares_tuple(first_vma))
+		return 0;
+	/* Complete tuples moved by a native-page multiple need no work. */
+	if (IS_ALIGNED(old_addr, PAGE_SIZE) && IS_ALIGNED(new_addr, PAGE_SIZE) &&
+	    IS_ALIGNED(len, PAGE_SIZE))
+		return 0;
+	first = ppps_tuple_base(first_vma, new_addr);
+	last = ppps_tuple_base(first_vma,
+				new_addr + len - PAGE_SIZE_COMPAT) + PAGE_SIZE;
+	nr_tuples = (last - first) >> PAGE_SHIFT;
+	tuples = kvcalloc(nr_tuples, sizeof(*tuples), GFP_KERNEL);
+	if (!tuples)
+		return -ENOMEM;
+
+	for (i = 0; i < nr_tuples; i++)
+		tuples[i].first = first + i * PAGE_SIZE;
+
+	/* Decide and allocate everything before changing the first PTE. */
+	for (address = new_addr; address < new_addr + len;
+	     address += PAGE_SIZE_COMPAT) {
+		struct ppps_reslice_tuple *tuple;
+		struct vm_area_struct *vma;
+		struct folio *folio;
+		spinlock_t *ptl; /* Protects the inspected PTE. */
+		unsigned long source, source_base;
+		pte_t *ptep;
+		pmd_t *pmd;
+		pte_t pte;
+		bool wrong = false;
+
+		pmd = mm_find_pmd(mm, address);
+		if (!pmd)
+			continue;
+		ptep = pte_offset_map_lock(mm, pmd, address, &ptl);
+		if (!ptep)
+			continue;
+		pte = ptep_get(ptep);
+		folio = ppps_anon_pte_folio(pte);
+		vma = find_vma(mm, address);
+		if (!vma || address < vma->vm_start) {
+			pte_unmap_unlock(ptep, ptl);
+			ret = -EFAULT;
+			goto out;
+		}
+		if (folio && folio_maybe_dma_pinned(folio)) {
+			pte_unmap_unlock(ptep, ptl);
+			ret = -EBUSY;
+			goto out;
+		}
+		tuple = &tuples[(ppps_tuple_base(vma, address) - first) >>
+				PAGE_SHIFT];
+		if (folio) {
+			source = old_addr + address - new_addr;
+			source_base = source - pte_page_offset(pte);
+			wrong = pte_page_offset(pte) !=
+				vma_address_to_slice(vma, address) * PAGE_SIZE_COMPAT ||
+				folio->index != ppps_tuple_index(vma, address);
+			folio_get(folio);
+		} else if (pte_present(pte) && is_zero_pfn(pte_pfn(pte)) &&
+			   pte_page_offset(pte) !=
+				vma_address_to_slice(vma, address) * PAGE_SIZE_COMPAT) {
+			tuple->zero = true;
+		} else if (pte_present(pte) && !pte_special(pte)) {
+			/* Only packed anonymous folios are resliced. */
+			pte_unmap_unlock(ptep, ptl);
+			ret = -EINVAL;
+			goto out;
+		}
+		pte_unmap_unlock(ptep, ptl);
+		if (folio) {
+			wrong |= ppps_anon_source_slices_remain(mm, folio,
+					source_base, old_addr, len);
+			folio_put(folio);
+			if (wrong)
+				tuple->normal = true;
+		}
+	}
+
+	for (i = 0; i < nr_tuples; i++) {
+		struct vm_area_struct *vma;
+		unsigned long start;
+
+		if (!tuples[i].normal)
+			continue;
+		start = max(tuples[i].first, new_addr);
+		vma = find_vma(mm, start);
+		if (!vma || start < vma->vm_start) {
+			ret = -EFAULT;
+			goto out;
+		}
+		tuples[i].folio = ppps_folio_prealloc(mm, vma, start, false);
+		if (!tuples[i].folio) {
+			ret = -ENOMEM;
+			goto out;
+		}
+	}
+
+	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm, new_addr,
+				new_addr + len);
+	mmu_notifier_invalidate_range_start(&range);
+	for (i = 0; i < nr_tuples; i++) {
+		if (!tuples[i].normal && !tuples[i].zero)
+			continue;
+		ppps_anon_reslice_tuple(mm, &tuples[i], old_addr, new_addr, len);
+		tuples[i].folio = NULL;
+	}
+	mmu_notifier_invalidate_range_end(&range);
+out:
+	for (i = 0; i < nr_tuples; i++)
+		if (tuples[i].folio)
+			folio_put(tuples[i].folio);
+	kvfree(tuples);
+	return ret;
+}
+
+/*
+ * Fork
+ *
+ * Only the first slice of a tuple copied into the child takes a reference and
+ * a mapcount; the remaining slices just duplicate their PTEs.
+ */
