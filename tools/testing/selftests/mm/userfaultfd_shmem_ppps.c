@@ -18,7 +18,7 @@
 #include "kselftest_ppps.h"
 
 #define RACE_ITERATIONS		128UL
-#define MAPPING_SIZE		((2 + RACE_ITERATIONS) * NATIVE_PAGE_SIZE)
+#define MAPPING_SIZE		((3 + RACE_ITERATIONS) * NATIVE_PAGE_SIZE)
 
 struct read_args {
 	unsigned char *address;
@@ -153,7 +153,7 @@ static int run_test(void)
 	int uffd;
 
 	ksft_print_header();
-	ksft_set_plan(12);
+	ksft_set_plan(16);
 
 	uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
 	if (uffd < 0) {
@@ -215,15 +215,23 @@ static int run_test(void)
 			 "both copied shmem slices retain their contents\n");
 
 	untracked_read.address = mapping + (PPPS_SLICES + 1) * PROCESS_PAGE_SIZE;
+	rejected = (struct uffdio_copy) {
+		.src = (unsigned long)source,
+		.dst = (unsigned long)untracked_read.address,
+		.len = PROCESS_PAGE_SIZE,
+	};
+	errno = 0;
+	untracked_copy = ioctl(uffd, UFFDIO_COPY, &rejected) == -1 &&
+		errno == EEXIST && rejected.copy == -EEXIST;
+	ksft_test_result(untracked_copy,
+			 "COPY rejects an ordinary populated cache folio\n");
 	if (pthread_create(&untracked_thread, NULL, read_page, &untracked_read))
 		ksft_exit_fail_msg("untracked reader creation failed\n");
-	untracked_fault = wait_for_fault(uffd, (void *)untracked_read.address);
-	ksft_test_result(untracked_fault,
-			 "existing folio without a slice mask raises UFFD missing\n");
-	untracked_copy = copy_page(uffd, (void *)untracked_read.address,
-				   source + (PPPS_SLICES + 1) * PROCESS_PAGE_SIZE);
-	ksft_test_result(untracked_copy,
-			 "empty slice mask accepts the first UFFDIO_COPY\n");
+	untracked_fault = wait_for_fault(uffd, untracked_read.address);
+	ksft_test_result(!untracked_fault,
+			 "populated folio without a slice mask is not missing\n");
+	if (untracked_fault)
+		copy_page(uffd, untracked_read.address, source);
 	untracked_joined = !pthread_join(untracked_thread, NULL);
 	ksft_test_result(untracked_joined && untracked_read.value == 0 &&
 			 alias[PPPS_SLICES * PROCESS_PAGE_SIZE] == 0x55,
@@ -231,6 +239,42 @@ static int run_test(void)
 
 	ksft_test_result(race_folio_insertion(uffd, mapping, source),
 			 "concurrent slice copies retry shmem folio insertion races\n");
+
+	/* A populated destination PTE can exist while its slice mask is empty. */
+	{
+		unsigned long off = (2 + RACE_ITERATIONS) * NATIVE_PAGE_SIZE;
+		struct uffdio_register alias_reg = {
+			.range = { (unsigned long)alias + off + PROCESS_PAGE_SIZE,
+				   PROCESS_PAGE_SIZE },
+			.mode = UFFDIO_REGISTER_MODE_MISSING,
+		};
+		unsigned char resident = 1;
+		bool ok = copy_page(uffd, mapping + off, source);
+
+		alias[off + PROCESS_PAGE_SIZE] = 0x9d;
+		ok = ok && !ioctl(uffd, UFFDIO_REGISTER, &alias_reg);
+		ksft_test_result(ok, "prepare present PTE in an unfilled tracked slice\n");
+		rejected = (struct uffdio_copy) {
+			.src = (unsigned long)source,
+			.dst = (unsigned long)alias + off + PROCESS_PAGE_SIZE,
+			.len = PROCESS_PAGE_SIZE,
+		};
+		errno = 0;
+		ok = ok && ioctl(uffd, UFFDIO_COPY, &rejected) == -1 &&
+			errno == EEXIST && rejected.copy == -EEXIST;
+		ksft_test_result(ok && alias[off + PROCESS_PAGE_SIZE] == 0x9d,
+				 "failed PTE installation does not alter shared data\n");
+		ioctl(uffd, UFFDIO_UNREGISTER, &alias_reg.range);
+
+		ok = !madvise(source + off, PROCESS_PAGE_SIZE, MADV_DONTNEED) &&
+			!mincore(source + off, PROCESS_PAGE_SIZE, &resident) &&
+			!(resident & 1);
+		ksft_test_result(ok, "COPY source is verified nonresident\n");
+		ok = ok && copy_page(uffd, mapping + off + 2 * PROCESS_PAGE_SIZE,
+				      source + off);
+		ksft_test_result(ok && mapping[off + 2 * PROCESS_PAGE_SIZE] == 0,
+				 "existing-folio COPY retries a faulting source\n");
+	}
 
 	unregister_range.start = (unsigned long)mapping;
 	unregister_range.len = MAPPING_SIZE;
