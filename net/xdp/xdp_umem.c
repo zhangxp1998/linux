@@ -104,19 +104,15 @@ static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 	if (!umem->pgs)
 		return -ENOMEM;
 
-	mmap_read_lock(mm);
-	if (ppps_mm_is_compat(mm)) {
-		struct vm_area_struct *vma = vma_lookup(mm, address);
-
-		/* vmap() cannot compensate for a subpage backing offset. */
-		if (!vma || vma_address_to_slice(vma, address)) {
-			npgs = -EOPNOTSUPP;
-			goto unlock;
-		}
+	/* vmap() cannot compensate for a subpage backing offset. */
+	if (ppps_mm_is_compat(mm) && mm_user_slice_offset(mm, address)) {
+		npgs = -EOPNOTSUPP;
+		goto check_npgs;
 	}
+
+	mmap_read_lock(mm);
 	npgs = pin_user_pages(address, umem->npgs,
 			      gup_flags | FOLL_LONGTERM, &umem->pgs[0]);
-unlock:
 	mmap_read_unlock(mm);
 
 	if (npgs > 0 && ppps_mm_is_compat(mm)) {
@@ -124,7 +120,7 @@ unlock:
 
 		/* A packed anonymous tuple maps address-selected slices. */
 		for (i = 0; i < npgs; i++) {
-			if (!folio_test_ppps_packed_anon(page_folio(umem->pgs[i])))
+			if (!folio_test_ppps_compat_anon(page_folio(umem->pgs[i])))
 				continue;
 			unpin_user_pages(umem->pgs, npgs);
 			npgs = -EOPNOTSUPP;
@@ -132,6 +128,7 @@ unlock:
 		}
 	}
 
+check_npgs:
 	if (npgs != umem->npgs) {
 		if (npgs >= 0) {
 			umem->npgs = npgs;
