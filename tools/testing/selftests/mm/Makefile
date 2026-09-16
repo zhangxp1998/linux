@@ -78,11 +78,11 @@ PPPS_TESTS := \
 	userfaultfd_continue_remote_ppps userfaultfd_eof_ppps \
 	userfaultfd_mixed_ppps userfaultfd_poison_remote_ppps \
 	userfaultfd_remap_ppps userfaultfd_remote_ppps \
-	userfaultfd_retry_ppps userfaultfd_shmem_ppps \
+	userfaultfd_retry_ppps userfaultfd_shmem_ppps userfaultfd_shmem_boundaries_ppps \
 	userfaultfd_unregister_remote_ppps userfaultfd_wp_remote_ppps \
 	userfaultfd_zeropage_ppps v9fs_mmap_close_ppps vb2_mmap_ppps \
 	vb2_userptr_ppps vhost_dirty_log_ppps vm_iomap_memory_ppps \
-	vm_map_pages_ppps xdp_umem_ppps
+	vm_map_pages_ppps vmalloc_align_ppps xdp_umem_ppps
 
 PPPS_TESTS_arm64 := \
 	brk_aslr_ppps brk_aslr_ppps_sample elf_brk_gap_ppps exec_aslr_ppps \
@@ -179,7 +179,7 @@ TEST_GEN_FILES += virtual_address_range
 TEST_GEN_FILES += write_to_hugetlbfs
 endif
 
-TEST_PROGS := run_vmtests.sh sg_page_slices_ppps.sh
+TEST_PROGS := run_vmtests.sh sg_page_slices_ppps.sh vmalloc_align_ppps.sh
 TEST_GEN_PROGS += uffd_copy_tuple_ppps
 
 TEST_FILES := test_vmalloc.sh
