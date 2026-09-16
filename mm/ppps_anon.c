@@ -285,6 +285,31 @@ bool ppps_anon_folio_has_other_entries(struct vm_area_struct *vma,
 	return false;
 }
 
+/* Called under PTL before replacing one migration entry by a present PTE. */
+bool ppps_anon_restore_migration(struct vm_area_struct *vma,
+		struct folio *old, struct folio *new, pte_t *ptep,
+		unsigned long address)
+{
+	bool first = ppps_anon_slice_takes_ownership(vma, new, ptep, address);
+
+	if (old != new) {
+		int delta;
+
+		/*
+		 * A tuple can span VMAs. Between their rmap walks, present PTEs
+		 * name the destination while migration entries name the source.
+		 * Charge both identities while both exist, so fork and zap can
+		 * account either half independently. The last restoration drops
+		 * the source charge; a complete restoration has no net RSS change.
+		 */
+		delta = !ppps_anon_folio_has_other_entries(vma, new, ptep, address);
+		delta -= !ppps_anon_folio_has_other_entries(vma, old, ptep, address);
+		if (delta)
+			add_mm_counter(vma->vm_mm, MM_ANONPAGES, delta);
+	}
+	return first;
+}
+
 /*
  * The single packed folio which the other slices of this tuple map, or NULL
  * when the tuple is empty or maps more than one candidate.
