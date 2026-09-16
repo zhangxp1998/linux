@@ -1,27 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * mremap(MREMAP_MAYMOVE | MREMAP_DONTUNMAP) of a 4K compat mapping honors a
+ * free 4K-aligned hint, preserves every process page across the slice shift
+ * and leaves the source zero-filled.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
-#include "kselftest.h"
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
+#include "kselftest_ppps.h"
 
 #ifndef MREMAP_DONTUNMAP
 #define MREMAP_DONTUNMAP 4
 #endif
 
-#define USER_PAGE_SIZE 4096UL
-#define TEST_LENGTH (4 * USER_PAGE_SIZE)
+#define TEST_LENGTH (4 * PROCESS_PAGE_SIZE)
 #define SOURCE_ADDRESS ((void *)0x40001000UL)
 #define HINT_ADDRESS ((void *)0x50000000UL)
 
@@ -35,16 +28,14 @@ static int run_test(void)
 	unsigned int i;
 
 	ksft_print_header();
-	ksft_set_plan(4);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(3);
 
 	source = mmap(source, TEST_LENGTH, PROT_READ | PROT_WRITE,
 		      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
 	if (source == MAP_FAILED)
 		ksft_exit_fail_msg("source mmap failed: %s\n", strerror(errno));
 	for (i = 0; i < TEST_LENGTH; i++)
-		source[i] = i / USER_PAGE_SIZE + 0x31;
+		source[i] = i / PROCESS_PAGE_SIZE + 0x31;
 
 	/* Reserve and release the range to prove the requested hint is free. */
 	hint = mmap(hint, TEST_LENGTH, PROT_NONE,
@@ -62,7 +53,7 @@ static int run_test(void)
 			 "MREMAP_DONTUNMAP honors an available hint\n");
 
 	for (i = 0; i < TEST_LENGTH; i++) {
-		if (moved[i] != (unsigned char)(i / USER_PAGE_SIZE + 0x31))
+		if (moved[i] != (unsigned char)(i / PROCESS_PAGE_SIZE + 0x31))
 			moved_data_ok = false;
 		if (source[i])
 			source_zeroed = false;
@@ -77,23 +68,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n", strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n", strerror(errno));
-	execl("/proc/self/exe", "mremap_hint_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

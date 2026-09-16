@@ -1,33 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * io_uring rings of a 4K compat process are mapped in 4K process-page
+ * units: SQ/CQ/SQE and provided-buffer rings map and complete a NOP, their
+ * padding beyond the ring is rejected or faults, and user-backed 4K ring
+ * regions work with IORING_SETUP_NO_MMAP.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <linux/stddef.h>
 
-#define UAPI_LINUX_IO_URING_H_SKIP_LINUX_TIME_TYPES_H
-struct __kernel_timespec {
-	long long tv_sec;
-	long long tv_nsec;
-};
-
 #include <linux/io_uring.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define USER_DATA 0x697572696e672d34ULL
 #define PBUF_BGID 7
 #define USER_PBUF_BGID 8
@@ -69,19 +56,19 @@ static bool ring_tail_is_inaccessible(int fd, off_t offset)
 	int saved_errno;
 
 	errno = 0;
-	mapping = mmap_ring_region(fd, 2 * USER_PAGE_SIZE, offset);
+	mapping = mmap_ring_region(fd, 2 * PROCESS_PAGE_SIZE, offset);
 	if (mapping == MAP_FAILED)
 		return errno == EINVAL;
 	if (pipe(pipefd)) {
-		munmap(mapping, 2 * USER_PAGE_SIZE);
+		munmap(mapping, 2 * PROCESS_PAGE_SIZE);
 		return false;
 	}
 	errno = 0;
-	ret = write(pipefd[1], mapping + USER_PAGE_SIZE, 1);
+	ret = write(pipefd[1], mapping + PROCESS_PAGE_SIZE, 1);
 	saved_errno = errno;
 	close(pipefd[0]);
 	close(pipefd[1]);
-	munmap(mapping, 2 * USER_PAGE_SIZE);
+	munmap(mapping, 2 * PROCESS_PAGE_SIZE);
 	if (ret == 1)
 		ksft_print_msg("ring padding was readable\n");
 	else if (ret < 0 && saved_errno != EFAULT)
@@ -218,9 +205,7 @@ static int run_test(void)
 	ksft_print_header();
 	if (access("/proc/sys/kernel/io_uring_disabled", F_OK))
 		ksft_exit_skip("CONFIG_IO_URING is disabled\n");
-	ksft_set_plan(9);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(8);
 	fd = setup_ring(2, &params);
 	ksft_test_result(fd >= 0, "create io_uring\n");
 	if (fd >= 0) {
@@ -248,17 +233,17 @@ static int run_test(void)
 	pbuf_offset = IORING_OFF_PBUF_RING |
 		((off_t)PBUF_BGID << IORING_OFF_PBUF_SHIFT);
 	if (pbuf_registered)
-		pbuf = mmap_ring_region(fd, USER_PAGE_SIZE, pbuf_offset);
+		pbuf = mmap_ring_region(fd, PROCESS_PAGE_SIZE, pbuf_offset);
 	ksft_test_result(pbuf != MAP_FAILED,
 			 "map the provided-buffer ring's process page\n");
 	if (pbuf != MAP_FAILED)
-		munmap(pbuf, USER_PAGE_SIZE);
+		munmap(pbuf, PROCESS_PAGE_SIZE);
 	if (pbuf_registered)
 		pbuf_tail_rejected = ring_tail_is_inaccessible(fd, pbuf_offset);
 	ksft_test_result(pbuf_tail_rejected,
 			 "reject or fault the provided-buffer ring's padding page\n");
 
-	user_pbuf = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	user_pbuf = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	memset(&reg, 0, sizeof(reg));
 	reg.ring_addr = (uintptr_t)user_pbuf;
@@ -273,9 +258,9 @@ static int run_test(void)
 	ksft_test_result(user_pbuf_registered,
 			 "register a user-backed 4K provided-buffer ring\n");
 
-	user_ring = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	user_ring = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	user_sqes = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	user_sqes = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (user_ring != MAP_FAILED && user_sqes != MAP_FAILED) {
 		user_params.cq_off.user_addr = (uintptr_t)user_ring;
@@ -300,33 +285,12 @@ static int run_test(void)
 	if (fd >= 0)
 		close(fd);
 	if (user_sqes != MAP_FAILED)
-		munmap(user_sqes, USER_PAGE_SIZE);
+		munmap(user_sqes, PROCESS_PAGE_SIZE);
 	if (user_ring != MAP_FAILED)
-		munmap(user_ring, USER_PAGE_SIZE);
+		munmap(user_ring, PROCESS_PAGE_SIZE);
 	if (user_pbuf != MAP_FAILED)
-		munmap(user_pbuf, USER_PAGE_SIZE);
+		munmap(user_pbuf, PROCESS_PAGE_SIZE);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "io_uring_mmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

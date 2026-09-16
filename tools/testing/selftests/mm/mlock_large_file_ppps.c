@@ -1,23 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * mlock() and MLOCK_ONFAULT on a 2MB private file mapping of a 4K compat
+ * process mark the backing large file folios mlocked and unevictable in
+ * /proc/kpageflags.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
-#include <unistd.h>
 
-#define SLICE_SIZE 4096UL
+#include "kselftest_ppps.h"
+
 #define MAP_SIZE (2 * 1024 * 1024UL)
 #define MAP_ADDR ((void *)0x40001000UL)
 
-#define PAGEMAP_PRESENT 0x8000000000000000ULL
-#define PAGEMAP_PFN_MASK ((1ULL << 55) - 1)
 #define KPF_COMPOUND_HEAD 15
 #define KPF_COMPOUND_TAIL 16
 #define KPF_UNEVICTABLE 18
@@ -45,16 +42,16 @@ static void skip(const char *name, const char *reason)
 
 static unsigned char slice_pattern(size_t offset)
 {
-	return ((offset / SLICE_SIZE) % 251) + 1;
+	return ((offset / PROCESS_PAGE_SIZE) % 251) + 1;
 }
 
 static int prepare_file(int fd)
 {
-	unsigned char buffer[SLICE_SIZE];
+	unsigned char buffer[PROCESS_PAGE_SIZE];
 	size_t offset;
 	int rc;
 
-	for (offset = 0; offset < MAP_SIZE; offset += SLICE_SIZE) {
+	for (offset = 0; offset < MAP_SIZE; offset += PROCESS_PAGE_SIZE) {
 		memset(buffer, slice_pattern(offset), sizeof(buffer));
 		if (pwrite(fd, buffer, sizeof(buffer), offset) !=
 		    (ssize_t)sizeof(buffer))
@@ -78,10 +75,9 @@ static int raise_memlock_limit(void)
 		return -1;
 	if (limit.rlim_cur >= MAP_SIZE)
 		return 0;
-	if (limit.rlim_max < MAP_SIZE) {
-		errno = EPERM;
-		return -1;
-	}
+	/* Raising the hard limit needs CAP_SYS_RESOURCE (EPERM otherwise). */
+	if (limit.rlim_max < MAP_SIZE)
+		limit.rlim_max = MAP_SIZE;
 	limit.rlim_cur = MAP_SIZE;
 	return setrlimit(RLIMIT_MEMLOCK, &limit);
 }
@@ -106,13 +102,13 @@ static int collect_pages(const unsigned char *map, struct page_info *pages,
 		goto error;
 
 	*nr_pages = 0;
-	for (offset = 0; offset < MAP_SIZE; offset += SLICE_SIZE) {
+	for (offset = 0; offset < MAP_SIZE; offset += PROCESS_PAGE_SIZE) {
 		uint64_t entry;
 		uint64_t pfn;
 		size_t i;
 
 		if (read_u64(pagemap_fd,
-			     (uintptr_t)(map + offset) / SLICE_SIZE, &entry))
+			     (uintptr_t)(map + offset) / PROCESS_PAGE_SIZE, &entry))
 			goto error;
 		if (!(entry & PAGEMAP_PRESENT)) {
 			errno = ENOENT;
@@ -169,7 +165,7 @@ static size_t count_locked_large_pages(const struct page_info *pages,
 
 static void test_mlock_onfault(const char *file)
 {
-	struct page_info pages[MAP_SIZE / SLICE_SIZE];
+	struct page_info pages[MAP_SIZE / PROCESS_PAGE_SIZE];
 	char path[PATH_MAX] = "mlock-onfault-large-file-ppps.XXXXXX";
 	unsigned char *map = MAP_FAILED;
 	size_t checksum = 0;
@@ -197,8 +193,11 @@ static void test_mlock_onfault(const char *file)
 			   MAP_PRIVATE | MAP_FIXED_NOREPLACE, fd, 0);
 	if (map == MAP_FAILED && !rc)
 		rc = -1;
-	if (!rc && raise_memlock_limit())
-		rc = -1;
+	if (!rc && raise_memlock_limit()) {
+		skip("enable MLOCK_ONFAULT before faulting a large file",
+		     "RLIMIT_MEMLOCK is too small");
+		goto skip_remaining;
+	}
 	if (!rc && mlock2(map, MAP_SIZE, MLOCK_ONFAULT))
 		rc = -1;
 
@@ -210,7 +209,7 @@ setup_done:
 	if (rc)
 		goto skip_remaining;
 
-	for (offset = 0; offset < MAP_SIZE; offset += SLICE_SIZE)
+	for (offset = 0; offset < MAP_SIZE; offset += PROCESS_PAGE_SIZE)
 		checksum += map[offset];
 	printf("# MLOCK_ONFAULT checksum=%zu\n", checksum);
 	result(checksum != 0, "fault the MLOCK_ONFAULT file mapping");
@@ -245,9 +244,9 @@ out:
 	unlink(path);
 }
 
-int main(int argc, char **argv)
+static int run_test(const char *file)
 {
-	struct page_info pages[MAP_SIZE / SLICE_SIZE];
+	struct page_info pages[MAP_SIZE / PROCESS_PAGE_SIZE];
 	char path[PATH_MAX] = "mlock-large-file-ppps.XXXXXX";
 	size_t checksum = 0;
 	unsigned char *map = MAP_FAILED;
@@ -260,16 +259,10 @@ int main(int argc, char **argv)
 	int fd = -1;
 	int rc;
 
-	printf("TAP version 13\n1..7\n");
-	if (argc > 2) {
-		printf("Bail out! usage: %s [FILE]\n", argv[0]);
-		return 1;
-	}
-	result(sysconf(_SC_PAGESIZE) == SLICE_SIZE,
-	       "process page size is 4K");
+	printf("TAP version 13\n1..6\n");
 
-	if (argc == 2) {
-		strncpy(path, argv[1], sizeof(path) - 1);
+	if (file) {
+		strncpy(path, file, sizeof(path) - 1);
 		path[sizeof(path) - 1] = '\0';
 		fd = open(path, O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0600);
 	} else {
@@ -286,7 +279,7 @@ int main(int argc, char **argv)
 		rc = -1;
 	}
 	if (!rc) {
-		for (offset = 0; offset < MAP_SIZE; offset += SLICE_SIZE)
+		for (offset = 0; offset < MAP_SIZE; offset += PROCESS_PAGE_SIZE)
 			checksum += map[offset];
 	}
 	printf("# mapped checksum=%zu\n", (size_t)checksum);
@@ -332,7 +325,30 @@ out:
 	if (fd >= 0)
 		close(fd);
 	unlink(path);
-	test_mlock_onfault(argc == 2 ? argv[1] : NULL);
+	test_mlock_onfault(file);
 	printf("# Totals: pass:%d fail:%d\n", test_no - failures, failures);
 	return failures ? 1 : 0;
+}
+
+int main(int argc, char **argv)
+{
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode) {
+		if (argc > 2) {
+			printf("Bail out! usage: %s [FILE]\n", argv[0]);
+			return 1;
+		}
+		if (!ppps_is_compat_process()) {
+			if (argc == 2)
+				exec_compat(argv[0], PPPS_RUN_FLAG, argv[1], NULL);
+			exec_compat(argv[0], PPPS_RUN_FLAG, NULL);
+		}
+		return run_test(argc == 2 ? argv[1] : NULL);
+	}
+	if ((argc == 2 || argc == 3) && !strcmp(mode, PPPS_RUN_FLAG)) {
+		ppps_require_compat();
+		return run_test(argc == 3 ? argv[2] : NULL);
+	}
+	return EXIT_FAILURE;
 }

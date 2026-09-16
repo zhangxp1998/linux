@@ -1,29 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * PERF_SAMPLE_PHYS_ADDR of minor faults on two 4K aliases of the same memfd
+ * byte, mapped at different offsets within a native page, reports the same
+ * physical address in a 4K compat process.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/memfd.h>
 #include <linux/perf_event.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE		4096UL
-#define NATIVE_PAGE_SIZE	16384UL
 #define RESERVE_SIZE		(8 * NATIVE_PAGE_SIZE)
 
 static int perf_event_open(struct perf_event_attr *attr)
@@ -48,8 +38,8 @@ static void copy_ring(void *destination, const unsigned char *data,
 static bool find_phys_addr(struct perf_event_mmap_page *metadata,
 			   uint64_t expected_addr, uint64_t *phys_addr)
 {
-	size_t data_offset = metadata->data_offset ?: USER_PAGE_SIZE;
-	size_t data_size = metadata->data_size ?: USER_PAGE_SIZE;
+	size_t data_offset = metadata->data_offset ?: PROCESS_PAGE_SIZE;
+	size_t data_size = metadata->data_size ?: PROCESS_PAGE_SIZE;
 	const unsigned char *data = (const unsigned char *)metadata + data_offset;
 	uint64_t head = __atomic_load_n(&metadata->data_head, __ATOMIC_ACQUIRE);
 	uint64_t position = metadata->data_tail;
@@ -99,7 +89,7 @@ static int sample_fault_phys_addr(unsigned char *address,
 	fd = perf_event_open(&attr);
 	if (fd < 0)
 		return -1;
-	metadata = mmap(NULL, 2 * USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	metadata = mmap(NULL, 2 * PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			MAP_SHARED, fd, 0);
 	if (metadata == MAP_FAILED)
 		goto out_close;
@@ -115,7 +105,7 @@ static int sample_fault_phys_addr(unsigned char *address,
 		ret = 0;
 
 out_unmap:
-	munmap(metadata, 2 * USER_PAGE_SIZE);
+	munmap(metadata, 2 * PROCESS_PAGE_SIZE);
 out_close:
 	close(fd);
 	return ret;
@@ -135,12 +125,10 @@ static int run_test(void)
 	int sample1;
 
 	ksft_print_header();
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(5);
 
 	memfd = memfd_create("perf-phys-addr-ppps", MFD_CLOEXEC);
-	if (memfd < 0 || ftruncate(memfd, USER_PAGE_SIZE))
+	if (memfd < 0 || ftruncate(memfd, PROCESS_PAGE_SIZE))
 		ksft_exit_fail_msg("memfd setup failed: %s\n", strerror(errno));
 	reservation = mmap(NULL, RESERVE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -151,10 +139,10 @@ static int run_test(void)
 		~(NATIVE_PAGE_SIZE - 1);
 	munmap(reservation, RESERVE_SIZE);
 
-	alias0 = mmap((void *)base, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	alias0 = mmap((void *)base, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		      MAP_SHARED | MAP_FIXED_NOREPLACE, memfd, 0);
-	alias1 = mmap((void *)(base + NATIVE_PAGE_SIZE + USER_PAGE_SIZE),
-		      USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	alias1 = mmap((void *)(base + NATIVE_PAGE_SIZE + PROCESS_PAGE_SIZE),
+		      PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		      MAP_SHARED | MAP_FIXED_NOREPLACE, memfd, 0);
 	mappings_ok = alias0 != MAP_FAILED && alias1 != MAP_FAILED;
 	ksft_test_result(mappings_ok,
@@ -177,31 +165,10 @@ static int run_test(void)
 	ksft_test_result(sample0 == 0 && sample1 == 0 && phys0 == phys1,
 			 "PERF_SAMPLE_PHYS_ADDR identifies the same physical byte\n");
 
-	munmap(alias1, USER_PAGE_SIZE);
-	munmap(alias0, USER_PAGE_SIZE);
+	munmap(alias1, PROCESS_PAGE_SIZE);
+	munmap(alias0, PROCESS_PAGE_SIZE);
 	close(memfd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "perf_phys_addr_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)
