@@ -523,6 +523,17 @@ static inline pte_t pte_advance_phys(pte_t pte, unsigned long bytes)
 
 	return __pte(__phys_to_pte_val(phys + bytes) | prot);
 }
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/* Re-point @pte at process-page slice @slice of its native page. */
+#define pte_mkslice pte_mkslice
+static inline pte_t pte_mkslice(pte_t pte, unsigned int slice)
+{
+	unsigned long offset = (unsigned long)slice << PAGE_SHIFT_COMPAT;
+
+	return pte_advance_phys(pte, offset - pte_page_offset(pte));
+}
+#endif
 /*
  * Hugetlb definitions.
  */

@@ -9,27 +9,6 @@
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 
-static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
-{
-	bool is_compat = ppps_mm_is_compat(vma->vm_mm);
-	bool is_anon = !vma->vm_ops;
-	unsigned long nr_slices = vma_pages(vma);
-
-	if (!is_compat || is_anon) {
-		/*
-		 * For native processes and compat anonymous mappings (which do not track
-		 * subpage slices), the number of slices corresponds directly to the number
-		 * of host pages.
-		 */
-		return nr_slices;
-	}
-
-	/*
-	 * For file-backed VMAs in compat processes, calculate the total host pages
-	 * needed to cover the range (including starting slice offset alignment).
-	 */
-	return (vma_slice_off(vma) + nr_slices) >> PPPS_SLICE_SHIFT;
-}
 
 static inline unsigned int vma_slice_offset(struct vm_area_struct *vma,
 					   unsigned long addr)
@@ -142,10 +121,6 @@ static inline unsigned int mmap_slice_offset(struct mm_struct *mm,
 
 #else /* !CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
 
-static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
-{
-	return (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
-}
 
 static inline unsigned int vma_slice_offset(struct vm_area_struct *vma,
 					   unsigned long addr)
@@ -194,3 +169,6 @@ static inline unsigned int mmap_slice_offset(struct mm_struct *mm,
 #endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
 
 #endif /* MM_PPPS_H */
+
+int ppps_vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
+		struct page **pages, unsigned long *num);
