@@ -1,32 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * TCP_ZEROCOPY_RECEIVE for a 4K compat process accepts a socket mapping at a
+ * native-page-aligned address and lands the received data there intact.
+ * Zero-copy maps whole native pages, so like every other native-page
+ * operation the address must be 16K aligned (tcp_zerocopy_align_ppps covers
+ * the rejection of misaligned addresses).
+ */
 #define _GNU_SOURCE
 
 #include <arpa/inet.h>
-#include <errno.h>
 #include <linux/tcp.h>
 #include <poll.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
 
 #ifndef MSG_ZEROCOPY
 #define MSG_ZEROCOPY 0x4000000
 #endif
 
-#define USER_PAGE_SIZE 4096UL
-#define NATIVE_PAGE_SIZE 16384UL
 #define MAP_LENGTH (256UL * 1024)
 #define SEND_LENGTH (512UL * 1024)
 
@@ -107,8 +102,8 @@ static void sender(const struct sockaddr_in *address)
 	_exit(0);
 }
 
-static void *map_non_native_aligned(int fd, void **reservation,
-				    size_t *reservation_length)
+static void *map_native_aligned(int fd, void **reservation,
+				size_t *reservation_length)
 {
 	uintptr_t target;
 	void *area;
@@ -120,7 +115,6 @@ static void *map_non_native_aligned(int fd, void **reservation,
 		return MAP_FAILED;
 	target = ((uintptr_t)*reservation + NATIVE_PAGE_SIZE - 1) &
 		 ~(NATIVE_PAGE_SIZE - 1);
-	target += USER_PAGE_SIZE;
 	area = mmap((void *)target, MAP_LENGTH, PROT_READ,
 		    MAP_SHARED | MAP_FIXED, fd, 0);
 	if (area == MAP_FAILED)
@@ -148,7 +142,7 @@ static int run_test(void)
 	void *reservation = MAP_FAILED;
 	unsigned char *mapping;
 	socklen_t zc_length;
-	bool non_native;
+	bool native_aligned;
 	bool contents;
 	bool mapped;
 	pid_t child;
@@ -158,9 +152,7 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(5);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(4);
 	listener = make_listener(&address);
 	if (listener < 0)
 		ksft_exit_fail_msg("listener setup failed: %s\n",
@@ -175,14 +167,12 @@ static int run_test(void)
 	if (fd < 0)
 		ksft_exit_fail_msg("accept failed: %s\n", strerror(errno));
 
-	mapping = map_non_native_aligned(fd, &reservation,
-					 &reservation_length);
+	mapping = map_native_aligned(fd, &reservation, &reservation_length);
 	if (mapping == MAP_FAILED)
 		ksft_exit_fail_msg("socket mmap failed: %s\n", strerror(errno));
-	non_native = !((uintptr_t)mapping & (USER_PAGE_SIZE - 1)) &&
-		     ((uintptr_t)mapping & (NATIVE_PAGE_SIZE - 1));
-	ksft_test_result(non_native,
-			 "place socket VMA at a non-native 4K boundary\n");
+	native_aligned = !((uintptr_t)mapping & (NATIVE_PAGE_SIZE - 1));
+	ksft_test_result(native_aligned,
+			 "place socket VMA at a native page boundary\n");
 
 	pfd.fd = fd;
 	pfd.events = POLLIN;
@@ -206,25 +196,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "tcp_zerocopy_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

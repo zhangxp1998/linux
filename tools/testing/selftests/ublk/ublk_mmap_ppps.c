@@ -1,30 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat ublk server maps both per-queue command buffers at their 4K
+ * offsets: queue 0 fits in one process page and queue 1 sits at an offset
+ * that only decodes correctly when ublk uses the process page size.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/io_uring.h>
 #include <linux/ublk_cmd.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define USER_DATA 0x75626c6b2d707070ULL
 #define SQE_SIZE_128 128UL
 
@@ -213,7 +203,7 @@ static size_t user_cmd_buf_size(unsigned int depth)
 {
 	size_t size = depth * sizeof(struct ublksrv_io_desc);
 
-	return (size + USER_PAGE_SIZE - 1) & ~(USER_PAGE_SIZE - 1);
+	return (size + PROCESS_PAGE_SIZE - 1) & ~(PROCESS_PAGE_SIZE - 1);
 }
 
 static int run_test(void)
@@ -224,36 +214,36 @@ static int run_test(void)
 		.max_io_buf_bytes = 64 * 1024,
 		.dev_id = UINT32_MAX,
 	};
-	struct io_uring_params params = {
+	struct io_uring_params ctrl_params = {
 		.flags = IORING_SETUP_SQE128,
 	};
-	struct ring_mapping map;
+	struct ring_mapping ctrl_map;
 	void *queue0 = MAP_FAILED;
 	void *queue1 = MAP_FAILED;
-	size_t cmd_size;
+	size_t cmd_size = 0;
 	off_t queue1_offset;
-	bool ring_mapped = false;
+	bool ctrl_ring_mapped = false;
 	bool added = false;
 	bool deleted = false;
 	int ctrl_fd;
-	int ring_fd = -1;
+	int ctrl_ring_fd = -1;
 	int char_fd = -1;
 	int ret;
 
 	ksft_print_header();
-	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(7);
 	ctrl_fd = open_ublk_control();
 	ksft_test_result(ctrl_fd >= 0, "open ublk-control\n");
 	if (ctrl_fd >= 0)
-		ring_fd = setup_ring(2, &params);
-	ksft_test_result(ring_fd >= 0, "create SQE128 control ring\n");
-	if (ring_fd >= 0)
-		ring_mapped = map_ring(ring_fd, &params, &map);
-	ksft_test_result(ring_mapped, "map ublk control ring\n");
-	if (ring_mapped) {
-		ret = submit_ctrl_cmd(ring_fd, &params, &map, ctrl_fd,
+		ctrl_ring_fd = setup_ring(2, &ctrl_params);
+	ksft_test_result(ctrl_ring_fd >= 0, "create SQE128 control ring\n");
+	if (ctrl_ring_fd >= 0)
+		ctrl_ring_mapped = map_ring(ctrl_ring_fd, &ctrl_params,
+					    &ctrl_map);
+	ksft_test_result(ctrl_ring_mapped, "map ublk control ring\n");
+	if (ctrl_ring_mapped) {
+		ret = submit_ctrl_cmd(ctrl_ring_fd, &ctrl_params, &ctrl_map,
+				      ctrl_fd,
 				      UBLK_U_CMD_ADD_DEV, &info);
 		added = ret == 0;
 		if (!added)
@@ -284,39 +274,19 @@ static int run_test(void)
 	if (char_fd >= 0)
 		close(char_fd);
 	if (added) {
-		ret = submit_ctrl_cmd(ring_fd, &params, &map, ctrl_fd,
+		ret = submit_ctrl_cmd(ctrl_ring_fd, &ctrl_params, &ctrl_map,
+				      ctrl_fd,
 				      UBLK_U_CMD_DEL_DEV_ASYNC, &info);
 		deleted = ret == 0;
 	}
 	ksft_test_result(deleted, "delete the ublk device\n");
-	if (ring_fd >= 0)
-		unmap_ring(&map);
-	if (ring_fd >= 0)
-		close(ring_fd);
+	if (ctrl_ring_mapped)
+		unmap_ring(&ctrl_map);
+	if (ctrl_ring_fd >= 0)
+		close(ctrl_ring_fd);
 	if (ctrl_fd >= 0)
 		close(ctrl_fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "ublk_mmap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

@@ -78,6 +78,10 @@ ifeq ($(KHDR_INCLUDES),)
 KHDR_INCLUDES := -isystem $(top_srcdir)/usr/include
 endif
 
+# Make kselftest.h and kselftest_ppps.h reachable as "kselftest.h" from any
+# depth below the selftests directory.
+CFLAGS += -I$(selfdir)
+
 # In order to use newer items that haven't yet been added to the user's system
 # header files, add $(TOOLS_INCLUDES) to the compiler invocation in each
 # each selftest.
@@ -153,9 +157,11 @@ define INSTALL_SINGLE_RULE
 	$(if $(INSTALL_LIST),rsync -a --copy-unsafe-links $(INSTALL_LIST) $(INSTALL_PATH)/)
 endef
 
+# The modules directory may legitimately hold no .ko (no kernel to build
+# against), so only rsync when there is something to install.
 define INSTALL_MODS_RULE
 	$(if $(INSTALL_LIST),@mkdir -p $(INSTALL_PATH)/$(INSTALL_LIST))
-	$(if $(INSTALL_LIST),rsync -a --copy-unsafe-links $(INSTALL_LIST)/*.ko $(INSTALL_PATH)/$(INSTALL_LIST))
+	$(if $(wildcard $(INSTALL_LIST)/*.ko),rsync -a --copy-unsafe-links $(INSTALL_LIST)/*.ko $(INSTALL_PATH)/$(INSTALL_LIST))
 endef
 
 define INSTALL_RULE
@@ -216,7 +222,8 @@ endif
 # Selftest makefiles can override those targets by setting
 # OVERRIDE_TARGETS = 1.
 ifeq ($(OVERRIDE_TARGETS),)
-LOCAL_HDRS += $(selfdir)/kselftest_harness.h $(selfdir)/kselftest.h
+LOCAL_HDRS += $(selfdir)/kselftest_harness.h $(selfdir)/kselftest.h \
+	      $(selfdir)/kselftest_ppps.h
 $(OUTPUT)/%:%.c $(LOCAL_HDRS)
 	$(call msg,CC,,$@)
 	$(Q)$(LINK.c) $(filter-out $(LOCAL_HDRS),$^) $(LDLIBS) -o $@

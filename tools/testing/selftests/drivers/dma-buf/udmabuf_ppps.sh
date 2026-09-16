@@ -1,37 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
-
-module=./dmabuf_mmap_ppps_module/dmabuf_mmap_ppps_module.ko
-module_name=dmabuf_mmap_ppps_module
-loaded=
-
-cleanup()
-{
-	status=$?
-	trap - EXIT
-	if [ -n "$loaded" ]; then
-		rmmod "$module_name" || status=1
-	fi
-	exit "$status"
-}
-
-if [ "$(id -u)" -ne 0 ]; then
-	echo "SKIP: root privileges are required"
-	exit 4
-fi
-
-if [ ! -e /dev/udmabuf ]; then
-	echo "SKIP: /dev/udmabuf is unavailable"
-	exit 4
-fi
-
-if [ ! -e /dev/dmabuf_mmap_ppps ]; then
-	if ! insmod "$module"; then
-		echo "FAIL: could not load $module"
-		exit 1
-	fi
-	loaded=1
-fi
-
-trap cleanup EXIT
-./udmabuf_ppps
+# Run udmabuf_ppps with the dmabuf_mmap fixture module loaded; the test
+# itself skips when /dev/udmabuf is unavailable.
+here=$(dirname "$0")
+runner=$here/ppps_run_module.sh
+[ -x "$runner" ] || runner=$here/../../ppps/ppps_run_module.sh
+exec "$runner" "$here/ppps_modules/dmabuf_mmap_ppps_module.ko" \
+	/dev/dmabuf_mmap_ppps -- "$here/udmabuf_ppps"

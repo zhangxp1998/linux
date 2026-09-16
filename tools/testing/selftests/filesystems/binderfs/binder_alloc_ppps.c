@@ -1,39 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat Binder server maps its buffer at a native-page-misaligned hint,
+ * binder_alloc accounts the partially backed native page in its page slots,
+ * and a maximal transaction is delivered through the subpage mapping.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/android/binder.h>
 #include <linux/android/binderfs.h>
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
-#define NATIVE_PAGE_SIZE 16384UL
-#define BINDER_VM_SIZE ((1UL * 1024 * 1024) - 2 * USER_PAGE_SIZE)
+#define BINDER_VM_SIZE ((1UL * 1024 * 1024) - 2 * PROCESS_PAGE_SIZE)
 #define BINDER_VM_HINT ((void *)0x100001000ULL)
 #define TEST_CODE 0x50505053U
-#define TRANSACTION_PAYLOAD_SIZE (BINDER_VM_SIZE - USER_PAGE_SIZE)
+#define TRANSACTION_PAYLOAD_SIZE (BINDER_VM_SIZE - PROCESS_PAGE_SIZE)
 
 struct server_ready {
 	int error;
@@ -48,73 +37,6 @@ static void init_transaction_payload(void)
 
 	for (i = 0; i < sizeof(transaction_payload); i++)
 		transaction_payload[i] = (i * 131 + 17) & 0xff;
-}
-
-static bool write_full(int fd, const void *buffer, size_t size)
-{
-	const char *cursor = buffer;
-
-	while (size) {
-		ssize_t written = write(fd, cursor, size);
-
-		if (written < 0 && errno == EINTR)
-			continue;
-		if (written <= 0)
-			return false;
-		cursor += written;
-		size -= written;
-	}
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t size)
-{
-	char *cursor = buffer;
-
-	while (size) {
-		ssize_t bytes = read(fd, cursor, size);
-
-		if (bytes < 0 && errno == EINTR)
-			continue;
-		if (bytes <= 0)
-			return false;
-		cursor += bytes;
-		size -= bytes;
-	}
-	return true;
-}
-
-static unsigned long mapping_kernel_page_size(pid_t pid, uintptr_t address)
-{
-	char path[64];
-	char *line = NULL;
-	size_t line_size = 0;
-	unsigned long page_size = 0;
-	bool in_mapping = false;
-	FILE *file;
-
-	if (snprintf(path, sizeof(path), "/proc/%d/smaps", pid) >=
-	    (int)sizeof(path))
-		return 0;
-	file = fopen(path, "re");
-	if (!file)
-		return 0;
-	while (getline(&line, &line_size, file) >= 0) {
-		unsigned long start, end, size_kb;
-
-		if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
-			in_mapping = address >= start && address < end;
-			continue;
-		}
-		if (in_mapping &&
-		    sscanf(line, "KernelPageSize: %lu kB", &size_kb) == 1) {
-			page_size = size_kb * 1024;
-			break;
-		}
-	}
-	free(line);
-	fclose(file);
-	return page_size;
 }
 
 static int binder_page_slots(const char *binderfs_dir, pid_t pid)
@@ -328,11 +250,10 @@ static int run_test(const char *binderfs_dir)
 	int control_fd;
 	int status;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(5);
+	ksft_set_plan(4);
 	init_transaction_payload();
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
 	if (snprintf(control_path, sizeof(control_path), "%s/binder-control",
 		     binderfs_dir) >= (int)sizeof(control_path) ||
 	    snprintf(device_path, sizeof(device_path), "%s/ppps-binder",
@@ -367,16 +288,21 @@ static int run_test(const char *binderfs_dir)
 	ksft_print_msg("binder mapping=%#lx error=%d\n",
 		       (unsigned long)ready.mapping, ready.error);
 	ksft_test_result(!ready.error && ready.mapping == (uintptr_t)BINDER_VM_HINT &&
-			 (ready.mapping & (NATIVE_PAGE_SIZE - 1)) == USER_PAGE_SIZE,
+			 (ready.mapping & (NATIVE_PAGE_SIZE - 1)) == PROCESS_PAGE_SIZE,
 			 "map binder at a native-page-misaligned hint\n");
-	kernel_page_size = mapping_kernel_page_size(server, ready.mapping);
+	ppps_smaps_sum(server, ready.mapping, 1, "KernelPageSize",
+		       &kernel_page_size);
 	page_slots = binder_page_slots(binderfs_dir, server);
 	expected_slots = kernel_page_size ?
 		(BINDER_VM_SIZE + kernel_page_size - 1) / kernel_page_size : 0;
 	ksft_print_msg("binder size=%lu kernel_page_size=%lu slots=%d expected=%lu\n",
 		       BINDER_VM_SIZE, kernel_page_size, page_slots, expected_slots);
-	ksft_test_result(kernel_page_size && page_slots == (int)expected_slots,
-			 "track the Android Binder mapping's partial backing page\n");
+	if (page_slots < 0)
+		ksft_test_result_skip("binder_logs page statistics unavailable\n");
+	else
+		ksft_test_result(kernel_page_size &&
+				 page_slots == (int)expected_slots,
+				 "track the Android Binder mapping's partial backing page\n");
 
 	if (!ready.error && send_transaction(device_path) == 0 &&
 	    wait_readable(result_pipe[0], 5000))
@@ -389,21 +315,6 @@ static int run_test(const char *binderfs_dir)
 	waitpid(server, &status, 0);
 	unlink(device_path);
 	ksft_finished();
-}
-
-static int exec_compat(const char *binderfs_dir)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "binder_alloc_ppps", "--run", binderfs_dir,
-	      NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
 }
 
 static int run_in_private_binderfs(void)
@@ -435,7 +346,7 @@ static int run_in_private_binderfs(void)
 		ksft_exit_fail_msg("fork compatibility process failed: %s\n",
 				   strerror(errno));
 	if (!child)
-		return exec_compat(mountpoint);
+		exec_compat(NULL, "--run", mountpoint, NULL);
 	if (waitpid(child, &status, 0) < 0)
 		ksft_exit_fail_msg("wait for compatibility process failed: %s\n",
 				   strerror(errno));
@@ -449,11 +360,13 @@ static int run_in_private_binderfs(void)
 
 int main(int argc, char **argv)
 {
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
 	if (argc == 1)
 		return run_in_private_binderfs();
-	if (argc == 2)
-		return exec_compat(argv[1]);
-	if (argc == 3 && !strcmp(argv[1], "--run"))
+	if (argc == 2 && !mode)
+		exec_compat(argv[0], "--run", argv[1], NULL);
+	if (argc == 3 && mode && !strcmp(mode, "--run"))
 		return run_test(argv[2]);
 	return EXIT_FAILURE;
 }
