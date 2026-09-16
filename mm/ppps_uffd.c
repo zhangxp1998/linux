@@ -157,3 +157,171 @@ out:
 	return ret;
 }
 
+bool ppps_uffd_move_tuple_ok(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
+		unsigned long dst_addr, unsigned long src_addr, unsigned long len)
+{
+	/* Enabled with generic tuple lifecycle hooks. */
+	return false;
+}
+
+/*
+ * Relocate one complete PPPS tuple without splitting its native folio.
+ * The caller holds a reference and the folio lock. Both page-table locks
+ * cover every PTE because native-page-aligned tuples cannot cross a PTE page.
+ */
+long ppps_uffd_move_tuple(struct mm_struct *mm, struct vm_area_struct *dst_vma,
+		struct vm_area_struct *src_vma, unsigned long dst_addr, unsigned long src_addr,
+		pte_t *dst_pte, pte_t *src_pte, pte_t orig_dst_pte, pte_t orig_src_pte,
+		pmd_t *dst_pmd, pmd_t dst_pmdval, spinlock_t *dst_ptl, spinlock_t *src_ptl,
+		struct folio **src_foliop, bool *ppps_fallback)
+{
+	struct folio *folio = *src_foliop;
+	pte_t src_ptes[PPPS_SLICES_PER_PAGE];
+	long ret = -EAGAIN;
+	unsigned int i;
+
+	flush_cache_range(src_vma, src_addr, src_addr + PAGE_SIZE);
+	double_pt_lock(dst_ptl, src_ptl);
+	if (!is_pte_pages_stable(dst_pte, src_pte, orig_dst_pte,
+				 orig_src_pte, dst_pmd, dst_pmdval))
+		goto out;
+
+	if (!ppps_anon_tuple_is_complete(src_vma, folio, src_addr, src_pte)) {
+		*ppps_fallback = true;
+		goto out;
+	}
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		if (!pte_none(ptep_get(dst_pte + i))) {
+			/* Preserve ordinary MOVE's byte-accurate partial result. */
+			*ppps_fallback = true;
+			goto out;
+		}
+		src_ptes[i] = ptep_get(src_pte + i);
+	}
+	if (folio_maybe_dma_pinned(folio) ||
+	    !PageAnonExclusive(&folio->page)) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	/* The four page-table mappings keep the folio alive from here. */
+	folio_put(*src_foliop);
+	*src_foliop = NULL;
+	arch_enter_lazy_mmu_mode();
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
+		ptep_get_and_clear(mm, src_addr + i * PAGE_SIZE_COMPAT,
+				   src_pte + i);
+
+	/* Fast GUP can acquire a pin while the present PTEs are being cleared. */
+	if (folio_maybe_dma_pinned(folio)) {
+		for (i = 0; i < PPPS_SLICES_PER_PAGE; i++)
+			set_pte_at(mm, src_addr + i * PAGE_SIZE_COMPAT,
+				   src_pte + i, src_ptes[i]);
+		ret = -EBUSY;
+		goto out_lazy;
+	}
+
+	folio_move_anon_rmap(folio, dst_vma);
+	folio->index = ppps_tuple_index(dst_vma, dst_addr);
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		pte_t dst = pte_modify(src_ptes[i], dst_vma->vm_page_prot);
+
+#ifdef CONFIG_MEM_SOFT_DIRTY
+		dst = pte_mksoft_dirty(dst);
+#endif
+		if (pte_dirty(src_ptes[i]))
+			dst = pte_mkdirty(dst);
+		dst = pte_mkwrite(dst, dst_vma);
+		set_pte_at(mm, dst_addr + i * PAGE_SIZE_COMPAT,
+			   dst_pte + i, dst);
+	}
+	ret = PAGE_SIZE;
+
+out_lazy:
+	arch_leave_lazy_mmu_mode();
+	if (ret == PAGE_SIZE)
+		flush_tlb_range(src_vma, src_addr, src_addr + PAGE_SIZE);
+	folio_unlock(folio);
+out:
+	double_pt_unlock(dst_ptl, src_ptl);
+	return ret;
+}
+
+long ppps_uffd_move_slice(struct mm_struct *mm, struct vm_area_struct *dst_vma,
+		struct vm_area_struct *src_vma, unsigned long dst_addr, unsigned long src_addr,
+		pte_t *dst_pte, pte_t *src_pte, pte_t orig_dst_pte, pte_t orig_src_pte,
+		pmd_t *dst_pmd, pmd_t dst_pmdval, spinlock_t *dst_ptl, spinlock_t *src_ptl,
+		struct folio *src_folio)
+{
+	struct folio *dst_folio;
+	struct folio *prealloc;
+	unsigned long src_off = vma_address_to_slice(src_vma, src_addr) *
+		PAGE_SIZE_COMPAT;
+	unsigned long dst_off = vma_address_to_slice(dst_vma, dst_addr) *
+		PAGE_SIZE_COMPAT;
+	pte_t dst;
+	long ret = -EAGAIN;
+	bool new_tuple = false;
+
+	if (folio_maybe_dma_pinned(src_folio))
+		return -EBUSY;
+	prealloc = vma_alloc_zeroed_movable_folio(dst_vma, dst_addr);
+	if (!prealloc)
+		return -ENOMEM;
+	if (mem_cgroup_charge(prealloc, mm, GFP_KERNEL)) {
+		folio_put(prealloc);
+		return -ENOMEM;
+	}
+	__folio_mark_uptodate(prealloc);
+
+	double_pt_lock(dst_ptl, src_ptl);
+	if (!is_pte_pages_stable(dst_pte, src_pte, orig_dst_pte,
+				 orig_src_pte, dst_pmd, dst_pmdval))
+		goto out_unlock;
+	if (!pte_none(ptep_get(dst_pte))) {
+		ret = -EEXIST;
+		goto out_unlock;
+	}
+	dst_folio = ppps_anon_hole_fill_folio(dst_vma, dst_pte, dst_addr);
+	if (!dst_folio) {
+		dst_folio = prealloc;
+		new_tuple = true;
+	}
+
+	ptep_get_and_clear(mm, src_addr, src_pte);
+	flush_tlb_page(src_vma, src_addr);
+	if (folio_maybe_dma_pinned(src_folio)) {
+		set_pte_at(mm, src_addr, src_pte, orig_src_pte);
+		flush_tlb_page(src_vma, src_addr);
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+	ppps_anon_copy_slice(dst_folio, dst_off >> PAGE_SHIFT_COMPAT,
+			     src_folio, src_off >> PAGE_SHIFT_COMPAT);
+
+	if (new_tuple) {
+		folio_add_new_anon_rmap(dst_folio, dst_vma, dst_addr,
+					RMAP_EXCLUSIVE);
+		folio_add_lru_vma(dst_folio, dst_vma);
+		inc_mm_counter(mm, MM_ANONPAGES);
+		prealloc = NULL;
+	}
+	dst = vma_pte_mkslice(dst_vma, mk_pte(&dst_folio->page, dst_vma->vm_page_prot), dst_addr);
+	dst = ppps_pte_inherit(dst, orig_src_pte);
+#ifdef CONFIG_MEM_SOFT_DIRTY
+	dst = pte_mksoft_dirty(dst);
+#endif
+	if (pte_write(orig_src_pte))
+		dst = pte_mkwrite(dst, dst_vma);
+	set_pte_at(mm, dst_addr, dst_pte, dst);
+
+	if (ppps_anon_slice_unmap(src_vma, src_folio, src_pte, src_addr))
+		dec_mm_counter(mm, MM_ANONPAGES);
+	ret = MM_PAGE_SIZE(mm);
+
+out_unlock:
+	double_pt_unlock(dst_ptl, src_ptl);
+	if (prealloc)
+		folio_put(prealloc);
+	return ret;
+}
