@@ -1,28 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process registers a two-slice fixed buffer mapped at a
+ * mismatched native offset: VmPin is accounted in native pages, READ_FIXED
+ * fills exactly the registered slices, and unregister releases the pins.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/io_uring.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define PROCESS_PAGE_SIZE 4096UL
-#define PPPS_NATIVE_PAGE_SIZE 16384UL
 #define TEST_LENGTH (2 * PROCESS_PAGE_SIZE)
 #define USER_DATA 0x6669786564627566ULL
 
@@ -107,8 +97,12 @@ static void unmap_ring(struct ring_mapping *map)
 
 static int submit_read_fixed(int ring_fd, int input_fd,
 			     const struct io_uring_params *params,
-			     struct ring_mapping *map, void *buffer)
+			     struct ring_mapping *map, void *buffer, bool vectored)
 {
+	struct iovec vec[2] = {
+		{ buffer + 13, PROCESS_PAGE_SIZE - 13 },
+		{ buffer + PROCESS_PAGE_SIZE + 29, PROCESS_PAGE_SIZE - 29 },
+	};
 	unsigned int *sq_head = map->sq_ring + params->sq_off.head;
 	unsigned int *sq_tail = map->sq_ring + params->sq_off.tail;
 	unsigned int *sq_mask = map->sq_ring + params->sq_off.ring_mask;
@@ -129,11 +123,11 @@ static int submit_read_fixed(int ring_fd, int input_fd,
 	index = tail & *sq_mask;
 	sqe = &map->sqes[index];
 	memset(sqe, 0, sizeof(*sqe));
-	sqe->opcode = IORING_OP_READ_FIXED;
+	sqe->opcode = vectored ? IORING_OP_READV_FIXED : IORING_OP_READ_FIXED;
 	sqe->fd = input_fd;
 	sqe->off = 0;
-	sqe->addr = (uintptr_t)buffer;
-	sqe->len = TEST_LENGTH;
+	sqe->addr = vectored ? (uintptr_t)vec : (uintptr_t)buffer;
+	sqe->len = vectored ? 2 : TEST_LENGTH;
 	sqe->buf_index = 0;
 	sqe->user_data = USER_DATA;
 	sq_array[index] = index;
@@ -154,16 +148,16 @@ static void *map_backing_slice(int fd, void **reservation_out)
 	void *reservation;
 	void *mapping;
 
-	reservation = mmap(NULL, 3 * PPPS_NATIVE_PAGE_SIZE, PROT_NONE,
+	reservation = mmap(NULL, 3 * NATIVE_PAGE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reservation == MAP_FAILED)
 		return MAP_FAILED;
-	aligned = ((uintptr_t)reservation + PPPS_NATIVE_PAGE_SIZE - 1) &
-		  ~(PPPS_NATIVE_PAGE_SIZE - 1);
+	aligned = ((uintptr_t)reservation + NATIVE_PAGE_SIZE - 1) &
+		  ~(NATIVE_PAGE_SIZE - 1);
 	mapping = mmap((void *)(aligned + PROCESS_PAGE_SIZE), TEST_LENGTH,
-		       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+		       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 2 * PROCESS_PAGE_SIZE);
 	if (mapping == MAP_FAILED) {
-		munmap(reservation, 3 * PPPS_NATIVE_PAGE_SIZE);
+		munmap(reservation, 3 * NATIVE_PAGE_SIZE);
 		return MAP_FAILED;
 	}
 	*reservation_out = reservation;
@@ -182,54 +176,6 @@ static int make_file(char *path, size_t size)
 		}
 	}
 	return fd;
-}
-
-static long read_status_kb(const char *name)
-{
-	char line[256];
-	FILE *file;
-	long value = -1;
-
-	file = fopen("/proc/self/status", "re");
-	if (!file)
-		return -1;
-	while (fgets(line, sizeof(line), file)) {
-		if (!strncmp(line, name, strlen(name)) &&
-		    sscanf(line, "%*[^:]: %ld kB", &value) == 1)
-			break;
-		value = -1;
-	}
-	fclose(file);
-	return value;
-}
-
-static unsigned long mapping_kernel_page_size(uintptr_t address)
-{
-	char *line = NULL;
-	size_t line_size = 0;
-	unsigned long page_size = 0;
-	bool in_mapping = false;
-	FILE *file;
-
-	file = fopen("/proc/self/smaps", "re");
-	if (!file)
-		return 0;
-	while (getline(&line, &line_size, file) >= 0) {
-		unsigned long start, end, size_kb;
-
-		if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
-			in_mapping = address >= start && address < end;
-			continue;
-		}
-		if (in_mapping &&
-		    sscanf(line, "KernelPageSize: %lu kB", &size_kb) == 1) {
-			page_size = size_kb * 1024;
-			break;
-		}
-	}
-	free(line);
-	fclose(file);
-	return page_size;
 }
 
 static int run_test(void)
@@ -258,11 +204,9 @@ static int run_test(void)
 	int ring_fd;
 
 	ksft_print_header();
-	ksft_set_plan(9);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(10);
 
-	backing_fd = make_file(backing_path, PPPS_NATIVE_PAGE_SIZE);
+	backing_fd = make_file(backing_path, 2 * NATIVE_PAGE_SIZE);
 	input_fd = make_file(input_path, TEST_LENGTH);
 	if (backing_fd < 0 || input_fd < 0)
 		ksft_exit_fail_msg("test file setup failed: %s\n", strerror(errno));
@@ -270,15 +214,15 @@ static int run_test(void)
 	memset(input_data + PROCESS_PAGE_SIZE, 0xb6, PROCESS_PAGE_SIZE);
 	if (pwrite(input_fd, input_data, sizeof(input_data), 0) !=
 	    sizeof(input_data) ||
-	    pwrite(backing_fd, "\x11", 1, 0) != 1 ||
-	    pwrite(backing_fd, "\x22", 1, PROCESS_PAGE_SIZE) != 1 ||
-	    pwrite(backing_fd, "\x5c", 1, TEST_LENGTH) != 1)
+	    pwrite(backing_fd, "\x11", 1, 2 * PROCESS_PAGE_SIZE) != 1 ||
+	    pwrite(backing_fd, "\x22", 1, 3 * PROCESS_PAGE_SIZE) != 1 ||
+	    pwrite(backing_fd, "\x5c", 1, 2 * PROCESS_PAGE_SIZE + TEST_LENGTH) != 1)
 		ksft_exit_fail_msg("test file initialization failed: %s\n",
 				   strerror(errno));
 
 	mapping = map_backing_slice(backing_fd, &reservation);
 	ksft_test_result(mapping != MAP_FAILED && mapping[0] == 0x11,
-			 "map file offset zero at a mismatched native offset\n");
+			 "map nonzero file slices at a mismatched native offset\n");
 	if (mapping == MAP_FAILED)
 		ksft_exit_fail_msg("test mapping failed: %s\n", strerror(errno));
 
@@ -289,15 +233,16 @@ static int run_test(void)
 
 	iov.iov_base = mapping;
 	iov.iov_len = TEST_LENGTH;
-	vmpin_before = read_status_kb("VmPin");
+	vmpin_before = ppps_status_kb(0, "VmPin");
 	if (ring_mapped)
 		registered = register_ring(ring_fd, IORING_REGISTER_BUFFERS,
 					   &iov, 1);
 	ksft_test_result(registered == 0,
 			 "register the mismatched 4K fixed buffer (ret=%d errno=%d)\n",
 			 registered, registered < 0 ? errno : 0);
-	vmpin_after = read_status_kb("VmPin");
-	kernel_page_size = mapping_kernel_page_size((uintptr_t)mapping);
+	vmpin_after = ppps_status_kb(0, "VmPin");
+	if (!ppps_smaps_bytes(mapping, 1, "KernelPageSize", &kernel_page_size))
+		kernel_page_size = 0;
 	pin_span = kernel_page_size ?
 		((uintptr_t)mapping & (kernel_page_size - 1)) + TEST_LENGTH : 0;
 	expected_pin_kb = kernel_page_size ?
@@ -311,21 +256,33 @@ static int run_test(void)
 
 	if (registered == 0)
 		io_result = submit_read_fixed(ring_fd, input_fd, &params, &ring,
-					      mapping);
+					      mapping, false);
 	ksft_test_result(io_result == TEST_LENGTH,
 			 "complete READ_FIXED into the buffer (ret=%d)\n",
 			 io_result);
 	ksft_test_result(mapping[0] == 0xa5 &&
 			 mapping[PROCESS_PAGE_SIZE] == 0xb6,
 			 "READ_FIXED updates both registered file slices\n");
-	if (pread(backing_fd, &adjacent, 1, TEST_LENGTH) != 1)
+	if (pread(backing_fd, &adjacent, 1, 2 * PROCESS_PAGE_SIZE + TEST_LENGTH) != 1)
 		adjacent = 0;
 	ksft_test_result(adjacent == 0x5c,
 			 "READ_FIXED leaves the adjacent file slice unchanged\n");
+	memset(mapping, 0xcc, TEST_LENGTH);
+	if (registered == 0)
+		io_result = submit_read_fixed(ring_fd, input_fd, &params, &ring,
+					      mapping, true);
+	ksft_test_result(io_result == TEST_LENGTH - 42,
+			 "READV_FIXED accepts physical offsets beyond 4K (ret=%d)\n",
+			 io_result);
+	ksft_test_result(!memcmp(mapping + 13, input_data, PROCESS_PAGE_SIZE - 13) &&
+			 !memcmp(mapping + PROCESS_PAGE_SIZE + 29,
+				 input_data + PROCESS_PAGE_SIZE - 13, PROCESS_PAGE_SIZE - 29) &&
+			 mapping[0] == 0xcc && mapping[PROCESS_PAGE_SIZE] == 0xcc,
+			 "READV_FIXED preserves vector gaps and copies exact bytes\n");
 	if (registered == 0)
 		unregistered = register_ring(ring_fd, IORING_UNREGISTER_BUFFERS,
 					     NULL, 0);
-	vmpin_released = read_status_kb("VmPin");
+	vmpin_released = ppps_status_kb(0, "VmPin");
 	ksft_test_result(unregistered == 0 && vmpin_released == vmpin_before,
 			 "unaccount fixed-buffer pins after unregister\n");
 
@@ -333,24 +290,10 @@ static int run_test(void)
 		unmap_ring(&ring);
 	if (ring_fd >= 0)
 		close(ring_fd);
-	munmap(reservation, 3 * PPPS_NATIVE_PAGE_SIZE);
+	munmap(reservation, 3 * NATIVE_PAGE_SIZE);
 	close(input_fd);
 	close(backing_fd);
 	ksft_finished();
 }
 
-int main(int argc, char **argv)
-{
-	int persona;
-
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	if (argc != 1)
-		return EXIT_FAILURE;
-	persona = personality(0xffffffffUL);
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality failed: %s\n", strerror(errno));
-	execl("/proc/self/exe", "io_uring_fixed_buffer_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
+PPPS_COMPAT_MAIN(run_test)
