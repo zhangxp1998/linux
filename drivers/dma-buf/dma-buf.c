@@ -832,16 +832,7 @@ static int dma_buf_mmap_internal(struct file *file, struct vm_area_struct *vma)
 	/* check if buffer supports mmap */
 	if (!dmabuf->ops->mmap)
 		return -EINVAL;
-	/*
-	 * Exporters may report a size that is not a multiple of the mapping
-	 * page size (vb2 hides its PPPS allocation padding); the final
-	 * partial page stays mappable.
-	 */
-	if (check_add_overflow((u64)dmabuf->size,
-			       (u64)MM_UAPI_PAGE_SIZE(vma->vm_mm) - 1,
-			       &mmap_size))
-		return -EOVERFLOW;
-	mmap_size &= ~((u64)MM_UAPI_PAGE_SIZE(vma->vm_mm) - 1);
+	mmap_size = dmabuf->size;
 
 	offset = vma_file_offset(vma);
 	/* check for overflowing the buffer's size */
@@ -2251,12 +2242,7 @@ int dma_buf_mmap_offset(struct dma_buf *dmabuf, struct vm_area_struct *vma,
 	/* check if buffer supports mmap */
 	if (!dmabuf->ops->mmap)
 		return -EINVAL;
-	/* As in dma_buf_mmap_internal(), the final partial page is mappable. */
-	if (check_add_overflow((u64)dmabuf->size,
-			       (u64)MM_UAPI_PAGE_SIZE(vma->vm_mm) - 1,
-			       &mmap_size))
-		return -EOVERFLOW;
-	mmap_size &= ~((u64)MM_UAPI_PAGE_SIZE(vma->vm_mm) - 1);
+	mmap_size = dmabuf->size;
 
 	/* check for overflowing the buffer's size */
 	if (offset > mmap_size ||

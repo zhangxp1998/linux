@@ -121,6 +121,18 @@ static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 		mmap_read_unlock(mm);
 	}
 
+	if (npgs > 0 && ppps_mm_is_compat(mm)) {
+		long i;
+
+		/* A packed anonymous tuple maps address-selected slices. */
+		for (i = 0; i < npgs; i++) {
+			if (!folio_test_ppps_compat_anon(page_folio(umem->pgs[i])))
+				continue;
+			unpin_user_pages(umem->pgs, npgs);
+			npgs = -EOPNOTSUPP;
+			break;
+		}
+	}
 
 	if (npgs != umem->npgs) {
 		if (npgs >= 0) {
