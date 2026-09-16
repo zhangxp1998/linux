@@ -29,6 +29,10 @@
 #include <linux/secretmem.h>
 #include <linux/page_size_compat.h>
 
+#if IS_ENABLED(CONFIG_PPPS_KUNIT_TEST)
+#include <kunit/test.h>
+#endif
+
 #include "internal.h"
 
 struct mlock_fbatch {
@@ -314,7 +318,8 @@ static inline unsigned int folio_mlock_step(struct folio *folio,
 	unsigned int count = (end - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
 	pte_t ptent = ptep_get(pte);
 
-	if (!folio_test_large(folio))
+	if (!folio_test_large(folio) &&
+	    !folio_test_ppps_compat_anon(folio))
 		return 1;
 
 	count = min_t(unsigned int, count, folio_nr_ptes(folio, vma));
@@ -791,6 +796,60 @@ SYSCALL_DEFINE0(munlockall)
 	mmap_write_unlock(current->mm);
 	return ret;
 }
+
+#if IS_ENABLED(CONFIG_PPPS_KUNIT_TEST)
+static void ppps_mlock_tuple_step_test(struct kunit *test)
+{
+	struct mm_struct *mm;
+	struct folio *folio;
+	struct vm_area_struct vma;
+	pte_t ptes[PPPS_SLICES_PER_PAGE];
+	unsigned long address = PAGE_SIZE;
+	unsigned int step;
+	unsigned int i;
+
+	mm = mm_alloc();
+	KUNIT_ASSERT_NOT_NULL(test, mm);
+	folio = folio_alloc(GFP_KERNEL | __GFP_ZERO, 0);
+	if (!folio) {
+		mmput(mm);
+		KUNIT_FAIL(test, "folio allocation failed");
+		return;
+	}
+	mm->page_shift = PAGE_SHIFT_COMPAT;
+	vma_init(&vma, mm);
+	vma.vm_ops = NULL;
+	vma.vm_start = address;
+	vma.vm_end = address + PAGE_SIZE;
+	vma.vm_pgoff = address >> PAGE_SHIFT_COMPAT;
+	folio->mapping = (void *)FOLIO_MAPPING_ANON;
+	folio_set_ppps_compat_anon(folio);
+	for (i = 0; i < ARRAY_SIZE(ptes); i++)
+		ptes[i] = pte_mkslice(mk_pte(&folio->page, PAGE_READONLY), i);
+
+	step = folio_mlock_step(folio, &vma, ptes, address, vma.vm_end);
+	KUNIT_EXPECT_EQ(test, step,
+			(unsigned int)PPPS_SLICES_PER_PAGE);
+
+	folio_clear_ppps_compat_anon(folio);
+	folio->mapping = NULL;
+	folio_put(folio);
+	mm->page_shift = PAGE_SHIFT;
+	mmput(mm);
+}
+
+static struct kunit_case ppps_mlock_test_cases[] = {
+	KUNIT_CASE(ppps_mlock_tuple_step_test),
+	{}
+};
+
+static struct kunit_suite ppps_mlock_test_suite = {
+	.name = "ppps-mlock",
+	.test_cases = ppps_mlock_test_cases,
+};
+
+kunit_test_suite(ppps_mlock_test_suite);
+#endif
 
 /*
  * Objects with different lifetime than processes (SHM_LOCK and SHM_HUGETLB

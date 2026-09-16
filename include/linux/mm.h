@@ -877,9 +877,8 @@ static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma
 {
 	if (!ppps_mm_is_compat(vma->vm_mm))
 		return 0;
-	/* Keep singleton anonymous pages at slice 0 until tuple activation. */
-	if (!ppps_vma_has_slices(vma))
-		return 0;
+	if (!ppps_vma_has_slices(vma)) /* anonymous: sliced by address alone */
+		return (address >> PAGE_SHIFT_COMPAT) & PPPS_SLICE_MASK;
 	return (((address - vma->vm_start) >> PAGE_SHIFT_COMPAT) +
 		vma_slice_off(vma)) & PPPS_SLICE_MASK;
 }
@@ -2034,65 +2033,6 @@ static inline pte_t folio_mk_pte(const struct folio *folio, pgprot_t pgprot)
 {
 	return pfn_pte(folio_pfn(folio), pgprot);
 }
-
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-/*
- * folio_mk_pte_slice - Construct a PTE pointing to a specific subpage slice
- * @folio: the backing folio
- * @pte: the base PTE (aligned to host page)
- * @slice_idx: the index of the subpage slice within the host page
- *
- * Preserve the native page selected by the base PTE and adjust its physical
- * address to the requested process-page slice.
- */
-static inline pte_t folio_mk_pte_slice(struct folio *folio, pte_t pte,
-				       unsigned int slice_idx)
-{
-	phys_addr_t page_phys = __pte_to_phys(pte) & PAGE_MASK;
-	phys_addr_t target_phys = page_phys + (slice_idx * PAGE_SIZE_COMPAT);
-	pte_t clean_pte = pte_mkslice(pte, 0);
-
-	(void)folio;
-
-	return __pte(__phys_to_pte_val(target_phys) |
-		     pgprot_val(pte_pgprot(clean_pte)));
-}
-
-static inline pte_t ppps_folio_mk_pte_explicit_slice(
-		struct vm_area_struct *vma, struct folio *folio, pte_t pte,
-		unsigned int slice_idx)
-{
-	if (ppps_mm_is_compat(vma->vm_mm))
-		return folio_mk_pte_slice(folio, pte, slice_idx);
-	return pte;
-}
-
-static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
-					    struct folio *folio, pte_t pte,
-					    unsigned long addr)
-{
-	if (ppps_mm_is_compat(vma->vm_mm))
-		return ppps_folio_mk_pte_explicit_slice(
-			vma, folio, pte, vma_address_to_slice(vma, addr));
-
-	return pte;
-}
-#else
-static inline pte_t ppps_folio_mk_pte_explicit_slice(
-		struct vm_area_struct *vma, struct folio *folio, pte_t pte,
-		unsigned int slice_idx)
-{
-	return pte;
-}
-
-static inline pte_t ppps_folio_mk_pte_slice(struct vm_area_struct *vma,
-					    struct folio *folio, pte_t pte,
-					    unsigned long addr)
-{
-	return pte;
-}
-#endif
-
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 /**

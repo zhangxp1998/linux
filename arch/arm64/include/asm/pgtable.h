@@ -177,6 +177,23 @@ static inline unsigned long pte_page_offset(pte_t pte)
 	return __pte_to_phys(pte) & ~PAGE_MASK;
 }
 
+/*
+ * Translation level of a leaf entry mapping @pgsize bytes in either the
+ * native or the PPPS compat geometry, or -1.
+ */
+static inline int pgsize_to_level(unsigned long pgsize)
+{
+	if (pgsize == PAGE_SIZE || pgsize == PAGE_SIZE_COMPAT)
+		return 3;
+	if (pgsize == PMD_SIZE || pgsize == PMD_SIZE_COMPAT)
+		return 2;
+#ifndef __PAGETABLE_PMD_FOLDED
+	if (pgsize == PUD_SIZE || pgsize == PUD_SIZE_COMPAT)
+		return 1;
+#endif
+	return -1;
+}
+
 #define pte_pfn(pte)		(__pte_to_phys(pte) >> PAGE_SHIFT_KERNEL)
 #define pfn_pte(pfn,prot)	\
 	__pte(__phys_to_pte_val((phys_addr_t)(pfn) << PAGE_SHIFT_KERNEL) | pgprot_val(prot))
@@ -477,7 +494,8 @@ static inline void __check_safe_pte_update(struct mm_struct *mm, pte_t *ptep,
 		     __func__, pte_val(old_pte), pte_val(pte));
 }
 
-static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages)
+static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages,
+					 unsigned long page_size)
 {
 	if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte))
 		__sync_icache_dcache(pte);
@@ -491,7 +509,7 @@ static inline void __sync_cache_and_tags(pte_t pte, unsigned int nr_pages)
 	 */
 	if (system_supports_mte() && pte_access_permitted_no_overlay(pte, false) &&
 	    !pte_special(pte) && pte_tagged(pte))
-		mte_sync_tags(pte, nr_pages);
+		mte_sync_tags(pte, nr_pages, page_size);
 }
 
 /*
@@ -525,7 +543,11 @@ static inline pte_t pte_advance_phys(pte_t pte, unsigned long bytes)
 }
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-/* Re-point @pte at process-page slice @slice of its native page. */
+/*
+ * Re-point @pte at process-page slice @slice of the native page it maps.
+ * The slice lives in the address bits below PAGE_SHIFT, so this is a
+ * (possibly negative, hence wrapping) physical advance from the current slice.
+ */
 #define pte_mkslice pte_mkslice
 static inline pte_t pte_mkslice(pte_t pte, unsigned int slice)
 {
@@ -534,6 +556,7 @@ static inline pte_t pte_mkslice(pte_t pte, unsigned int slice)
 	return pte_advance_phys(pte, offset - pte_page_offset(pte));
 }
 #endif
+
 /*
  * Hugetlb definitions.
  */
@@ -759,7 +782,8 @@ static inline void __set_ptes_anysz(struct mm_struct *mm, pte_t *ptep,
 
 	nr_pages = DIV_ROUND_UP((__pte_to_phys(pte) & ~PAGE_MASK) + nr * pgsize,
 				PAGE_SIZE);
-	__sync_cache_and_tags(pte, nr_pages);
+	__sync_cache_and_tags(pte_advance_phys(pte, -pte_page_offset(pte)),
+			      nr_pages, PAGE_SIZE);
 
 	for (;;) {
 		__check_safe_pte_update(mm, ptep, pte);
@@ -1476,15 +1500,19 @@ static inline pte_t __ptep_get_and_clear_anysz(struct mm_struct *mm,
 {
 	pte_t pte = __pte(xchg_relaxed(&pte_val(*ptep), 0));
 
-	if (pgsize == PAGE_SIZE || pgsize == PAGE_SIZE_COMPAT) {
+	switch (pgsize_to_level(pgsize)) {
+	case 3:
 		page_table_check_pte_clear(mm, pte);
-	} else if (pgsize == PMD_SIZE || pgsize == PMD_SIZE_COMPAT) {
+		break;
+	case 2:
 		page_table_check_pmd_clear(mm, pte_pmd(pte));
+		break;
 #ifndef __PAGETABLE_PMD_FOLDED
-	} else if (pgsize == PUD_SIZE || pgsize == PUD_SIZE_COMPAT) {
+	case 1:
 		page_table_check_pud_clear(mm, pte_pud(pte));
+		break;
 #endif
-	} else {
+	default:
 		VM_WARN_ON(1);
 	}
 
@@ -1892,6 +1920,14 @@ static __always_inline void set_ptes(struct mm_struct *mm, unsigned long addr,
 				pte_t *ptep, pte_t pte, unsigned int nr)
 {
 	pte = pte_mknoncont(pte);
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	/* Contiguous PTE geometry is defined in native-page units. */
+	if (unlikely(ppps_mm_is_compat(mm))) {
+		__set_ptes(mm, addr, ptep, pte, nr);
+		return;
+	}
+#endif
 
 	if (likely(nr == 1)) {
 		contpte_try_unfold(mm, addr, ptep, __ptep_get(ptep));

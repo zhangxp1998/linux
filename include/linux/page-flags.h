@@ -591,8 +591,6 @@ PAGEFLAG(Reserved, reserved, PF_NO_COMPOUND)
 FOLIO_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 	__FOLIO_CLEAR_FLAG(swapbacked, FOLIO_HEAD_PAGE)
 	__FOLIO_SET_FLAG(swapbacked, FOLIO_HEAD_PAGE)
-/* Legacy GUP marker; packed faults remain inactive. */
-FOLIO_FLAG_FALSE(ppps_packed_anon)
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 FOLIO_FLAG(ppps_compat_anon, FOLIO_HEAD_PAGE)
 #else

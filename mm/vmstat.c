@@ -1500,6 +1500,8 @@ const char * const vmstat_text[] = {
 #endif
 #endif
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	"ppps_file_cow_alloc",
+	"ppps_file_cow_fill",
 	"ppps_file_cow_multi_folio",
 #endif
 #undef I

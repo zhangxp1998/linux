@@ -35,10 +35,12 @@ DEFINE_STATIC_KEY_FALSE(mte_async_or_asymm_mode);
 EXPORT_SYMBOL_GPL(mte_async_or_asymm_mode);
 #endif
 
-void mte_sync_tags(pte_t pte, unsigned int nr_pages)
+void mte_sync_tags(pte_t pte, unsigned int nr_pages,
+		   unsigned long page_size)
 {
 	struct page *page = pte_page(pte);
 	struct folio *folio = page_folio(page);
+	phys_addr_t phys = __pte_to_phys(pte);
 	unsigned long i;
 
 	if (folio_test_hugetlb(folio)) {
@@ -58,7 +60,9 @@ void mte_sync_tags(pte_t pte, unsigned int nr_pages)
 	}
 
 	/* if PG_mte_tagged is set, tags have already been initialised */
-	for (i = 0; i < nr_pages; i++, page++) {
+	for (i = 0; i < nr_pages; i++, phys += page_size) {
+		struct page *page = phys_to_page(phys);
+
 		if (try_page_mte_tagging(page)) {
 			mte_clear_page_tags(page_address(page));
 			set_page_mte_tagged(page);
