@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * MADV_COLD over a 2MB shared file mapping placed across a 4K compat
+ * process's PMD boundary keeps every 4K file slice's contents and leaves
+ * the kernel free of a bad-page taint.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
-#define SLICE_SIZE 4096UL
+#include "kselftest_ppps.h"
+
 #define MAP_SIZE (2 * 1024 * 1024UL)
 #define MAP_ADDR ((void *)0x40001000UL)
 #define TAINT_BAD_PAGE_MASK 32UL
@@ -46,16 +45,16 @@ static int read_kernel_taint(unsigned long *taint)
 
 static unsigned char slice_pattern(size_t offset)
 {
-	return ((offset / SLICE_SIZE) % 251) + 1;
+	return ((offset / PROCESS_PAGE_SIZE) % 251) + 1;
 }
 
 static int prepare_file(int fd)
 {
-	unsigned char buffer[SLICE_SIZE];
+	unsigned char buffer[PROCESS_PAGE_SIZE];
 	size_t offset;
 	int rc;
 
-	for (offset = 0; offset < MAP_SIZE; offset += SLICE_SIZE) {
+	for (offset = 0; offset < MAP_SIZE; offset += PROCESS_PAGE_SIZE) {
 		memset(buffer, slice_pattern(offset), sizeof(buffer));
 		if (pwrite(fd, buffer, sizeof(buffer), offset) !=
 		    (ssize_t)sizeof(buffer))
@@ -78,7 +77,7 @@ static size_t mapping_mismatches(const unsigned char *map,
 	size_t offset;
 
 	*checksum = 0;
-	for (offset = 0; offset < MAP_SIZE; offset += SLICE_SIZE) {
+	for (offset = 0; offset < MAP_SIZE; offset += PROCESS_PAGE_SIZE) {
 		*checksum += map[offset];
 		if (map[offset] != slice_pattern(offset))
 			mismatches++;
@@ -86,7 +85,7 @@ static size_t mapping_mismatches(const unsigned char *map,
 	return mismatches;
 }
 
-int main(int argc, char **argv)
+static int run_test(const char *file)
 {
 	unsigned char *map;
 	unsigned long taint_after;
@@ -97,17 +96,10 @@ int main(int argc, char **argv)
 	int rc;
 	int taint_available;
 
-	printf("TAP version 13\n1..5\n");
-	if (argc != 2) {
-		printf("Bail out! usage: %s FILE\n", argv[0]);
-		return 1;
-	}
+	printf("TAP version 13\n1..4\n");
 	taint_available = read_kernel_taint(&taint_before) == 0;
 
-	result(sysconf(_SC_PAGESIZE) == SLICE_SIZE,
-	       "process page size is 4K");
-
-	fd = open(argv[1], O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0600);
+	fd = open(file, O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0600);
 	rc = fd < 0 ? -1 : prepare_file(fd);
 	if (rc)
 		perror("prepare patterned file");
@@ -141,7 +133,7 @@ int main(int argc, char **argv)
 out_close:
 	if (fd >= 0)
 		close(fd);
-	unlink(argv[1]);
+	unlink(file);
 	if (!taint_available || read_kernel_taint(&taint_after))
 		skip("MADV_COLD keeps page-cache accounting valid",
 		     "kernel taint state is unavailable");
@@ -153,4 +145,24 @@ out_close:
 		       "MADV_COLD keeps page-cache accounting valid");
 	printf("# Totals: pass:%d fail:%d\n", test_no - failures, failures);
 	return failures ? 1 : 0;
+}
+
+int main(int argc, char **argv)
+{
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode) {
+		if (argc != 2) {
+			printf("Bail out! usage: %s FILE\n", argv[0]);
+			return 1;
+		}
+		if (!ppps_is_compat_process())
+			exec_compat(argv[0], PPPS_RUN_FLAG, argv[1], NULL);
+		return run_test(argv[1]);
+	}
+	if (argc == 3 && !strcmp(mode, PPPS_RUN_FLAG)) {
+		ppps_require_compat();
+		return run_test(argv[2]);
+	}
+	return EXIT_FAILURE;
 }

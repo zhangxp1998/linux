@@ -1,23 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * Faulting a 128 MiB shared shmem mapping in a 4K compat process raises its
+ * VmRSS by that amount and its oom_score in proportion to the resident
+ * bytes, not to the number of 4K process pages.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define MAP_SIZE (128UL * 1024 * 1024)
 
 static long read_named_kb(const char *path, const char *name)
@@ -58,17 +50,18 @@ static int run_test(void)
 	unsigned char *mapping;
 	long rss_before, rss_after, rss_delta;
 	long score_before, score_after, score_delta;
-	long memtotal, expected_delta, tolerance;
+	long memtotal, swaptotal, expected_delta, tolerance;
 	bool score_matches;
 	size_t offset;
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(4);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(3);
 
 	memtotal = read_named_kb("/proc/meminfo", "MemTotal");
+	swaptotal = read_named_kb("/proc/meminfo", "SwapTotal");
+	if (swaptotal < 0)
+		swaptotal = 0;
 	rss_before = read_named_kb("/proc/self/status", "VmRSS");
 	score_before = read_oom_score();
 	fd = memfd_create("oom-score-ppps", MFD_CLOEXEC);
@@ -78,7 +71,7 @@ static int run_test(void)
 	mapping = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (mapping == MAP_FAILED)
 		ksft_exit_fail_msg("map shmem file failed: %s\n", strerror(errno));
-	for (offset = 0; offset < MAP_SIZE; offset += USER_PAGE_SIZE)
+	for (offset = 0; offset < MAP_SIZE; offset += PROCESS_PAGE_SIZE)
 		mapping[offset] = (unsigned char)offset;
 
 	rss_after = read_named_kb("/proc/self/status", "VmRSS");
@@ -89,15 +82,20 @@ static int run_test(void)
 			 "fault 128 MiB of shared memory into RSS\n");
 	ksft_test_result(score_delta > 0, "increase oom_score with resident memory\n");
 
-	expected_delta = rss_delta * 2000 / (3 * memtotal);
+	/*
+	 * oom_score is (1000 + badness * 1000 / totalpages) * 2 / 3 with
+	 * totalpages covering RAM plus swap, so a resident delta of
+	 * rss_delta bytes moves the score by rss_delta * 2000 / (3 * total).
+	 */
+	expected_delta = rss_delta * 2000 / (3 * (memtotal + swaptotal));
 	tolerance = expected_delta / 3;
 	if (tolerance < 8)
 		tolerance = 8;
 	score_matches = memtotal > 0 && score_before >= 0 && score_after >= 0 &&
 		labs(score_delta - expected_delta) <= tolerance;
-	ksft_print_msg("total=%ldkB rss=%ld/%ldkB score=%ld/%ld delta=%ld expected=%ld tol=%ld\n",
-		       memtotal, rss_before, rss_after, score_before, score_after,
-		       score_delta, expected_delta, tolerance);
+	ksft_print_msg("total=%ld+%ldkB rss=%ld/%ldkB score=%ld/%ld delta=%ld expected=%ld tol=%ld\n",
+		       memtotal, swaptotal, rss_before, rss_after, score_before,
+		       score_after, score_delta, expected_delta, tolerance);
 	ksft_test_result(score_matches,
 			 "scale oom_score by resident bytes, not process page count\n");
 
@@ -106,24 +104,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n", strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n", strerror(errno));
-	execl("/proc/self/exe", "oom_score_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	(void)argv;
-	if (sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE)
-		return run_test();
-	if (argc == 1)
-		return exec_compat();
-	ksft_exit_skip("4K compatibility process is unavailable\n");
-}
+PPPS_COMPAT_MAIN(run_test)

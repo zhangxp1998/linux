@@ -1,27 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * memcg reclaim of a large file folio that a 4K compat process has only
+ * partially mapped under MLOCK_ONFAULT does not mlock the whole folio: the
+ * partially mapped folio stays reclaimable before and after the pressure.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
-#define SLICE_SIZE 4096UL
+#include "kselftest_ppps.h"
+
 #define FILE_SIZE (2UL * 1024 * 1024)
 #define MAP_ADDR ((void *)0x40001000UL)
-#define PAGEMAP_PRESENT 0x8000000000000000ULL
-#define PAGEMAP_PFN_MASK ((1ULL << 55) - 1)
 #define KPF_COMPOUND_HEAD 15
 #define KPF_COMPOUND_TAIL 16
 #define KPF_UNEVICTABLE 18
 #define KPF_MLOCKED 33
-#define KSFT_SKIP 4
 
 struct large_folio {
 	size_t file_offset;
@@ -54,7 +50,7 @@ static int virtual_pfn(int pagemap_fd, const void *address, uint64_t *pfn)
 {
 	uint64_t entry;
 
-	if (read_u64(pagemap_fd, (uintptr_t)address / SLICE_SIZE, &entry) ||
+	if (read_u64(pagemap_fd, (uintptr_t)address / PROCESS_PAGE_SIZE, &entry) ||
 	    !(entry & PAGEMAP_PRESENT))
 		return -1;
 	*pfn = entry & PAGEMAP_PFN_MASK;
@@ -63,12 +59,12 @@ static int virtual_pfn(int pagemap_fd, const void *address, uint64_t *pfn)
 
 static int prepare_file(int fd)
 {
-	unsigned char buffer[SLICE_SIZE];
+	unsigned char buffer[PROCESS_PAGE_SIZE];
 	size_t offset;
 	int rc;
 
 	for (offset = 0; offset < FILE_SIZE; offset += sizeof(buffer)) {
-		memset(buffer, (offset / SLICE_SIZE) % 251 + 1, sizeof(buffer));
+		memset(buffer, (offset / PROCESS_PAGE_SIZE) % 251 + 1, sizeof(buffer));
 		if (pwrite(fd, buffer, sizeof(buffer), offset) != sizeof(buffer))
 			return -1;
 	}
@@ -82,48 +78,53 @@ static int prepare_file(int fd)
 	return 0;
 }
 
+/* Returns 0 when found, 1 when the file has no large folio, -1 on error. */
 static int find_large_folio(unsigned char *map, struct large_folio *info)
 {
 	int pagemap_fd = -1;
 	int flags_fd = -1;
 	size_t offset;
-	int rc = -1;
+	int rc = 1;
 
 	pagemap_fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
 	flags_fd = open("/proc/kpageflags", O_RDONLY | O_CLOEXEC);
 	if (pagemap_fd < 0 || flags_fd < 0)
 		goto out;
 
-	for (offset = 0; offset < FILE_SIZE; offset += SLICE_SIZE) {
+	for (offset = 0; offset < FILE_SIZE; offset += PROCESS_PAGE_SIZE) {
 		uint64_t flags;
 		uint64_t pfn;
 		size_t native_pages = 1;
 		size_t slices = 1;
 
 		if (virtual_pfn(pagemap_fd, map + offset, &pfn) ||
-		    read_u64(flags_fd, pfn, &flags))
+		    read_u64(flags_fd, pfn, &flags)) {
+			rc = -1;
 			goto out;
+		}
 		if (!(flags & (1ULL << KPF_COMPOUND_HEAD)))
 			continue;
 
 		while (native_pages < 512) {
-			if (read_u64(flags_fd, pfn + native_pages, &flags))
+			if (read_u64(flags_fd, pfn + native_pages, &flags)) {
+				rc = -1;
 				goto out;
+			}
 			if (!(flags & (1ULL << KPF_COMPOUND_TAIL)))
 				break;
 			native_pages++;
 		}
-		while (offset + slices * SLICE_SIZE < FILE_SIZE) {
+		while (offset + slices * PROCESS_PAGE_SIZE < FILE_SIZE) {
 			uint64_t next_pfn;
 
 			if (virtual_pfn(pagemap_fd, map + offset +
-					       slices * SLICE_SIZE, &next_pfn) ||
+					       slices * PROCESS_PAGE_SIZE, &next_pfn) ||
 			    next_pfn != pfn)
 				break;
 			slices++;
 		}
 		if (native_pages < 2 ||
-		    offset + native_pages * slices * SLICE_SIZE > FILE_SIZE)
+		    offset + native_pages * slices * PROCESS_PAGE_SIZE > FILE_SIZE)
 			continue;
 
 		info->file_offset = offset;
@@ -228,7 +229,7 @@ static int partial_large_folio_is_mlocked(unsigned char *map)
 	return ret;
 }
 
-int main(int argc, char **argv)
+static int run_test(const char *file)
 {
 	char path[PATH_MAX] = "ttu-partial-mlock-ppps.XXXXXX";
 	char cgroup_path[256] = {};
@@ -242,13 +243,7 @@ int main(int argc, char **argv)
 	int rc = 0;
 	size_t checksum = 0;
 
-	printf("TAP version 13\n1..6\n");
-	if (argc > 2) {
-		printf("Bail out! usage: %s [FILE]\n", argv[0]);
-		return 1;
-	}
-	result(sysconf(_SC_PAGESIZE) == SLICE_SIZE,
-	       "process page size is 4K");
+	printf("TAP version 13\n1..5\n");
 	if (setup_reclaim_cgroup(cgroup_path, sizeof(cgroup_path))) {
 		skip("locate a large file folio", "memcg reclaim is unavailable");
 		skip("fault only part of a locked large folio",
@@ -264,8 +259,8 @@ int main(int argc, char **argv)
 		return failures ? 1 : KSFT_SKIP;
 	}
 
-	if (argc == 2) {
-		strncpy(path, argv[1], sizeof(path) - 1);
+	if (file) {
+		strncpy(path, file, sizeof(path) - 1);
 		path[sizeof(path) - 1] = '\0';
 		fd = open(path, O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0600);
 	} else {
@@ -279,9 +274,14 @@ int main(int argc, char **argv)
 	if (map == MAP_FAILED && !rc)
 		rc = -1;
 	if (!rc) {
-		for (offset = 0; offset < FILE_SIZE; offset += SLICE_SIZE)
+		for (offset = 0; offset < FILE_SIZE; offset += PROCESS_PAGE_SIZE)
 			checksum += map[offset];
 		rc = find_large_folio(map, &info);
+	}
+	if (rc > 0) {
+		skip("locate a large file folio",
+		     "filesystem did not allocate a large folio");
+		goto skip_remaining;
 	}
 	result(!rc, "locate a large file folio");
 	if (rc)
@@ -295,14 +295,14 @@ int main(int argc, char **argv)
 
 	partial_slices = info.slices_per_native > 1 ? info.native_pages :
 			 (info.native_pages / 2 ? info.native_pages / 2 : 1);
-	map_len = partial_slices * SLICE_SIZE;
+	map_len = partial_slices * PROCESS_PAGE_SIZE;
 	map = mmap(MAP_ADDR, map_len, PROT_READ,
 		   MAP_PRIVATE | MAP_FIXED_NOREPLACE, fd, info.file_offset);
 	if (map == MAP_FAILED || mlock2(map, map_len, MLOCK_ONFAULT))
 		rc = -1;
 	if (!rc) {
-		for (offset = 0; offset < partial_slices * SLICE_SIZE;
-		     offset += SLICE_SIZE)
+		for (offset = 0; offset < partial_slices * PROCESS_PAGE_SIZE;
+		     offset += PROCESS_PAGE_SIZE)
 			checksum += map[offset];
 		printf("# partial_checksum=%zu\n", checksum);
 	}
@@ -362,4 +362,27 @@ out:
 	cleanup_reclaim_cgroup(cgroup_path);
 	printf("# Totals: pass:%d fail:%d\n", test_no - failures, failures);
 	return failures ? 1 : 0;
+}
+
+int main(int argc, char **argv)
+{
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode) {
+		if (argc > 2) {
+			printf("Bail out! usage: %s [FILE]\n", argv[0]);
+			return 1;
+		}
+		if (!ppps_is_compat_process()) {
+			if (argc == 2)
+				exec_compat(argv[0], PPPS_RUN_FLAG, argv[1], NULL);
+			exec_compat(argv[0], PPPS_RUN_FLAG, NULL);
+		}
+		return run_test(argc == 2 ? argv[1] : NULL);
+	}
+	if ((argc == 2 || argc == 3) && !strcmp(mode, PPPS_RUN_FLAG)) {
+		ppps_require_compat();
+		return run_test(argc == 3 ? argv[2] : NULL);
+	}
+	return EXIT_FAILURE;
 }

@@ -1,22 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * mincore() for a 4K compat process accepts 4K-only-aligned addresses,
+ * reports one vector byte per 4K page, rounds partial lengths at 4K
+ * granularity and indexes the page cache by 4K file slice.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/memfd.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#define USER_PAGE_SIZE	4096UL
-#define LARGE_PAGE_SIZE	16384UL
-#define MAPPING_SIZE	(12 * USER_PAGE_SIZE)
+#define MAPPING_SIZE	(12 * PROCESS_PAGE_SIZE)
 #define SENTINEL	0xa5
 
 static uintptr_t align_up(uintptr_t value, size_t alignment)
@@ -38,10 +33,10 @@ static bool entries_are_resident(const unsigned char *vec, unsigned int nr)
 static bool test_4k_only_alignment(unsigned char *large_page_aligned)
 {
 	unsigned char vec = SENTINEL;
-	void *start = large_page_aligned + USER_PAGE_SIZE;
+	void *start = large_page_aligned + PROCESS_PAGE_SIZE;
 
 	errno = 0;
-	if (mincore(start, USER_PAGE_SIZE, &vec)) {
+	if (mincore(start, PROCESS_PAGE_SIZE, &vec)) {
 		ksft_print_msg("mincore(4K-only aligned) failed: %s\n",
 			       strerror(errno));
 		return false;
@@ -54,7 +49,7 @@ static bool test_vector_granularity(unsigned char *large_page_aligned)
 	unsigned char vec[8];
 
 	memset(vec, SENTINEL, sizeof(vec));
-	if (mincore(large_page_aligned, LARGE_PAGE_SIZE, vec)) {
+	if (mincore(large_page_aligned, NATIVE_PAGE_SIZE, vec)) {
 		ksft_print_msg("mincore(16K) failed: %s\n", strerror(errno));
 		return false;
 	}
@@ -65,7 +60,7 @@ static bool test_vector_granularity(unsigned char *large_page_aligned)
 
 static bool test_partial_length_rounding(unsigned char *large_page_aligned)
 {
-	const size_t length = 3 * USER_PAGE_SIZE + 1;
+	const size_t length = 3 * PROCESS_PAGE_SIZE + 1;
 	unsigned char vec[8];
 
 	memset(vec, SENTINEL, sizeof(vec));
@@ -93,27 +88,27 @@ static bool test_file_page_cache_index(void)
 		ksft_print_msg("memfd_create failed: %s\n", strerror(errno));
 		goto out;
 	}
-	contents = malloc(LARGE_PAGE_SIZE);
+	contents = malloc(NATIVE_PAGE_SIZE);
 	if (!contents) {
 		ksft_print_msg("malloc failed\n");
 		goto out;
 	}
-	memset(contents, 0x6d, LARGE_PAGE_SIZE);
-	written = pwrite(fd, contents, LARGE_PAGE_SIZE, 0);
-	if (written != (ssize_t)LARGE_PAGE_SIZE) {
+	memset(contents, 0x6d, NATIVE_PAGE_SIZE);
+	written = pwrite(fd, contents, NATIVE_PAGE_SIZE, 0);
+	if (written != (ssize_t)NATIVE_PAGE_SIZE) {
 		ksft_print_msg("pwrite returned %zd: %s\n", written,
 			       strerror(errno));
 		goto out;
 	}
 
 	/* Leave the PTEs absent so mincore() has to query the page cache. */
-	mapping = mmap(NULL, LARGE_PAGE_SIZE, PROT_READ, MAP_SHARED, fd, 0);
+	mapping = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ, MAP_SHARED, fd, 0);
 	if (mapping == MAP_FAILED) {
 		ksft_print_msg("file mmap failed: %s\n", strerror(errno));
 		goto out;
 	}
 	memset(vec, SENTINEL, sizeof(vec));
-	if (mincore(mapping, LARGE_PAGE_SIZE, vec)) {
+	if (mincore(mapping, NATIVE_PAGE_SIZE, vec)) {
 		ksft_print_msg("file mincore failed: %s\n", strerror(errno));
 		goto out;
 	}
@@ -123,23 +118,20 @@ static bool test_file_page_cache_index(void)
 
 out:
 	if (mapping != MAP_FAILED)
-		munmap(mapping, LARGE_PAGE_SIZE);
+		munmap(mapping, NATIVE_PAGE_SIZE);
 	free(contents);
 	if (fd >= 0)
 		close(fd);
 	return passed;
 }
 
-int main(void)
+static int run_test(void)
 {
 	unsigned char *large_page_aligned;
 	unsigned char *mapping;
-	long page_size = sysconf(_SC_PAGESIZE);
 	unsigned int i;
 
 	ksft_print_header();
-	if (page_size != USER_PAGE_SIZE)
-		ksft_exit_skip("requires a 4K userspace page size\n");
 	ksft_set_plan(4);
 
 	mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE,
@@ -147,12 +139,12 @@ int main(void)
 	if (mapping == MAP_FAILED)
 		ksft_exit_fail_msg("anonymous mmap failed: %s\n", strerror(errno));
 	large_page_aligned = (unsigned char *)align_up((uintptr_t)mapping,
-							LARGE_PAGE_SIZE);
-	if (large_page_aligned + LARGE_PAGE_SIZE > mapping + MAPPING_SIZE)
+							NATIVE_PAGE_SIZE);
+	if (large_page_aligned + NATIVE_PAGE_SIZE > mapping + MAPPING_SIZE)
 		ksft_exit_fail_msg("aligned range exceeds mapping\n");
 
-	for (i = 0; i < LARGE_PAGE_SIZE / USER_PAGE_SIZE; i++)
-		large_page_aligned[i * USER_PAGE_SIZE] = (unsigned char)(0x40 + i);
+	for (i = 0; i < NATIVE_PAGE_SIZE / PROCESS_PAGE_SIZE; i++)
+		large_page_aligned[i * PROCESS_PAGE_SIZE] = (unsigned char)(0x40 + i);
 
 	ksft_test_result(test_4k_only_alignment(large_page_aligned),
 			 "mincore accepts a 4K-only-aligned address\n");
@@ -166,3 +158,5 @@ int main(void)
 	munmap(mapping, MAPPING_SIZE);
 	ksft_finished();
 }
+
+PPPS_COMPAT_MAIN(run_test)
