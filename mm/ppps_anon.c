@@ -477,3 +477,317 @@ void ppps_anon_copy_slice(struct folio *dst, unsigned int dst_slice,
 	/* Make the copied slice visible before installing its PTE. */
 	smp_wmb();
 }
+
+/*
+ * mremap reslicing
+ *
+ * move_page_tables() moves PTEs verbatim.  After a move by a non-multiple of
+ * the native page size, an anonymous PTE no longer maps the slice its new VA
+ * selects, so the affected destination tuples are regrouped into new folios.
+ */
+
+/* Keep the old physical slice identities stable until reslicing finishes. */
+struct ppps_mremap_folios {
+	unsigned long nr;
+	unsigned long locked;
+	struct folio *folios[];
+};
+
+static int ppps_mremap_folio_cmp(const void *a, const void *b)
+{
+	unsigned long x = (unsigned long)*(struct folio * const *)a;
+	unsigned long y = (unsigned long)*(struct folio * const *)b;
+
+	return (x > y) - (x < y);
+}
+
+void ppps_anon_mremap_finish(struct ppps_mremap_folios *ctx)
+{
+	unsigned long i;
+
+	if (!ctx)
+		return;
+	for (i = 0; i < ctx->locked; i++)
+		folio_unlock(ctx->folios[i]);
+	for (i = 0; i < ctx->nr; i++)
+		folio_put(ctx->folios[i]);
+	kvfree(ctx);
+}
+
+/*
+ * Skip a PMD range that has no PTE table: nothing to fault in, nothing to
+ * lock.  Leaves @address at the last compat page of the range so the
+ * caller's increment moves on to the next PMD.
+ */
+static bool ppps_mremap_skip_empty_pmd(struct mm_struct *mm,
+		unsigned long *address, unsigned long end)
+{
+	pmd_t *pmd = mm_find_pmd(mm, *address);
+
+	if (pmd && !pmd_none(*pmd))
+		return false;
+	*address = min(pmd_addr_end_mm(mm, *address, end), end) -
+		   PAGE_SIZE_COMPAT;
+	return true;
+}
+
+/*
+ * Collect or validate a source PTE without sleeping under its PTL.
+ *
+ * Return: 0 when done with this PTE, 1 for a swap or migration entry that
+ * must be faulted in first, -EAGAIN when validation finds a present folio
+ * outside the locked set.
+ */
+static int ppps_mremap_source(struct vm_area_struct *vma,
+		unsigned long address, struct ppps_mremap_folios *ctx,
+		bool validate)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	struct folio *folio;
+	spinlock_t *ptl;
+	pmd_t *pmd;
+	pte_t *ptep, pte;
+	int ret = 0;
+
+	/*
+	 * mmap_lock is write-held, so a missing PTE table is not a race:
+	 * there is simply nothing at this address.
+	 */
+	pmd = mm_find_pmd(mm, address);
+	if (!pmd || pmd_none(*pmd))
+		return 0;
+	ptep = pte_offset_map_lock(mm, pmd, address, &ptl);
+	if (!ptep)
+		return 0;
+	pte = ptep_get(ptep);
+	if (is_swap_pte(pte)) {
+		swp_entry_t entry = pte_to_swp_entry(pte);
+
+		if (!non_swap_entry(entry) || is_migration_entry(entry))
+			ret = 1;
+	} else {
+		folio = ppps_anon_pte_folio(pte);
+		if (folio) {
+			if (validate) {
+				unsigned long lo = 0, hi = ctx->nr;
+
+				while (lo < hi) {
+					unsigned long mid = lo + (hi - lo) / 2;
+
+					if ((unsigned long)ctx->folios[mid] <
+					    (unsigned long)folio)
+						lo = mid + 1;
+					else
+						hi = mid;
+				}
+				if (lo == ctx->nr || ctx->folios[lo] != folio)
+					ret = -EAGAIN;
+			} else {
+				folio_get(folio);
+				ctx->folios[ctx->nr++] = folio;
+			}
+		}
+	}
+	pte_unmap_unlock(ptep, ptl);
+	return ret;
+}
+
+/* Fault a swap or migration entry in at its source address. */
+static int ppps_mremap_fault_source(struct vm_area_struct *vma,
+				    unsigned long address)
+{
+	vm_fault_t fault;
+
+	fault = handle_mm_fault(vma, address, FAULT_FLAG_REMOTE, NULL);
+	if (fault & VM_FAULT_ERROR)
+		return vm_fault_to_errno(fault, 0);
+	/* mmap_lock is write-held; the fault may neither drop nor retry it. */
+	if (WARN_ON_ONCE(fault & (VM_FAULT_RETRY | VM_FAULT_COMPLETED)))
+		return -EAGAIN;
+	return 0;
+}
+
+/* Reclaim keeps evicting one page between our faults: restart instead. */
+#define PPPS_MREMAP_MAX_FAULTS		16
+/* Restart budget for racing folio locks and PTE changes before giving up. */
+#define PPPS_MREMAP_MAX_ATTEMPTS	128
+
+/*
+ * Take a reference on every present source folio, faulting swap entries in
+ * first.  Return: 0 done, 1 restart preparation, <0 fatal error.
+ */
+static int ppps_mremap_collect(struct vm_area_struct *vma,
+		unsigned long old_addr, unsigned long len,
+		struct ppps_mremap_folios *ctx)
+{
+	unsigned long end = old_addr + len;
+	unsigned long address;
+
+	for (address = old_addr; address < end; address += PAGE_SIZE_COMPAT) {
+		unsigned int faults;
+		int ret;
+
+		if (ppps_mremap_skip_empty_pmd(vma->vm_mm, &address, end))
+			continue;
+		for (faults = 0; ; faults++) {
+			ret = ppps_mremap_source(vma, address, ctx, false);
+			if (ret != 1)
+				break;
+			if (faults == PPPS_MREMAP_MAX_FAULTS)
+				return 1;
+			ret = ppps_mremap_fault_source(vma, address);
+			if (ret)
+				return ret;
+		}
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/*
+ * Sort, deduplicate and trylock the collected folios.  On a lock miss
+ * return 1 with a reference to the busy folio in @wait_folio, so the caller
+ * can wait for it without holding any other folio lock.
+ */
+static int ppps_mremap_lock_folios(struct ppps_mremap_folios *ctx,
+				   struct folio **wait_folio)
+{
+	unsigned long i, nr = 0;
+
+	sort(ctx->folios, ctx->nr, sizeof(*ctx->folios),
+	     ppps_mremap_folio_cmp, NULL);
+	for (i = 0; i < ctx->nr; i++) {
+		if (nr && ctx->folios[nr - 1] == ctx->folios[i])
+			folio_put(ctx->folios[i]);
+		else
+			ctx->folios[nr++] = ctx->folios[i];
+	}
+	ctx->nr = nr;
+
+	for (i = 0; i < nr; i++) {
+		if (!folio_trylock(ctx->folios[i])) {
+			*wait_folio = ctx->folios[i];
+			folio_get(*wait_folio);
+			return 1;
+		}
+		ctx->locked++;
+	}
+	return 0;
+}
+
+/* Recheck every source PTE against the locked set.  Return: 0 or 1 restart. */
+static int ppps_mremap_validate(struct vm_area_struct *vma,
+		unsigned long old_addr, unsigned long len,
+		struct ppps_mremap_folios *ctx)
+{
+	unsigned long end = old_addr + len;
+	unsigned long address;
+
+	for (address = old_addr; address < end; address += PAGE_SIZE_COMPAT) {
+		if (ppps_mremap_skip_empty_pmd(vma->vm_mm, &address, end))
+			continue;
+		if (ppps_mremap_source(vma, address, ctx, true))
+			return 1;
+	}
+	return 0;
+}
+
+/*
+ * One preparation attempt.  Return: 0 with *@ctxp ready, 1 to restart
+ * (@wait_folio set when a folio lock was missed), <0 fatal error.  The
+ * context is released here on anything but success.
+ */
+static int ppps_mremap_attempt(struct vm_area_struct *vma,
+		unsigned long old_addr, unsigned long len,
+		struct ppps_mremap_folios **ctxp, struct folio **wait_folio)
+{
+	struct ppps_mremap_folios *ctx;
+	int ret;
+
+	ctx = kvzalloc(struct_size(ctx, folios, len >> PAGE_SHIFT_COMPAT),
+		       GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
+
+	ret = ppps_mremap_collect(vma, old_addr, len, ctx);
+	if (!ret)
+		ret = ppps_mremap_lock_folios(ctx, wait_folio);
+	if (!ret)
+		ret = ppps_mremap_validate(vma, old_addr, len, ctx);
+	if (ret) {
+		ppps_anon_mremap_finish(ctx);
+		return ret;
+	}
+	*ctxp = ctx;
+	return 0;
+}
+
+/*
+ * Swap entries identify a native folio, not the original 4K slice. Fault them
+ * at their source addresses before moving them. Hold all source anon folios
+ * locked through move/reslice (and rollback) so reclaim and migration cannot
+ * replace a present source by a swap/migration entry in between.
+ *
+ * Take references under PTL, sort/deduplicate, then trylock. Never wait for a
+ * second folio while holding the first: other mms may share these folios.
+ * Recheck the PTEs after locking; racing migration/reclaim restarts preparation.
+ * mmap_lock stays write-held; no retry-capable fault may drop it.  Every
+ * restart reason is transient and makes progress, so the attempt budget only
+ * turns an unexpected non-transient condition into an error instead of a
+ * spin under mmap_lock.
+ */
+struct ppps_mremap_folios *ppps_anon_mremap_prepare(struct vm_area_struct *vma,
+		unsigned long old_addr, unsigned long new_addr, unsigned long len)
+{
+	struct ppps_mremap_folios *ctx = NULL;
+	unsigned int attempts;
+	int ret;
+
+	if (!ppps_vma_shares_tuple(vma) || !len)
+		return NULL;
+	if (!ppps_vma_has_slices(vma) && IS_ALIGNED(old_addr, PAGE_SIZE) &&
+	    IS_ALIGNED(new_addr, PAGE_SIZE) && IS_ALIGNED(len, PAGE_SIZE))
+		return NULL;
+	mmap_assert_write_locked(vma->vm_mm);
+	vma_start_write(vma);
+
+	for (attempts = 0; ; attempts++) {
+		struct folio *wait_folio = NULL;
+
+		ret = ppps_mremap_attempt(vma, old_addr, len, &ctx, &wait_folio);
+		if (ret <= 0)
+			break;
+		if (wait_folio) {
+			ret = folio_wait_locked_killable(wait_folio);
+			folio_put(wait_folio);
+			if (ret)
+				break;
+		}
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
+			break;
+		}
+		if (attempts == PPPS_MREMAP_MAX_ATTEMPTS) {
+			ret = -EAGAIN;
+			break;
+		}
+		cond_resched();
+	}
+	return ret ? ERR_PTR(ret) : ctx;
+}
+
+struct ppps_reslice_tuple {
+	struct folio *folio;
+	unsigned long first;
+	bool normal;
+	bool zero;
+};
+
+/* The source folios drained by one destination tuple. */
+struct ppps_reslice_sources {
+	struct folio *folios[PPPS_SLICES_PER_PAGE];
+	unsigned long bases[PPPS_SLICES_PER_PAGE];
+	int nr;
+};
+
