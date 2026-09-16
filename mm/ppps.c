@@ -11,6 +11,7 @@
 #include <linux/string.h>
 #include <asm/memory.h>
 
+#include "internal.h"
 #include "ppps.h"
 
 unsigned long mm_task_size64_of(struct mm_struct *mm)
@@ -40,6 +41,47 @@ unsigned long mm_default_map_window64(void)
 EXPORT_SYMBOL(mm_default_map_window64);
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * The PPPS file fault path installs one process-sized PTE at a time, so the
+ * rmap addition above cannot tell when the final slice of a large folio has
+ * been mapped.  The caller has installed the PTE and dropped its page table
+ * lock, but still holds the folio lock and mmap_lock.  This makes it safe to
+ * walk across page table boundaries before mlocking the fully mapped folio.
+ */
+void ppps_file_fault_mlock(struct vm_area_struct *vma, struct folio *folio)
+{
+	unsigned long nr_ptes = folio_nr_ptes(folio, vma);
+	unsigned long address;
+	unsigned long ptes = 0;
+
+	if (!ppps_mm_is_compat(vma->vm_mm) || !vma->vm_file ||
+	    !folio_test_large(folio) || folio_test_anon(folio))
+		return;
+	if ((vma->vm_flags & (VM_LOCKED | VM_SPECIAL)) != VM_LOCKED ||
+	    !folio_within_vma(folio, vma))
+		return;
+	/* Avoid a page-table walk until this VMA could be a full mapping. */
+	if (folio_mapcount(folio) < nr_ptes)
+		return;
+
+	address = vma_address(vma, folio_pgoff(folio), folio_nr_pages(folio));
+	if (address == -EFAULT)
+		return;
+
+	{
+		DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, PVMW_SYNC);
+
+		while (page_vma_mapped_walk(&pvmw)) {
+			if (!pvmw.pte || ++ptes == nr_ptes)
+				break;
+		}
+		if (pvmw.pte && ptes == nr_ptes)
+			mlock_vma_folio(folio, vma);
+		page_vma_mapped_walk_done(&pvmw);
+	}
+}
+
+
 /* Testing only: select Android app runtimes, not init or its other services. */
 static bool ppps_test_app_runtime(const struct linux_binprm *bprm)
 {
@@ -76,24 +118,23 @@ int ppps_vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
 			 struct page **pages, unsigned long *num)
 {
 	const unsigned long nr_pages = *num;
-	unsigned long user_pages, max_pages, logical_pages, i;
-	unsigned int start_slice;
+	unsigned long user_pages, logical_pages, i;
 
 	if (!nr_pages)
 		return 0;
 	if (addr < vma->vm_start || addr >= vma->vm_end)
 		return -EFAULT;
 
-	start_slice = vma_address_to_slice(vma, addr);
-	user_pages = (vma->vm_end - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
-	max_pages = DIV_ROUND_UP(start_slice + user_pages, PPPS_SLICES_PER_PAGE);
-	if (nr_pages > max_pages)
+	/* pages[] always starts at byte zero, independently of the VMA offset. */
+	if (!MM_PAGE_ALIGNED(vma->vm_mm, addr))
 		return -EFAULT;
-
-	logical_pages = min(user_pages,
-			    (nr_pages << PPPS_SLICE_SHIFT) - start_slice);
+	user_pages = (vma->vm_end - addr) >> PAGE_SHIFT_COMPAT;
+	if (nr_pages > DIV_ROUND_UP(user_pages, PPPS_SLICES_PER_PAGE))
+		return -EFAULT;
+	/* The final native page may cover only the remaining VMA slices. */
+	logical_pages = min(user_pages, nr_pages << PPPS_SLICE_SHIFT);
 	for (i = 0; i < logical_pages; i++) {
-		unsigned long total_slice = start_slice + i;
+		unsigned long total_slice = i;
 		unsigned long page_index = total_slice >> PPPS_SLICE_SHIFT;
 		int error;
 

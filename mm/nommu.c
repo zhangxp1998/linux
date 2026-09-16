@@ -340,6 +340,20 @@ int vm_insert_page(struct vm_area_struct *vma, unsigned long addr,
 }
 EXPORT_SYMBOL(vm_insert_page);
 
+int vm_insert_page_native(struct vm_area_struct *vma, unsigned long addr,
+			  struct page *page)
+{
+	return vm_insert_page(vma, addr, page);
+}
+EXPORT_SYMBOL(vm_insert_page_native);
+
+int vm_insert_page_slice(struct vm_area_struct *vma, unsigned long addr,
+			 struct page *page, unsigned int slice_idx)
+{
+	return slice_idx ? -EINVAL : vm_insert_page(vma, addr, page);
+}
+EXPORT_SYMBOL(vm_insert_page_slice);
+
 int vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
 			struct page **pages, unsigned long *num)
 {
@@ -1588,6 +1602,14 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 	return 0;
 }
 EXPORT_SYMBOL(remap_pfn_range);
+
+int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
+			  unsigned long pfn, unsigned int slice,
+			  unsigned long size, pgprot_t prot)
+{
+	return slice ? -EINVAL : remap_pfn_range(vma, addr, pfn, size, prot);
+}
+EXPORT_SYMBOL(remap_pfn_range_slice);
 
 int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len)
 {

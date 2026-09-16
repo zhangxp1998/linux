@@ -18,8 +18,10 @@
  *                 0..PPPS_SLICES_PER_PAGE-1.  A compat PTE maps one slice,
  *                 encoded in the PTE address bits between PAGE_SHIFT_COMPAT
  *                 and PAGE_SHIFT (see pte_mkslice()).
- *   tuple         the PPPS_SLICES_PER_PAGE consecutive compat PTEs that
- *                 share one anonymous native folio (mm/ppps_anon.c).
+ *   tuple         an address/PTE group of PPPS_SLICES_PER_PAGE compat
+ *                 slices (mm/ppps_anon.c), not a single-folio guarantee.
+ *                 Ownership and accounting belong to (mm, tuple, folio);
+ *                 a tuple crossing VMAs can contain several folios.
  *
  * VMA bookkeeping (see vma_address_to_slice(), vma_linear_page_index()):
  *
