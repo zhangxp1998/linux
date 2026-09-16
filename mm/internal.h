@@ -1750,6 +1750,16 @@ static __always_inline bool vmf_orig_pte_uffd_wp(struct vm_fault *vmf)
 }
 #endif /* CONFIG_MMU */
 
- /* CONFIG_USERFAULTFD */
+#ifdef CONFIG_USERFAULTFD
+/* Revalidate a UFFD move after reacquiring both PTE locks. */
+static inline bool is_pte_pages_stable(pte_t *dst_pte, pte_t *src_pte,
+				       pte_t orig_dst_pte, pte_t orig_src_pte,
+				       pmd_t *dst_pmd, pmd_t dst_pmdval)
+{
+	return pte_same(ptep_get(src_pte), orig_src_pte) &&
+	       pte_same(ptep_get(dst_pte), orig_dst_pte) &&
+	       pmd_same(dst_pmdval, pmdp_get_lockless(dst_pmd));
+}
+#endif /* CONFIG_USERFAULTFD */
 
 #endif	/* __MM_INTERNAL_H */
