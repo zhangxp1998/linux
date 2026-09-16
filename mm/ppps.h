@@ -149,7 +149,7 @@ int ppps_anon_reslice_range(struct mm_struct *mm, unsigned long old_addr,
 int ppps_anon_copy_present_ptes(struct vm_area_struct *dst_vma,
 				struct vm_area_struct *src_vma,
 				pte_t *dst_pte, pte_t *src_pte,
-				unsigned long addr, int *rss,
+				unsigned long addr, int max_nr, int *rss,
 				struct folio *folio, struct folio **prealloc);
 enum ppps_anon_wp_type ppps_anon_wp_type(struct vm_area_struct *vma,
 					 struct folio *folio, pte_t pte);
@@ -373,7 +373,7 @@ static inline int ppps_anon_reslice_range(struct mm_struct *mm,
 static inline int ppps_anon_copy_present_ptes(struct vm_area_struct *dst_vma,
 					      struct vm_area_struct *src_vma,
 					      pte_t *dst_pte, pte_t *src_pte,
-					      unsigned long addr, int *rss,
+					      unsigned long addr, int max_nr, int *rss,
 					      struct folio *folio,
 					      struct folio **prealloc)
 {
