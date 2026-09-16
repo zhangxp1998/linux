@@ -28,13 +28,28 @@
  *   x0 - address of the page to be cleared
  */
 SYM_FUNC_START(mte_clear_page_tags)
+	mov	x1, #PAGE_SIZE
+	b	mte_clear_tags_range
+SYM_FUNC_END(mte_clear_page_tags)
+
+/*
+ * Clear the tags in a range
+ *   x0 - address of the range to be cleared
+ *   x1 - size of the range
+ *
+ * The address and size must be aligned to MTE_GRANULE_SIZE and the transfer
+ * size reported by GMID_EL1 must divide the range size.
+ */
+SYM_FUNC_START(mte_clear_tags_range)
+	cbz	x1, 2f
+	add	x3, x0, x1
 	multitag_transfer_size x1, x2
 1:	stgm	xzr, [x0]
 	add	x0, x0, x1
-	tst	x0, #(PAGE_SIZE - 1)
-	b.ne	1b
-	ret
-SYM_FUNC_END(mte_clear_page_tags)
+	cmp	x0, x3
+	b.lo	1b
+2:	ret
+SYM_FUNC_END(mte_clear_tags_range)
 
 /*
  * Zero the page and tags at the same time
@@ -43,7 +58,21 @@ SYM_FUNC_END(mte_clear_page_tags)
  *	x0 - address to the beginning of the page
  */
 SYM_FUNC_START(mte_zero_clear_page_tags)
+	mov	x1, #PAGE_SIZE
+	b	mte_zero_clear_tags_range
+SYM_FUNC_END(mte_zero_clear_page_tags)
+
+/*
+ * Zero a range and its tags at the same time
+ *
+ * Parameters:
+ *	x0 - address to the beginning of the range
+ *	x1 - size of the range
+ */
+SYM_FUNC_START(mte_zero_clear_tags_range)
+	cbz	x1, 3f
 	and	x0, x0, #(1 << MTE_TAG_SHIFT) - 1	// clear the tag
+	add	x3, x0, x1
 	mrs	x1, dczid_el0
 	tbnz	x1, #4, 2f	// Branch if DC GZVA is prohibited
 	and	w1, w1, #0xf
@@ -52,15 +81,15 @@ SYM_FUNC_START(mte_zero_clear_page_tags)
 
 1:	dc	gzva, x0
 	add	x0, x0, x1
-	tst	x0, #(PAGE_SIZE - 1)
-	b.ne	1b
-	ret
+	cmp	x0, x3
+	b.lo	1b
+	b	3f
 
 2:	stz2g	x0, [x0], #(MTE_GRANULE_SIZE * 2)
-	tst	x0, #(PAGE_SIZE - 1)
-	b.ne	2b
-	ret
-SYM_FUNC_END(mte_zero_clear_page_tags)
+	cmp	x0, x3
+	b.lo	2b
+3:	ret
+SYM_FUNC_END(mte_zero_clear_tags_range)
 
 /*
  * Copy the tags from the source page to the destination one
@@ -68,6 +97,19 @@ SYM_FUNC_END(mte_zero_clear_page_tags)
  *   x1 - address of the source page
  */
 SYM_FUNC_START(mte_copy_page_tags)
+	mov	x2, #PAGE_SIZE
+	b	mte_copy_tags_range
+SYM_FUNC_END(mte_copy_page_tags)
+
+/*
+ * Copy the tags from a source range to a destination range
+ *   x0 - address of the destination range
+ *   x1 - address of the source range
+ *   x2 - size of the range
+ */
+SYM_FUNC_START(mte_copy_tags_range)
+	cbz	x2, 2f
+	add	x7, x0, x2
 	mov	x2, x0
 	mov	x3, x1
 	multitag_transfer_size x5, x6
@@ -75,10 +117,10 @@ SYM_FUNC_START(mte_copy_page_tags)
 	stgm	x4, [x2]
 	add	x2, x2, x5
 	add	x3, x3, x5
-	tst	x2, #(PAGE_SIZE - 1)
-	b.ne	1b
-	ret
-SYM_FUNC_END(mte_copy_page_tags)
+	cmp	x2, x7
+	b.lo	1b
+2:	ret
+SYM_FUNC_END(mte_copy_tags_range)
 
 /*
  * Read tags from a user buffer (one tag per byte) and set the corresponding

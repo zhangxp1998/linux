@@ -31,10 +31,6 @@
 bool ppps_uffd_copy_tuple_ok(struct vm_area_struct *dst_vma, unsigned long dst_addr,
 		unsigned long remaining, uffd_flags_t flags)
 {
-	/* Tuple creation waits for generic-MM activation. */
-	if (!ppps_vma_shares_tuple(dst_vma))
-		return false;
-
 	if (!ppps_mm_is_compat(dst_vma->vm_mm))
 		return false;
 
@@ -196,10 +192,6 @@ bool ppps_uffd_move_tuple_ok(struct vm_area_struct *dst_vma, struct vm_area_stru
 {
 	vm_flags_t excluded = VM_MTE | VM_DROPPABLE | VM_LOCKED |
 			      VM_MERGEABLE;
-
-	/* Tuple creation waits for generic-MM activation. */
-	if (!ppps_vma_shares_tuple(dst_vma))
-		return false;
 
 	if (!ppps_mm_is_compat(src_vma->vm_mm))
 		return false;
