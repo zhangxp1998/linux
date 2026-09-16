@@ -1132,15 +1132,6 @@ void double_pt_unlock(spinlock_t *ptl1,
 		__release(ptl2);
 }
 
-static inline bool is_pte_pages_stable(pte_t *dst_pte, pte_t *src_pte,
-				       pte_t orig_dst_pte, pte_t orig_src_pte,
-				       pmd_t *dst_pmd, pmd_t dst_pmdval)
-{
-	return pte_same(ptep_get(src_pte), orig_src_pte) &&
-	       pte_same(ptep_get(dst_pte), orig_dst_pte) &&
-	       pmd_same(dst_pmdval, pmdp_get_lockless(dst_pmd));
-}
-
 /*
  * Checks if the two ptes and the corresponding folio are eligible for batched
  * move. If so, then returns pointer to the locked folio. Otherwise, returns NULL.
@@ -1225,8 +1216,7 @@ static long move_present_ptes(struct mm_struct *mm,
 		folio_move_anon_rmap(src_folio, dst_vma);
 		src_folio->index = linear_page_index(dst_vma, dst_addr);
 
-		/* pte_modify() keeps the PPPS slice bits of the source PTE. */
-		orig_dst_pte = pte_modify(orig_src_pte, dst_vma->vm_page_prot);
+		orig_dst_pte = mk_pte(&src_folio->page, dst_vma->vm_page_prot);
 		/* Set soft dirty bit so userspace can notice the pte was moved */
 #ifdef CONFIG_MEM_SOFT_DIRTY
 		orig_dst_pte = pte_mksoft_dirty(orig_dst_pte);
@@ -1346,6 +1336,7 @@ static int move_zeropage_pte(struct mm_struct *mm,
 
 	zero_pte = pte_mkspecial(pfn_pte(my_zero_pfn(dst_addr),
 					 dst_vma->vm_page_prot));
+	zero_pte = vma_pte_mkslice(dst_vma, zero_pte, dst_addr);
 	ptep_clear_flush(src_vma, src_addr, src_pte);
 	set_pte_at(mm, dst_addr, dst_pte, zero_pte);
 	double_pt_unlock(dst_ptl, src_ptl);
@@ -1363,7 +1354,7 @@ static long move_pages_ptes(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd
 			    struct vm_area_struct *dst_vma,
 			    struct vm_area_struct *src_vma,
 			    unsigned long dst_addr, unsigned long src_addr,
-			    unsigned long len, __u64 mode)
+			    unsigned long len, __u64 mode, bool *ppps_fallback)
 {
 	swp_entry_t entry;
 	struct swap_info_struct *si = NULL;
@@ -1534,12 +1525,40 @@ retry:
 			goto retry;
 		}
 
-		ret = move_present_ptes(mm, dst_vma, src_vma,
+		if (ppps_mm_is_compat(mm) &&
+		    folio_test_ppps_compat_anon(src_folio) &&
+		    ppps_uffd_move_tuple_ok(dst_vma, src_vma, dst_addr,
+					 src_addr, len)) {
+			ret = ppps_uffd_move_tuple(mm, dst_vma, src_vma,
+						     dst_addr, src_addr,
+						     dst_pte, src_pte,
+						     orig_dst_pte, orig_src_pte,
+						     dst_pmd, dst_pmdval,
+						     dst_ptl, src_ptl,
+						     &src_folio, ppps_fallback);
+			if (*ppps_fallback && src_folio) {
+				*ppps_fallback = false;
+				ret = ppps_uffd_move_slice(mm, dst_vma,
+						src_vma, dst_addr, src_addr,
+						dst_pte, src_pte, orig_dst_pte,
+						orig_src_pte, dst_pmd, dst_pmdval,
+						dst_ptl, src_ptl, src_folio);
+			}
+		} else if (ppps_mm_is_compat(mm))
+			ret = ppps_uffd_move_slice(mm, dst_vma, src_vma,
+							  dst_addr, src_addr,
+							  dst_pte, src_pte,
+							  orig_dst_pte,
+							  orig_src_pte,
+							  dst_pmd, dst_pmdval,
+							  dst_ptl, src_ptl,
+							  src_folio);
+		else
+			ret = move_present_ptes(mm, dst_vma, src_vma,
 					dst_addr, src_addr, dst_pte, src_pte,
 					orig_dst_pte, orig_src_pte,
 					dst_pmd, dst_pmdval,
-					dst_ptl, src_ptl, &src_folio,
-					len);
+					dst_ptl, src_ptl, &src_folio, len);
 	} else {
 		struct folio *folio = NULL;
 
@@ -1561,6 +1580,12 @@ retry:
 			goto out;
 		}
 
+		/* Even an aligned subrange must not split a tuple's swap identity. */
+		if (ppps_mm_is_compat(mm)) {
+			*ppps_fallback = true;
+			ret = -EAGAIN;
+			goto out;
+		}
 		si = get_swap_device(entry);
 		if (unlikely(!si)) {
 			ret = -EAGAIN;
@@ -1888,6 +1913,7 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	struct vm_area_struct *src_vma, *dst_vma;
 	unsigned long src_addr, dst_addr, src_end;
 	pmd_t *src_pmd, *dst_pmd;
+	bool ppps_fallback = false;
 	long err = -EINVAL;
 	ssize_t moved = 0;
 
@@ -1902,161 +1928,191 @@ ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 	    WARN_ON_ONCE(dst_start + len <= dst_start))
 		goto out;
 
-	err = uffd_move_lock(mm, dst_start, src_start, &dst_vma, &src_vma);
-	if (err)
-		goto out;
+	src_addr = src_start;
+	dst_addr = dst_start;
+	src_end = src_start + len;
 
-	/* Re-check after taking map_changing_lock */
-	err = -EAGAIN;
-	down_read(&ctx->map_changing_lock);
-	if (likely(atomic_read(&ctx->mmap_changing)))
-		goto out_unlock;
-	/*
-	 * Make sure the vma is not shared, that the src and dst remap
-	 * ranges are both valid and fully within a single existing
-	 * vma.
-	 */
-	err = -EINVAL;
-	if (src_vma->vm_flags & VM_SHARED)
-		goto out_unlock;
-	if (src_start + len > src_vma->vm_end)
-		goto out_unlock;
+	for (;;) {
+		err = uffd_move_lock(mm, dst_addr, src_addr, &dst_vma, &src_vma);
+		if (err)
+			goto out;
 
-	if (dst_vma->vm_flags & VM_SHARED)
-		goto out_unlock;
-	if (dst_start + len > dst_vma->vm_end)
-		goto out_unlock;
-
-	err = validate_move_areas(ctx, src_vma, dst_vma);
-	if (err)
-		goto out_unlock;
-
-	for (src_addr = src_start, dst_addr = dst_start, src_end = src_start + len;
-	     src_addr < src_end;) {
-		spinlock_t *ptl;
-		pmd_t dst_pmdval;
-		unsigned long step_size;
-
+		/* Re-check after taking map_changing_lock */
+		err = -EAGAIN;
+		down_read(&ctx->map_changing_lock);
+		if (likely(atomic_read(&ctx->mmap_changing)))
+			goto out_unlock;
 		/*
-		 * Below works because anonymous area would not have a
-		 * transparent huge PUD. If file-backed support is added,
-		 * that case would need to be handled here.
+		 * Make sure the vma is not shared, that the src and dst remap
+		 * ranges are both valid and fully within a single existing
+		 * vma.
 		 */
-		src_pmd = mm_find_pmd(mm, src_addr);
-		if (unlikely(!src_pmd)) {
-			if (!(mode & UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES)) {
-				err = -ENOENT;
-				break;
-			}
-			src_pmd = mm_alloc_pmd(mm, src_addr);
+		err = -EINVAL;
+		if (src_vma->vm_flags & VM_SHARED)
+			goto out_unlock;
+		if (src_end > src_vma->vm_end)
+			goto out_unlock;
+
+		if (dst_vma->vm_flags & VM_SHARED)
+			goto out_unlock;
+		if (dst_start + len > dst_vma->vm_end)
+			goto out_unlock;
+
+		err = validate_move_areas(ctx, src_vma, dst_vma);
+		if (err)
+			goto out_unlock;
+
+		for (; src_addr < src_end;) {
+			spinlock_t *ptl;
+			pmd_t dst_pmdval;
+			unsigned long step_size;
+
+			/*
+			 * Below works because anonymous area would not have a
+			 * transparent huge PUD. If file-backed support is added,
+			 * that case would need to be handled here.
+			 */
+			src_pmd = mm_find_pmd(mm, src_addr);
 			if (unlikely(!src_pmd)) {
-				err = -ENOMEM;
-				break;
-			}
-		}
-		dst_pmd = mm_alloc_pmd(mm, dst_addr);
-		if (unlikely(!dst_pmd)) {
-			err = -ENOMEM;
-			break;
-		}
-
-		dst_pmdval = pmdp_get_lockless(dst_pmd);
-		/*
-		 * If the dst_pmd is mapped as THP don't override it and just
-		 * be strict. If dst_pmd changes into TPH after this check, the
-		 * move_pages_huge_pmd() will detect the change and retry
-		 * while move_pages_pte() will detect the change and fail.
-		 */
-		if (unlikely(pmd_trans_huge(dst_pmdval))) {
-			err = -EEXIST;
-			break;
-		}
-
-		ptl = pmd_trans_huge_lock(src_pmd, src_vma);
-		if (ptl) {
-			if (pmd_devmap(*src_pmd)) {
-				spin_unlock(ptl);
-				err = -ENOENT;
-				break;
-			}
-
-			/* Check if we can move the pmd without splitting it. */
-			if (move_splits_huge_pmd(dst_addr, src_addr, src_start + len) ||
-			    !pmd_none(dst_pmdval)) {
-				/* Can be a migration entry */
-				if (pmd_present(*src_pmd)) {
-					struct folio *folio = pmd_folio(*src_pmd);
-
-					if (!is_huge_zero_folio(folio) &&
-					    !PageAnonExclusive(&folio->page)) {
-						spin_unlock(ptl);
-						err = -EBUSY;
-						break;
-					}
-				}
-
-				spin_unlock(ptl);
-				split_huge_pmd(src_vma, src_pmd, src_addr);
-				/* The folio will be split by move_pages_pte() */
-				continue;
-			}
-
-			err = move_pages_huge_pmd(mm, dst_pmd, src_pmd,
-						  dst_pmdval, dst_vma, src_vma,
-						  dst_addr, src_addr);
-			step_size = HPAGE_PMD_SIZE;
-		} else {
-			long ret;
-
-			if (pmd_none(*src_pmd)) {
 				if (!(mode & UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES)) {
 					err = -ENOENT;
 					break;
 				}
-				if (unlikely(__pte_alloc(mm, src_pmd))) {
+				src_pmd = mm_alloc_pmd(mm, src_addr);
+				if (unlikely(!src_pmd)) {
 					err = -ENOMEM;
 					break;
 				}
 			}
-
-			if (unlikely(pte_alloc(mm, dst_pmd))) {
+			dst_pmd = mm_alloc_pmd(mm, dst_addr);
+			if (unlikely(!dst_pmd)) {
 				err = -ENOMEM;
 				break;
 			}
 
-			ret = move_pages_ptes(mm, dst_pmd, src_pmd,
-					      dst_vma, src_vma, dst_addr,
-					      src_addr, src_end - src_addr, mode);
-			if (ret < 0)
-				err = ret;
-			else
-				step_size = ret;
+			dst_pmdval = pmdp_get_lockless(dst_pmd);
+			/*
+			 * If the dst_pmd is mapped as THP don't override it and just
+			 * be strict. If dst_pmd changes into TPH after this check, the
+			 * move_pages_huge_pmd() will detect the change and retry
+			 * while move_pages_pte() will detect the change and fail.
+			 */
+			if (unlikely(pmd_trans_huge(dst_pmdval))) {
+				err = -EEXIST;
+				break;
+			}
+
+			ptl = pmd_trans_huge_lock(src_pmd, src_vma);
+			if (ptl) {
+				if (pmd_devmap(*src_pmd)) {
+					spin_unlock(ptl);
+					err = -ENOENT;
+					break;
+				}
+
+				/* Check if we can move the pmd without splitting it. */
+				if (move_splits_huge_pmd(dst_addr, src_addr, src_start + len) ||
+				    !pmd_none(dst_pmdval)) {
+					/* Can be a migration entry */
+					if (pmd_present(*src_pmd)) {
+						struct folio *folio = pmd_folio(*src_pmd);
+
+						if (!is_huge_zero_folio(folio) &&
+						    !PageAnonExclusive(&folio->page)) {
+							spin_unlock(ptl);
+							err = -EBUSY;
+							break;
+						}
+					}
+
+					spin_unlock(ptl);
+					split_huge_pmd(src_vma, src_pmd, src_addr);
+					/* The folio will be split by move_pages_pte() */
+					continue;
+				}
+
+				err = move_pages_huge_pmd(mm, dst_pmd, src_pmd,
+							  dst_pmdval, dst_vma, src_vma,
+							  dst_addr, src_addr);
+				step_size = HPAGE_PMD_SIZE;
+			} else {
+				long ret;
+
+				if (pmd_none(*src_pmd)) {
+					if (!(mode & UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES)) {
+						err = -ENOENT;
+						break;
+					}
+					if (unlikely(__pte_alloc(mm, src_pmd))) {
+						err = -ENOMEM;
+						break;
+					}
+				}
+
+				if (unlikely(pte_alloc(mm, dst_pmd))) {
+					err = -ENOMEM;
+					break;
+				}
+
+				ret = move_pages_ptes(mm, dst_pmd, src_pmd,
+						      dst_vma, src_vma, dst_addr,
+						      src_addr, src_end - src_addr, mode,
+						      &ppps_fallback);
+				if (ppps_fallback) {
+					err = -EAGAIN;
+					break;
+				}
+				if (ret < 0)
+					err = ret;
+				else
+					step_size = ret;
+			}
+
+			cond_resched();
+
+			if (fatal_signal_pending(current)) {
+				/* Do not override an error */
+				if (!err || err == -EAGAIN)
+					err = -EINTR;
+				break;
+			}
+
+			if (err) {
+				if (err == -EAGAIN)
+					continue;
+				break;
+			}
+
+			/* Proceed to the next page */
+			dst_addr += step_size;
+			src_addr += step_size;
+			moved += step_size;
 		}
-
-		cond_resched();
-
-		if (fatal_signal_pending(current)) {
-			/* Do not override an error */
-			if (!err || err == -EAGAIN)
-				err = -EINTR;
-			break;
-		}
-
-		if (err) {
-			if (err == -EAGAIN)
-				continue;
-			break;
-		}
-
-		/* Proceed to the next page */
-		dst_addr += step_size;
-		src_addr += step_size;
-		moved += step_size;
-	}
 
 out_unlock:
-	up_read(&ctx->map_changing_lock);
-	uffd_move_unlock(dst_vma, src_vma);
+		up_read(&ctx->map_changing_lock);
+		uffd_move_unlock(dst_vma, src_vma);
+		if (ppps_fallback) {
+			vm_fault_t fault;
+
+			ppps_fallback = false;
+			mmap_read_lock(mm);
+			src_vma = find_vma(mm, src_addr);
+			if (!src_vma || src_addr < src_vma->vm_start) {
+				err = -ENOENT;
+			} else {
+				fault = handle_mm_fault(src_vma, src_addr,
+							FAULT_FLAG_REMOTE, NULL);
+				err = fault & VM_FAULT_ERROR ?
+					vm_fault_to_errno(fault, 0) : 0;
+			}
+			mmap_read_unlock(mm);
+			if (!err)
+				continue;
+		}
+		break;
+	}
+
 out:
 	VM_WARN_ON(moved < 0);
 	VM_WARN_ON(err > 0);
