@@ -1,25 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat owner repeatedly execs a native (16K) child whose argv array
+ * lives in a cold, not-yet-faulted 4K file page; every exec completes and
+ * the child sees a valid page size.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <sys/types.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE		4096UL
 #define TRANSITION_COUNT	32
 #define EXEC_TIMEOUT_US		500000
 #define WAIT_STEP_US		1000
@@ -29,17 +22,6 @@ static const char *const native_argv[] = {
 	"--native",
 	NULL,
 };
-
-static int reexec_with_personality(unsigned long set, unsigned long clear,
-				   const char *mode)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 || personality((persona | set) & ~clear) < 0)
-		return EXIT_FAILURE;
-	execl("/proc/self/exe", "exec_user_args_ppps", mode, NULL);
-	return EXIT_FAILURE;
-}
 
 static int exec_native_with_cold_argv(void)
 {
@@ -51,15 +33,15 @@ static int exec_native_with_cold_argv(void)
 	    personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
 		return EXIT_FAILURE;
 	memfd = memfd_create("exec-argv", 0);
-	if (memfd < 0 || ftruncate(memfd, USER_PAGE_SIZE) ||
+	if (memfd < 0 || ftruncate(memfd, PROCESS_PAGE_SIZE) ||
 	    pwrite(memfd, native_argv, sizeof(native_argv), 0) !=
 	    sizeof(native_argv))
 		return EXIT_FAILURE;
-	exec_argv = mmap(NULL, USER_PAGE_SIZE, PROT_READ, MAP_PRIVATE, memfd, 0);
+	exec_argv = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_PRIVATE, memfd, 0);
 	close(memfd);
 	if (exec_argv == MAP_FAILED)
 		return EXIT_FAILURE;
-	if (madvise(exec_argv, USER_PAGE_SIZE, MADV_DONTNEED))
+	if (madvise(exec_argv, PROCESS_PAGE_SIZE, MADV_DONTNEED))
 		return EXIT_FAILURE;
 	syscall(SYS_execve, native_argv[0], exec_argv, NULL);
 	return EXIT_FAILURE;
@@ -88,10 +70,9 @@ static int run_compat_owner(void)
 {
 	int i;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(TRANSITION_COUNT + 1);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "owner process uses 4K pages\n");
+	ksft_set_plan(TRANSITION_COUNT);
 
 	for (i = 0; i < TRANSITION_COUNT; i++) {
 		pid_t child = fork();
@@ -108,14 +89,15 @@ static int run_compat_owner(void)
 
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return reexec_with_personality(ADDR_4KB_COMPAT_PAGE_SIZE, 0,
-					       "--owner");
-	if (argc == 2 && !strcmp(argv[1], "--owner"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_compat(argv[0], "--owner", NULL);
+	if (argc == 2 && !strcmp(mode, "--owner"))
 		return run_compat_owner();
-	if (argc == 2 && !strcmp(argv[1], "--native"))
-		return sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE ||
-		       sysconf(_SC_PAGESIZE) == 4 * USER_PAGE_SIZE ?
+	if (argc == 2 && !strcmp(mode, "--native"))
+		return sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE ||
+		       sysconf(_SC_PAGESIZE) == NATIVE_PAGE_SIZE ?
 			EXIT_SUCCESS : EXIT_FAILURE;
 	return EXIT_FAILURE;
 }

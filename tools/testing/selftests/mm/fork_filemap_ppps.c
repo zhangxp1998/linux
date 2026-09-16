@@ -1,34 +1,50 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A forked child of a 4K compat process faults the same non-native-aligned
+ * private file page as its parent, even after the VMA slab has been seeded
+ * with objects carrying a different slice offset.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <string.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE		4096UL
-#define NATIVE_PAGE_SIZE	16384UL
-#define TARGET_OFFSET		USER_PAGE_SIZE
-#define POISON_OFFSET		(3 * USER_PAGE_SIZE)
+#define TARGET_OFFSET		PROCESS_PAGE_SIZE
+#define POISON_OFFSET		(3 * PROCESS_PAGE_SIZE)
 #define POISON_MAPPINGS		256
 #define POISON_STRIDE		(2 * NATIVE_PAGE_SIZE)
+#define FILE_PAGES		4
+
+/* A private file whose pages each carry a distinct byte pattern. */
+static int create_backing_file(void)
+{
+	char path[] = "./fork_filemap_ppps.XXXXXX";
+	unsigned char page[PROCESS_PAGE_SIZE];
+	int fd = mkstemp(path);
+	int i;
+
+	if (fd < 0)
+		return -1;
+	unlink(path);
+	for (i = 0; i < FILE_PAGES; i++) {
+		memset(page, 0x40 + i, sizeof(page));
+		if (pwrite(fd, page, sizeof(page), i * PROCESS_PAGE_SIZE) !=
+		    (ssize_t)sizeof(page)) {
+			close(fd);
+			return -1;
+		}
+	}
+	return fd;
+}
 
 static int run_test(void)
 {
-	unsigned char expected[USER_PAGE_SIZE];
+	unsigned char expected[PROCESS_PAGE_SIZE];
 	unsigned char *poison_region;
 	unsigned char *poison_base;
 	size_t poison_region_size;
@@ -40,22 +56,20 @@ static int run_test(void)
 	int i;
 
 	ksft_print_header();
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(5);
 
-	fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
-	ksft_test_result(fd >= 0, "open the test executable\n");
+	fd = create_backing_file();
+	ksft_test_result(fd >= 0, "create a four-page backing file\n");
 	if (fd < 0)
-		ksft_exit_fail_msg("open failed: %s\n", strerror(errno));
+		ksft_exit_fail_msg("backing file failed: %s\n", strerror(errno));
 	if (fstat(fd, &statbuf) ||
-	    statbuf.st_size < (off_t)(4 * USER_PAGE_SIZE))
-		ksft_exit_fail_msg("test executable is too small\n");
+	    statbuf.st_size < (off_t)(FILE_PAGES * PROCESS_PAGE_SIZE))
+		ksft_exit_fail_msg("backing file is too small\n");
 	if (pread(fd, expected, sizeof(expected), TARGET_OFFSET) !=
 	    sizeof(expected))
 		ksft_exit_fail_msg("pread failed: %s\n", strerror(errno));
 
-	mapping = mmap(NULL, USER_PAGE_SIZE, PROT_READ, MAP_PRIVATE, fd,
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_PRIVATE, fd,
 		       TARGET_OFFSET);
 	ksft_test_result(mapping != MAP_FAILED,
 			 "map a non-native-aligned file page\n");
@@ -83,7 +97,7 @@ static int run_test(void)
 					 POISON_OFFSET;
 		void *poison;
 
-		poison = mmap(address, USER_PAGE_SIZE, PROT_READ,
+		poison = mmap(address, PROCESS_PAGE_SIZE, PROT_READ,
 			      MAP_PRIVATE | MAP_FIXED, fd, POISON_OFFSET);
 		if (poison != address)
 			ksft_exit_fail_msg("poison mmap failed: %s\n",
@@ -109,31 +123,10 @@ static int run_test(void)
 	ksft_test_result(WIFEXITED(status) && WEXITSTATUS(status) == 0,
 			 "child faults the same file page after fork\n");
 
-	munmap(mapping, USER_PAGE_SIZE);
+	munmap(mapping, PROCESS_PAGE_SIZE);
 	munmap(poison_region, poison_region_size);
 	close(fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "fork_filemap_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

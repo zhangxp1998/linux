@@ -1,26 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process's legacy AIO ring is sized, mapped and torn down in
+ * 4K process-page units.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <linux/posix_types.h>
 #include <linux/aio_abi.h>
 #include <poll.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
 #include <time.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define AIO_RING_MAGIC 0xa10a10a1
 #define EVENT_DATA 0x61696f2d70707073ULL
 
@@ -90,22 +82,20 @@ static int run_test(void)
 	bool poll_completed;
 
 	ksft_print_header();
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(6);
 	if (syscall(__NR_io_setup, 1, &ctx))
 		ksft_exit_fail_msg("io_setup failed: %s\n", strerror(errno));
 	ksft_test_result(ctx != 0, "create a legacy AIO context\n");
 
 	ring = (void *)(unsigned long)ctx;
 	map_size = mapping_size((unsigned long)ctx);
-	ksft_test_result(map_size == USER_PAGE_SIZE,
+	ksft_test_result(map_size == PROCESS_PAGE_SIZE,
 			 "map one process page for a one-page AIO ring\n");
 	ksft_test_result(ring->magic == AIO_RING_MAGIC &&
 			 ring->header_length == sizeof(*ring),
 			 "publish a valid AIO ring header\n");
 
-	expected_nr = (USER_PAGE_SIZE - sizeof(*ring)) /
+	expected_nr = (PROCESS_PAGE_SIZE - sizeof(*ring)) /
 		      sizeof(struct io_event);
 	ksft_test_result(ring->nr == expected_nr,
 			 "report capacity in the process-page ring\n");
@@ -120,23 +110,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n", strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n", strerror(errno));
-	execl("/proc/self/exe", "aio_ring_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

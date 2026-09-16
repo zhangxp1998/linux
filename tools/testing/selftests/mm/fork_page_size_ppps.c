@@ -1,56 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * fork() preserves the parent's page size, native or 4K compat, even when
+ * the ADDR_4KB_COMPAT_PAGE_SIZE personality bit has been flipped before the
+ * fork: the child sees the parent's data and smaps MMUPageSize.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
 #define WAIT_STEP_US	1000
 #define WAIT_TIMEOUT_US	2000000
-
-static unsigned long read_mmu_page_size(uintptr_t address)
-{
-	char *line = NULL;
-	size_t line_size = 0;
-	bool in_mapping = false;
-	unsigned long result = 0;
-	FILE *file;
-
-	file = fopen("/proc/self/smaps", "re");
-	if (!file)
-		return 0;
-	while (getline(&line, &line_size, file) >= 0) {
-		unsigned long start, end, size_kb;
-
-		if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
-			in_mapping = address >= start && address < end;
-			continue;
-		}
-		if (in_mapping &&
-		    sscanf(line, "MMUPageSize: %lu kB", &size_kb) == 1) {
-			result = size_kb * 1024;
-			break;
-		}
-	}
-	free(line);
-	fclose(file);
-	return result;
-}
 
 static bool wait_for_child(pid_t child)
 {
@@ -80,7 +43,7 @@ static int run_fork_case(bool compat)
 	pid_t child;
 	size_t i;
 
-	if (compat && page_size != USER_PAGE_SIZE)
+	if (compat && page_size != PROCESS_PAGE_SIZE)
 		return EXIT_FAILURE;
 	mapping = mmap(NULL, 4 * page_size, PROT_READ | PROT_WRITE,
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -109,7 +72,9 @@ static int run_fork_case(bool compat)
 			if (mapping[i] != (unsigned char)(i * 37 + 11))
 				_exit(EXIT_FAILURE);
 		}
-		mmu_page_size = read_mmu_page_size((uintptr_t)mapping);
+		if (!ppps_smaps_bytes(mapping, 1, "MMUPageSize",
+				      &mmu_page_size))
+			mmu_page_size = 0;
 		dprintf(STDOUT_FILENO,
 			"# %s fork: exec page size %lu, MMU page size %lu\n",
 			compat ? "compat" : "native", page_size,
@@ -121,18 +86,7 @@ static int run_fork_case(bool compat)
 
 static int reexec_case(bool compat)
 {
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		return EXIT_FAILURE;
-	if (compat)
-		persona |= ADDR_4KB_COMPAT_PAGE_SIZE;
-	else
-		persona &= ~ADDR_4KB_COMPAT_PAGE_SIZE;
-	if (personality((unsigned int)persona) < 0)
-		return EXIT_FAILURE;
-	execl("/proc/self/exe", "fork_page_size_ppps",
-	      compat ? "--compat" : "--native", NULL);
+	ppps_execl(compat, NULL, compat ? "--compat" : "--native", NULL);
 	return EXIT_FAILURE;
 }
 
@@ -149,9 +103,11 @@ static bool run_case(bool compat)
 
 int main(int argc, char **argv)
 {
-	if (argc == 2 && !strcmp(argv[1], "--native"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (argc == 2 && mode && !strcmp(mode, "--native"))
 		return run_fork_case(false);
-	if (argc == 2 && !strcmp(argv[1], "--compat"))
+	if (argc == 2 && mode && !strcmp(mode, "--compat"))
 		return run_fork_case(true);
 	if (argc != 1)
 		return EXIT_FAILURE;

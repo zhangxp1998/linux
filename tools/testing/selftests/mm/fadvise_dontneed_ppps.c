@@ -1,26 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * POSIX_FADV_DONTNEED from a 4K compat process works at 4K granularity: a
+ * partial-page range leaves the page cached and a full 4K range evicts
+ * exactly that page, as observed through cachestat().
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <linux/mman.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define FILE_PAGES 4UL
 #define TARGET_PAGE 1UL
 #define POLL_ATTEMPTS 20
@@ -48,8 +40,8 @@ static bool target_page_evicted(int fd)
 	__u64 nr_cache;
 
 	for (attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
-		if (!query_cache(fd, TARGET_PAGE * USER_PAGE_SIZE,
-				 USER_PAGE_SIZE, &nr_cache))
+		if (!query_cache(fd, TARGET_PAGE * PROCESS_PAGE_SIZE,
+				 PROCESS_PAGE_SIZE, &nr_cache))
 			return false;
 		if (!nr_cache) {
 			ksft_print_msg("target cache pages after DONTNEED: 0\n");
@@ -63,15 +55,14 @@ static bool target_page_evicted(int fd)
 
 static int run_test(const char *path)
 {
-	unsigned char data[USER_PAGE_SIZE];
+	unsigned char data[PROCESS_PAGE_SIZE];
 	__u64 nr_cache = 0;
 	int error;
 	int fd;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(7);
 
 	fd = open(path, O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0600);
 	ksft_test_result(fd >= 0, "create the backing file\n");
@@ -79,26 +70,26 @@ static int run_test(const char *path)
 		ksft_exit_fail_msg("open failed: %s\n", strerror(errno));
 
 	memset(data, 0x5a, sizeof(data));
-	ksft_test_result(!ftruncate(fd, FILE_PAGES * USER_PAGE_SIZE) &&
+	ksft_test_result(!ftruncate(fd, FILE_PAGES * PROCESS_PAGE_SIZE) &&
 			 pwrite(fd, data, sizeof(data),
-				TARGET_PAGE * USER_PAGE_SIZE) ==
+				TARGET_PAGE * PROCESS_PAGE_SIZE) ==
 			 (ssize_t)sizeof(data) && !fsync(fd),
 			 "populate and clean the target process page\n");
 
-	ksft_test_result(query_cache(fd, TARGET_PAGE * USER_PAGE_SIZE,
-				     USER_PAGE_SIZE, &nr_cache) && nr_cache == 1,
+	ksft_test_result(query_cache(fd, TARGET_PAGE * PROCESS_PAGE_SIZE,
+				     PROCESS_PAGE_SIZE, &nr_cache) && nr_cache == 1,
 			 "target process page starts resident\n");
 
-	error = posix_fadvise(fd, TARGET_PAGE * USER_PAGE_SIZE + 1,
-			      USER_PAGE_SIZE - 2, POSIX_FADV_DONTNEED);
+	error = posix_fadvise(fd, TARGET_PAGE * PROCESS_PAGE_SIZE + 1,
+			      PROCESS_PAGE_SIZE - 2, POSIX_FADV_DONTNEED);
 	ksft_test_result(!error, "advise away part of a process page\n");
 	ksft_test_result(!error &&
-			 query_cache(fd, TARGET_PAGE * USER_PAGE_SIZE,
-				     USER_PAGE_SIZE, &nr_cache) && nr_cache == 1,
+			 query_cache(fd, TARGET_PAGE * PROCESS_PAGE_SIZE,
+				     PROCESS_PAGE_SIZE, &nr_cache) && nr_cache == 1,
 			 "partial process page remains cached\n");
 
-	error = posix_fadvise(fd, TARGET_PAGE * USER_PAGE_SIZE,
-			      USER_PAGE_SIZE, POSIX_FADV_DONTNEED);
+	error = posix_fadvise(fd, TARGET_PAGE * PROCESS_PAGE_SIZE,
+			      PROCESS_PAGE_SIZE, POSIX_FADV_DONTNEED);
 	ksft_test_result(!error, "advise away one complete process page\n");
 	ksft_test_result(!error && target_page_evicted(fd),
 			 "DONTNEED evicts the requested process page\n");
@@ -108,23 +99,13 @@ static int run_test(const char *path)
 	ksft_finished();
 }
 
-static int exec_compat(const char *path)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("could not enable 4K compatibility mode\n");
-	execl("/proc/self/exe", "fadvise_dontneed_ppps", "--compat", path,
-	      NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
 int main(int argc, char **argv)
 {
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
 	if (argc == 2)
-		return exec_compat(argv[1]);
-	if (argc == 3 && !strcmp(argv[1], "--compat"))
+		exec_compat(argv[0], PPPS_RUN_FLAG, argv[1], NULL);
+	if (argc == 3 && mode && !strcmp(mode, PPPS_RUN_FLAG))
 		return run_test(argv[2]);
 	return EXIT_FAILURE;
 }
