@@ -3537,18 +3537,6 @@ static vm_fault_t filemap_fault_recheck_pte_none(struct vm_fault *vmf)
 	return ret;
 }
 
-static bool filemap_fault_page_beyond_eof(struct vm_fault *vmf, loff_t isize)
-{
-	struct vm_area_struct *vma = vmf->vma;
-	u64 offset;
-
-	if (!ppps_mm_is_compat(vma->vm_mm))
-		return false;
-
-	offset = vma_file_offset(vma) + vmf->address - vma->vm_start;
-	return offset >= isize;
-}
-
 /**
  * filemap_fault - read in file data for page fault handling
  * @vmf:	struct vm_fault containing details of the fault
@@ -3589,7 +3577,7 @@ vm_fault_t filemap_fault(struct vm_fault *vmf)
 	max_idx = DIV_ROUND_UP(isize, __PAGE_SIZE) * (__PAGE_SIZE / PAGE_SIZE);
 	if (unlikely(index >= max_idx ||
 		     (ppps_mm_is_compat(vmf->vma->vm_mm) &&
-		      filemap_fault_page_beyond_eof(vmf, isize))))
+		      vma_addr_beyond_eof(vmf->vma, vmf->address, isize))))
 		return VM_FAULT_SIGBUS;
 	if (unlikely(index >= DIV_ROUND_UP(isize, PAGE_SIZE)))
 		return VM_FAULT_NEED_ANONPAGE;
@@ -3700,7 +3688,7 @@ retry_find:
 	max_idx = DIV_ROUND_UP(isize, __PAGE_SIZE) * (__PAGE_SIZE / PAGE_SIZE);
 	if (unlikely(index >= max_idx ||
 		     (ppps_mm_is_compat(vmf->vma->vm_mm) &&
-		      filemap_fault_page_beyond_eof(vmf, isize)))) {
+		      vma_addr_beyond_eof(vmf->vma, vmf->address, isize)))) {
 		folio_unlock(folio);
 		folio_put(folio);
 		return VM_FAULT_SIGBUS;
@@ -3711,7 +3699,6 @@ retry_find:
 		folio_put(folio);
 		return VM_FAULT_NEED_ANONPAGE;
 	}
-
 	vmf->page = folio_file_page(folio, index);
 	trace_android_vh_filemap_fault_folio_locked(inode, folio, index);
 	return ret | VM_FAULT_LOCKED;

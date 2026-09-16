@@ -532,7 +532,7 @@ int __account_locked_vm(struct mm_struct *mm, unsigned long pages, bool inc,
 
 	mmap_assert_write_locked(mm);
 
-	pages = vm_native_pages_to_mm_pages(mm, pages);
+	pages = mm_native_to_process_pages(mm, pages);
 	locked_vm = mm->locked_vm;
 	if (inc) {
 		if (!bypass_rlim) {
