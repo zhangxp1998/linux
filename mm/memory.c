@@ -103,20 +103,6 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf);
 static bool vmf_pte_changed(struct vm_fault *vmf);
 
 /*
- * Return true if the original pte was a uffd-wp pte marker (so the pte was
- * wr-protected).
- */
-static __always_inline bool vmf_orig_pte_uffd_wp(struct vm_fault *vmf)
-{
-	if (!userfaultfd_wp(vmf->vma))
-		return false;
-	if (!(vmf->flags & FAULT_FLAG_ORIG_PTE_VALID))
-		return false;
-
-	return pte_marker_uffd_wp(vmf->orig_pte);
-}
-
-/*
  * Randomize the address space (stacks, mmaps, brk, etc.).
  *
  * ( When CONFIG_COMPAT_BRK=y we exclude brk from randomization,
@@ -3921,7 +3907,7 @@ vm_fault_t __vmf_anon_prepare(struct vm_fault *vmf)
  *   held to the old page, as well as updating the rmap.
  * - In any case, unlock the PTL and drop the reference we took to the old page.
  */
-static vm_fault_t wp_page_copy(struct vm_fault *vmf)
+vm_fault_t wp_page_copy(struct vm_fault *vmf)
 {
 	const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
 	struct vm_area_struct *vma = vmf->vma;
@@ -4251,7 +4237,7 @@ static bool __wp_can_reuse_large_anon_folio(struct folio *folio,
 }
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
-static bool wp_can_reuse_anon_folio(struct folio *folio,
+bool wp_can_reuse_anon_folio(struct folio *folio,
 				    struct vm_area_struct *vma)
 {
 	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && folio_test_large(folio))
