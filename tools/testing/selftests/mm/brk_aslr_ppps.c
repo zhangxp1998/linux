@@ -1,24 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * brk ASLR of a 4K compat process places the initial brk at every 4K
+ * residue within a native 16K page across repeated execs.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <limits.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/personality.h>
-#include <sys/types.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
 #define SAMPLE_COUNT 64
 
 static char sample_path[PATH_MAX];
@@ -42,23 +33,6 @@ static bool find_sample(void)
 		return false;
 	memcpy(sample_path + dir_length, "brk_aslr_ppps_sample",
 	       sizeof("brk_aslr_ppps_sample"));
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t size)
-{
-	char *p = buffer;
-
-	while (size) {
-		ssize_t ret = read(fd, p, size);
-
-		if (ret < 0 && errno == EINTR)
-			continue;
-		if (ret <= 0)
-			return false;
-		p += ret;
-		size -= ret;
-	}
 	return true;
 }
 
@@ -105,7 +79,7 @@ static bool collect_samples(unsigned int *residue_mask,
 		    WEXITSTATUS(status))
 			return false;
 
-		*residue_mask |= 1U << ((brk / USER_PAGE_SIZE) & 3);
+		*residue_mask |= 1U << ((brk / PROCESS_PAGE_SIZE) & 3);
 		if (brk < *minimum)
 			*minimum = brk;
 		if (brk > *maximum)
@@ -137,9 +111,7 @@ static int run_test(void)
 	ksft_print_header();
 	if (!brk_aslr_enabled())
 		ksft_exit_skip("brk ASLR is disabled\n");
-	ksft_set_plan(3);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(2);
 
 	collected = find_sample() &&
 		collect_samples(&residue_mask, &minimum, &maximum);
@@ -156,25 +128,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "brk_aslr_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

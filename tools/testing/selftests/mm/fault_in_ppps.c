@@ -1,26 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * The kernel's fault_in_writeable/safe_writeable/readable helpers fault in
+ * every 4K process page of a compat process's nonresident range, not just
+ * one page per native page.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
 #include "fault_in_ppps.h"
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
-#define RANGE_SIZE (4 * USER_PAGE_SIZE)
+#define RANGE_SIZE (4 * PROCESS_PAGE_SIZE)
 #define RESERVE_SIZE (8 * RANGE_SIZE)
 
 static const char *const operation_names[] = {
@@ -58,7 +50,7 @@ static unsigned char *aligned_mapping(void)
 
 static bool all_nonresident(unsigned char *mapping)
 {
-	unsigned char vec[RANGE_SIZE / USER_PAGE_SIZE];
+	unsigned char vec[RANGE_SIZE / PROCESS_PAGE_SIZE];
 	size_t i;
 
 	if (mincore(mapping, RANGE_SIZE, vec))
@@ -76,7 +68,7 @@ static bool all_resident(unsigned char *mapping, unsigned char *vec)
 
 	if (mincore(mapping, RANGE_SIZE, vec))
 		return false;
-	for (i = 0; i < RANGE_SIZE / USER_PAGE_SIZE; i++) {
+	for (i = 0; i < RANGE_SIZE / PROCESS_PAGE_SIZE; i++) {
 		vec[i] &= 1;
 		if (!vec[i])
 			return false;
@@ -86,7 +78,7 @@ static bool all_resident(unsigned char *mapping, unsigned char *vec)
 
 static bool run_operation(int fd, unsigned int operation)
 {
-	unsigned char vec[RANGE_SIZE / USER_PAGE_SIZE] = {};
+	unsigned char vec[RANGE_SIZE / PROCESS_PAGE_SIZE] = {};
 	struct fault_in_ppps_args request = {};
 	unsigned char *mapping;
 	bool resident;
@@ -121,21 +113,15 @@ static bool run_operation(int fd, unsigned int operation)
 	return request.not_faulted == 0 && resident;
 }
 
-static void run_test(void)
+static int run_test(void)
 {
 	unsigned int operation;
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(4);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
-	if (sysconf(_SC_PAGESIZE) != USER_PAGE_SIZE)
-		ksft_exit_fail_msg("could not enter 4K process mode\n");
-	fd = open("/dev/" FAULT_IN_PPPS_DEVICE_NAME, O_RDWR | O_CLOEXEC);
-	if (fd < 0)
-		ksft_exit_fail_msg("open test device failed: %s\n",
-				   strerror(errno));
+	ksft_set_plan(3);
+	fd = ppps_open_fixture_or_skip("/dev/" FAULT_IN_PPPS_DEVICE_NAME,
+				       O_RDWR);
 	for (operation = 0; operation < 3; operation++) {
 		bool passed = run_operation(fd, operation);
 
@@ -146,19 +132,4 @@ static void run_test(void)
 	ksft_finished();
 }
 
-int main(int argc, char **argv)
-{
-	int persona;
-
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		run_test();
-	if (argc != 1)
-		return 1;
-	persona = personality(0xffffffffUL);
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0) {
-		ksft_exit_fail_msg("personality failed: %s\n", strerror(errno));
-	}
-	execl("/proc/self/exe", "fault_in_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
+PPPS_COMPAT_MAIN(run_test)

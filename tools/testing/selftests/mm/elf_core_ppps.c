@@ -1,29 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * An ELF core dumped by a 4K compat process keeps its 4K VMAs aligned and
+ * intact in PT_LOAD, omits a mapping that starts at file offset 4K, and
+ * encodes 4K page units in NT_FILE.
+ */
 #define _GNU_SOURCE
 
 #include <elf.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
 #define TEST_VMAS	4
 #define TEST_BASE	0x50000000UL
 #define TEST_STRIDE	0x10000UL
@@ -51,7 +42,7 @@ static bool create_offset_file(void)
 	fd = open(FILE_TEST_PATH, O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0700);
 	if (fd < 0)
 		return false;
-	if (fchmod(fd, 0700) || ftruncate(fd, 2 * USER_PAGE_SIZE)) {
+	if (fchmod(fd, 0700) || ftruncate(fd, 2 * PROCESS_PAGE_SIZE)) {
 		close(fd);
 		return false;
 	}
@@ -95,20 +86,20 @@ static void crash_with_test_vmas(void)
 	fd = open(FILE_TEST_PATH, O_RDONLY | O_CLOEXEC);
 	if (fd < 0)
 		_exit(121);
-	mapping = mmap((void *)FILE_TEST_BASE, USER_PAGE_SIZE, PROT_READ,
-		       MAP_PRIVATE | MAP_FIXED_NOREPLACE, fd, USER_PAGE_SIZE);
+	mapping = mmap((void *)FILE_TEST_BASE, PROCESS_PAGE_SIZE, PROT_READ,
+		       MAP_PRIVATE | MAP_FIXED_NOREPLACE, fd, PROCESS_PAGE_SIZE);
 	close(fd);
 	if (mapping != (void *)FILE_TEST_BASE)
 		_exit(122);
 	for (index = 0; index < TEST_VMAS; index++) {
 		void *target = (void *)(TEST_BASE + index * TEST_STRIDE);
 
-		mapping = mmap(target, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		mapping = mmap(target, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 			       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
 			       -1, 0);
 		if (mapping != target)
 			_exit(123);
-		memset(mapping, 0x40 + index, USER_PAGE_SIZE);
+		memset(mapping, 0x40 + index, PROCESS_PAGE_SIZE);
 	}
 	raise(SIGSEGV);
 	_exit(124);
@@ -219,10 +210,10 @@ static bool inspect_core(const char *path, unsigned int *found,
 		if (phdr.p_vaddr != TEST_BASE + target_index * TEST_STRIDE)
 			continue;
 		(*found)++;
-		if (phdr.p_filesz < USER_PAGE_SIZE) {
+		if (phdr.p_filesz < PROCESS_PAGE_SIZE) {
 			*contents_match = false;
 		} else {
-			unsigned char contents[USER_PAGE_SIZE];
+			unsigned char contents[PROCESS_PAGE_SIZE];
 			unsigned char expected = 0x40 + target_index;
 			unsigned long byte;
 			ssize_t bytes_read;
@@ -271,9 +262,7 @@ static int run_test(void)
 	pid_t waited;
 
 	ksft_print_header();
-	ksft_set_plan(8);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(7);
 	if (!create_offset_file())
 		ksft_exit_fail_msg("create offset test file failed: %s\n",
 				   strerror(errno));
@@ -333,7 +322,7 @@ static int run_test(void)
 	ksft_test_result(inspected && offset_segment_found && !offset_dump_size,
 			 "do not dump a mapping that starts at file offset 4K\n");
 	ksft_test_result(inspected && nt_file_found &&
-			 note_page_size == USER_PAGE_SIZE && note_file_offset == 1,
+			 note_page_size == PROCESS_PAGE_SIZE && note_file_offset == 1,
 			 "encode the 4K file offset in NT_FILE\n");
 	ksft_print_msg("VMAs=%u misaligned=%u contents=%u filesz=%llu page=%llu offset=%llu\n",
 		       found, misaligned, contents_match,
@@ -355,25 +344,4 @@ restore_pattern:
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "elf_core_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

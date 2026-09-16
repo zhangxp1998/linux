@@ -1,31 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * MADV_PAGEOUT of a 4K compat process's anonymous pages installs swap PTEs
+ * that preserve their contents, and a swapin after a UFFD write-protect mode
+ * change drops the stale protection.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/userfaultfd.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define NATIVE_PAGE_SIZE	16384UL
 #define UFFD_REPRO_MAPPING_SIZE	(16UL * 1024 * 1024)
 #define TEST_PAGES	32
-#define MAPPING_SIZE	(TEST_PAGES * USER_PAGE_SIZE)
-#define RESERVE_SIZE	(MAPPING_SIZE + 2 * USER_PAGE_SIZE)
+#define MAPPING_SIZE	(TEST_PAGES * PROCESS_PAGE_SIZE)
+#define RESERVE_SIZE	(MAPPING_SIZE + 2 * PROCESS_PAGE_SIZE)
 #define POLL_ATTEMPTS	200
 
 static bool swap_info(unsigned long *total_bytes, unsigned long *free_bytes)
@@ -144,11 +135,11 @@ static bool page_out_mapping(void *mapping, unsigned long *rss_bytes,
 static bool swapin_after_uffd_wp_mode_change(void)
 {
 	struct uffdio_writeprotect writeprotect = {
-		.range.len = USER_PAGE_SIZE,
+		.range.len = PROCESS_PAGE_SIZE,
 		.mode = UFFDIO_WRITEPROTECT_MODE_WP,
 	};
 	struct uffdio_register registration = {
-		.range.len = 2 * USER_PAGE_SIZE,
+		.range.len = 2 * PROCESS_PAGE_SIZE,
 		.mode = UFFDIO_REGISTER_MODE_WP,
 	};
 	struct uffdio_api api = {
@@ -175,22 +166,22 @@ static bool swapin_after_uffd_wp_mode_change(void)
 		UFFD_REPRO_MAPPING_SIZE - NATIVE_PAGE_SIZE;
 
 	failure = "mlock/munlock";
-	if (mlock(base + USER_PAGE_SIZE, 3 * USER_PAGE_SIZE))
+	if (mlock(base + PROCESS_PAGE_SIZE, 3 * PROCESS_PAGE_SIZE))
 		goto out;
-	base[USER_PAGE_SIZE] = 0x41;
-	base[2 * USER_PAGE_SIZE] = 0x42;
-	base[3 * USER_PAGE_SIZE] = 0x43;
-	if (munlock(base + USER_PAGE_SIZE, 2 * USER_PAGE_SIZE))
+	base[PROCESS_PAGE_SIZE] = 0x41;
+	base[2 * PROCESS_PAGE_SIZE] = 0x42;
+	base[3 * PROCESS_PAGE_SIZE] = 0x43;
+	if (munlock(base + PROCESS_PAGE_SIZE, 2 * PROCESS_PAGE_SIZE))
 		goto out;
 
 	failure = "madvise";
-	if (madvise(base, 3 * USER_PAGE_SIZE, MADV_PAGEOUT))
+	if (madvise(base, 3 * PROCESS_PAGE_SIZE, MADV_PAGEOUT))
 		goto out;
 	failure = "swapout";
 	for (attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
-		if (!vma_usage_bytes(base + USER_PAGE_SIZE, &rss, &swap))
+		if (!vma_usage_bytes(base + PROCESS_PAGE_SIZE, &rss, &swap))
 			goto out;
-		if (swap >= 2 * USER_PAGE_SIZE && rss <= USER_PAGE_SIZE)
+		if (swap >= 2 * PROCESS_PAGE_SIZE && rss <= PROCESS_PAGE_SIZE)
 			break;
 		usleep(10000);
 	}
@@ -201,7 +192,7 @@ static bool swapin_after_uffd_wp_mode_change(void)
 	uffd = syscall(SYS_userfaultfd, O_NONBLOCK | UFFD_USER_MODE_ONLY);
 	if (uffd < 0 || ioctl(uffd, UFFDIO_API, &api))
 		goto out;
-	registration.range.start = (unsigned long)base + USER_PAGE_SIZE;
+	registration.range.start = (unsigned long)base + PROCESS_PAGE_SIZE;
 	failure = "UFFDIO_REGISTER_MODE_WP";
 	if (ioctl(uffd, UFFDIO_REGISTER, &registration))
 		goto out;
@@ -215,15 +206,15 @@ static bool swapin_after_uffd_wp_mode_change(void)
 	registration.mode = UFFDIO_REGISTER_MODE_MISSING;
 	failure = "UFFDIO_REGISTER_MODE_MISSING/mlock";
 	if (ioctl(uffd, UFFDIO_REGISTER, &registration) ||
-	    mlock(base + USER_PAGE_SIZE, 3 * USER_PAGE_SIZE))
+	    mlock(base + PROCESS_PAGE_SIZE, 3 * PROCESS_PAGE_SIZE))
 		goto out;
-	munlock(base + USER_PAGE_SIZE, 3 * USER_PAGE_SIZE);
-	passed = base[USER_PAGE_SIZE] == 0x41 &&
-		 base[2 * USER_PAGE_SIZE] == 0x42 &&
-		 base[3 * USER_PAGE_SIZE] == 0x43;
+	munlock(base + PROCESS_PAGE_SIZE, 3 * PROCESS_PAGE_SIZE);
+	passed = base[PROCESS_PAGE_SIZE] == 0x41 &&
+		 base[2 * PROCESS_PAGE_SIZE] == 0x42 &&
+		 base[3 * PROCESS_PAGE_SIZE] == 0x43;
 	if (passed) {
-		base[USER_PAGE_SIZE] = 0xa5;
-		passed = base[USER_PAGE_SIZE] == 0xa5;
+		base[PROCESS_PAGE_SIZE] = 0xa5;
+		passed = base[PROCESS_PAGE_SIZE] == 0xa5;
 	}
 out:
 	if (!passed)
@@ -251,9 +242,7 @@ static int run_test(void)
 	unsigned int i;
 
 	ksft_print_header();
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(6);
 	if (!swap_info(&total_swap, &free_swap))
 		ksft_exit_fail_msg("could not read /proc/meminfo\n");
 	if (!total_swap)
@@ -265,13 +254,13 @@ static int run_test(void)
 	reservation = mmap(NULL, RESERVE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	mapping = reservation == MAP_FAILED ? MAP_FAILED :
-		mmap(reservation + USER_PAGE_SIZE, MAPPING_SIZE,
+		mmap(reservation + PROCESS_PAGE_SIZE, MAPPING_SIZE,
 		     PROT_READ | PROT_WRITE,
 		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 	if (mapping != MAP_FAILED) {
 		madvise(mapping, MAPPING_SIZE, MADV_NOHUGEPAGE);
 		for (i = 0; i < TEST_PAGES; i++)
-			mapping[i * USER_PAGE_SIZE] = 0x40 + i;
+			mapping[i * PROCESS_PAGE_SIZE] = 0x40 + i;
 	}
 	ksft_test_result(mapping != MAP_FAILED,
 			 "map and populate anonymous process pages\n");
@@ -290,7 +279,7 @@ static int run_test(void)
 		ksft_exit_fail_msg("could not create swap PTEs\n");
 
 	for (i = 0; i < TEST_PAGES; i++) {
-		if (mapping[i * USER_PAGE_SIZE] != (unsigned char)(0x40 + i)) {
+		if (mapping[i * PROCESS_PAGE_SIZE] != (unsigned char)(0x40 + i)) {
 			preserved = false;
 			break;
 		}
@@ -302,25 +291,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "anon_pageout_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)
