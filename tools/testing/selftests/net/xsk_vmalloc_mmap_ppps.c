@@ -1,25 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * AF_XDP for a 4K compat process: a 4K-aligned, non-16K-aligned anonymous
+ * UMEM page is rejected (packed compat anonymous memory cannot back a UMEM),
+ * a subpage RX ring offset cookie is rejected, and every 4K slice of a
+ * vmalloc'd multi-native-page RX ring maps at misaligned and aligned
+ * addresses.  A native probe first decides the expected multi-page UMEM result.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <linux/if_xdp.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
 
-#define USER_PAGE_SIZE 4096UL
-#define NATIVE_PAGE_SIZE 16384UL
 #define RING_ENTRIES 1024U
 #define MISALIGNED_HINT ((void *)0x300001000ULL)
 #define ALIGNED_HINT ((void *)0x400000000ULL)
@@ -27,7 +22,7 @@
 static bool mapping_is_resident(void *mapping, size_t size)
 {
 	unsigned char residency[8] = {};
-	size_t pages = (size + USER_PAGE_SIZE - 1) / USER_PAGE_SIZE;
+	size_t pages = (size + PROCESS_PAGE_SIZE - 1) / PROCESS_PAGE_SIZE;
 	size_t i;
 
 	if (mapping == MAP_FAILED || pages > sizeof(residency) ||
@@ -66,17 +61,17 @@ static void *map_compat_umem(void **reservation_out)
 		return MAP_FAILED;
 	}
 	*reservation_out = reservation;
-	return mapping + USER_PAGE_SIZE;
+	return mapping + PROCESS_PAGE_SIZE;
 }
 
 static int run_test(bool native_16k)
 {
 	struct xdp_umem_reg umem_reg = {
-		.len = USER_PAGE_SIZE,
+		.len = PROCESS_PAGE_SIZE,
 		.chunk_size = 2048,
 	};
 	struct xdp_umem_reg multi_reg = {
-		.len = 2 * USER_PAGE_SIZE,
+		.len = 2 * PROCESS_PAGE_SIZE,
 		.chunk_size = 2048,
 	};
 	struct xdp_mmap_offsets offsets;
@@ -93,10 +88,9 @@ static int run_test(bool native_16k)
 	int multi_fd;
 	int fd;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(10);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(9);
 	fd = socket(AF_XDP, SOCK_RAW | SOCK_CLOEXEC, 0);
 	ksft_test_result(fd >= 0, "create an AF_XDP socket\n");
 	if (fd < 0)
@@ -104,7 +98,7 @@ static int run_test(bool native_16k)
 				   strerror(errno));
 	umem = map_compat_umem(&reservation);
 	ksft_test_result(umem != MAP_FAILED &&
-			 !((uintptr_t)umem & (USER_PAGE_SIZE - 1)) &&
+			 !((uintptr_t)umem & (PROCESS_PAGE_SIZE - 1)) &&
 			 ((uintptr_t)umem & (NATIVE_PAGE_SIZE - 1)),
 			 "map a 4K-aligned, non-16K-aligned UMEM page\n");
 	umem_reg.addr = (uintptr_t)umem;
@@ -113,8 +107,8 @@ static int run_test(bool native_16k)
 		setsockopt(fd, SOL_XDP, XDP_UMEM_REG, &umem_reg,
 			   sizeof(umem_reg));
 	saved_errno = errno;
-	ksft_test_result(reg_ret == 0,
-			 "register one logical UMEM page (errno=%d)\n",
+	ksft_test_result(reg_ret == -1 && saved_errno == EOPNOTSUPP,
+			 "reject a packed anonymous UMEM slice (errno=%d)\n",
 			 saved_errno);
 	multi_fd = socket(AF_XDP, SOCK_RAW | SOCK_CLOEXEC, 0);
 	if (multi_fd < 0)
@@ -141,14 +135,14 @@ static int run_test(bool native_16k)
 	ksft_test_result(map_size > NATIVE_PAGE_SIZE,
 			 "RX ring spans more than one native page\n");
 	errno = 0;
-	invalid = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
-		       MAP_SHARED, fd, USER_PAGE_SIZE);
+	invalid = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, PROCESS_PAGE_SIZE);
 	saved_errno = errno;
 	ksft_test_result(invalid == MAP_FAILED && saved_errno == EINVAL,
 			 "reject a subpage RX ring offset cookie (errno=%d)\n",
 			 saved_errno);
 	if (invalid != MAP_FAILED)
-		munmap(invalid, USER_PAGE_SIZE);
+		munmap(invalid, PROCESS_PAGE_SIZE);
 
 	misaligned = map_ring(fd, MISALIGNED_HINT, map_size);
 	ksft_test_result(misaligned == MISALIGNED_HINT &&
@@ -169,45 +163,18 @@ static int run_test(bool native_16k)
 	ksft_finished();
 }
 
-static int exec_compat(bool native_16k)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "xsk_vmalloc_mmap_ppps",
-	      native_16k ? "--run-16k" : "--run-4k", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-static int exec_native_probe(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality clear failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "xsk_vmalloc_mmap_ppps", "--native-probe",
-	      NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_native_probe();
-	if (argc == 2 && !strcmp(argv[1], "--native-probe"))
-		return exec_compat(sysconf(_SC_PAGESIZE) == NATIVE_PAGE_SIZE);
-	if (argc == 2 && !strcmp(argv[1], "--run-4k"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_native(argv[0], "--native-probe", NULL);
+	if (argc == 2 && !strcmp(mode, "--native-probe"))
+		exec_compat(argv[0], sysconf(_SC_PAGESIZE) == NATIVE_PAGE_SIZE ?
+			    "--run-16k" : "--run-4k", NULL);
+	if (argc == 2 && !strcmp(mode, "--run-4k"))
 		return run_test(false);
-	if (argc == 2 && !strcmp(argv[1], "--run-16k"))
+	if (argc == 2 && !strcmp(mode, "--run-16k"))
 		return run_test(true);
 	return EXIT_FAILURE;
 }

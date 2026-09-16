@@ -1,29 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * The kmem:rss_stat tracepoint reports a 4K compat process's anonymous RSS
+ * in bytes.  Anonymous pages are packed into native 16K tuples, so the RSS
+ * grows in multiples of the 4K process page no larger than a native page.
+ */
 #define _GNU_SOURCE
 
 #include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
-#include <sys/personality.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
-
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
+#include "kselftest_ppps.h"
 
 #define TRACEFS "/sys/kernel/tracing"
-#define USER_PAGE_SIZE 4096UL
 #define TEST_PAGES 32
 
 static char trace_data[1024 * 1024];
@@ -143,12 +134,12 @@ static int child_workload(int start_fd, int done_fd, int finish_fd)
 
 	if (read(start_fd, &byte, 1) != 1)
 		return 1;
-	mapping = mmap(NULL, (TEST_PAGES + 1) * USER_PAGE_SIZE,
+	mapping = mmap(NULL, (TEST_PAGES + 1) * PROCESS_PAGE_SIZE,
 		       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (mapping == MAP_FAILED)
 		return 1;
 	for (i = 0; i <= TEST_PAGES; i++)
-		__atomic_store_n(&mapping[i * USER_PAGE_SIZE], i,
+		__atomic_store_n(&mapping[i * PROCESS_PAGE_SIZE], i,
 				 __ATOMIC_RELAXED);
 	if (write(done_fd, "d", 1) != 1)
 		return 1;
@@ -168,9 +159,7 @@ static int run_test(void)
 	int status;
 
 	ksft_print_header();
-	ksft_set_plan(7);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(6);
 	ksft_test_result(prepare_tracefs() == 0,
 			 "prepare the rss_stat tracepoint\n");
 	if (pipe(start_pipe) || pipe(done_pipe) || pipe(finish_pipe))
@@ -202,12 +191,13 @@ static int run_test(void)
 	status = write_text(TRACEFS "/tracing_on", "0\n");
 	granule = read_reported_granule(child, &events);
 	ksft_test_result(status == 0, "stop tracing and read the trace\n");
-	ksft_test_result(events >= TEST_PAGES / 2,
-			 "capture per-page anonymous RSS updates (%u events)\n", events);
+	ksft_test_result(events >= (TEST_PAGES + 1) / PPPS_SLICES,
+			 "capture anonymous RSS updates (%u events)\n", events);
 	ksft_print_msg("reported_rss_granule=%llu bytes\n",
 		       (unsigned long long)granule);
-	ksft_test_result(granule == USER_PAGE_SIZE,
-			 "rss_stat reports bytes using the process page size\n");
+	ksft_test_result(granule && granule % PROCESS_PAGE_SIZE == 0 &&
+			 granule <= NATIVE_PAGE_SIZE,
+			 "rss_stat reports bytes in process-page multiples up to a native page\n");
 
 	(void)write(finish_pipe[1], "f", 1);
 	waitpid(child, &status, 0);
@@ -218,22 +208,4 @@ static int run_test(void)
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("could not enable 4K compatibility mode\n");
-	execl("/proc/self/exe", "rss_stat_trace_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

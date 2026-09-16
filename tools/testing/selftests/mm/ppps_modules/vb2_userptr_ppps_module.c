@@ -2,13 +2,14 @@
 
 #include <linux/dma-mapping.h>
 #include <linux/ioctl.h>
-#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <media/videobuf2-core.h>
 #include <media/videobuf2-dma-sg.h>
 #include <media/videobuf2-vmalloc.h>
+
+#include "../../ppps/ppps_misc_module.h"
 
 #define USER_PAGE_SIZE 4096UL
 #define VB2_USERPTR_VMALLOC 1
@@ -24,7 +25,7 @@ struct vb2_userptr_request {
 #define VB2_USERPTR_PPPS_RUN \
 	_IOW('V', 0x71, struct vb2_userptr_request)
 
-static struct miscdevice test_device;
+static struct miscdevice ppps_misc_device;
 
 static int run_vmalloc(const struct vb2_userptr_request *req)
 {
@@ -35,7 +36,7 @@ static int run_vmalloc(const struct vb2_userptr_request *req)
 	void *priv;
 	int ret = 0;
 
-	priv = ops->get_userptr(&vb, test_device.this_device,
+	priv = ops->get_userptr(&vb, ppps_misc_device.this_device,
 				(unsigned long)req->user_addr, req->length);
 	if (IS_ERR(priv))
 		return PTR_ERR(priv);
@@ -68,7 +69,7 @@ static int run_dma_sg(const struct vb2_userptr_request *req)
 	data = kmalloc(req->length, GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
-	priv = ops->get_userptr(&vb, test_device.this_device,
+	priv = ops->get_userptr(&vb, ppps_misc_device.this_device,
 				(unsigned long)req->user_addr, req->length);
 	if (IS_ERR(priv)) {
 		ret = PTR_ERR(priv);
@@ -156,32 +157,14 @@ static const struct file_operations test_fops = {
 	.unlocked_ioctl = test_ioctl,
 };
 
-static struct miscdevice test_device = {
-	.minor = MISC_DYNAMIC_MINOR,
-	.name = "vb2_userptr_ppps",
-	.fops = &test_fops,
-	.mode = 0600,
-};
-
-static int __init test_init(void)
+/* The DMA-SG backend allocates against the misc device itself. */
+static int test_set_dma_mask(struct miscdevice *device)
 {
-	int ret = misc_register(&test_device);
-
-	if (ret)
-		return ret;
-	ret = dma_coerce_mask_and_coherent(test_device.this_device,
-					   DMA_BIT_MASK(64));
-	if (ret)
-		misc_deregister(&test_device);
-	return ret;
+	return dma_coerce_mask_and_coherent(device->this_device,
+					    DMA_BIT_MASK(64));
 }
 
-static void __exit test_exit(void)
-{
-	misc_deregister(&test_device);
-}
-
-module_init(test_init);
-module_exit(test_exit);
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("videobuf2 USERPTR PPPS regression fixture");
+PPPS_MISC_MODULE_POST("vb2_userptr_ppps", &test_fops, 0600,
+		      ppps_misc_no_setup, test_set_dma_mask,
+		      ppps_misc_no_teardown,
+		      "videobuf2 USERPTR PPPS regression fixture");
