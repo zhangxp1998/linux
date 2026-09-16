@@ -1,54 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A shared 9p file mapping of a 4K compat process that crosses a native folio
+ * boundary: dirtying the trailing 4K page and closing the VMA writes back the
+ * trailing native folio (kpageflags no longer reports it dirty).
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <linux/kernel-page-flags.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE 4096UL
-#define MAPPING_OFFSET ((1024 - 1) * USER_PAGE_SIZE)
-#define MAPPING_SIZE (2 * USER_PAGE_SIZE)
-#define WRITE_OFFSET USER_PAGE_SIZE
-#define FILE_SIZE (2048 * USER_PAGE_SIZE)
+#define MAPPING_OFFSET ((1024 - 1) * PROCESS_PAGE_SIZE)
+#define MAPPING_SIZE (2 * PROCESS_PAGE_SIZE)
+#define WRITE_OFFSET PROCESS_PAGE_SIZE
+#define FILE_SIZE (2048 * PROCESS_PAGE_SIZE)
 #define TEST_VALUE 0x7b
 #define BIT_ULL(nr) (1ULL << (nr))
-#define PM_PFRAME_MASK (BIT_ULL(55) - 1)
-#define PM_PRESENT BIT_ULL(63)
-
-static bool mapped_pfn(const void *address, uint64_t *pfn)
-{
-	uint64_t entry;
-	off_t offset;
-	int fd;
-	bool valid;
-
-	fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return false;
-	offset = ((uintptr_t)address / USER_PAGE_SIZE) * sizeof(entry);
-	valid = pread(fd, &entry, sizeof(entry), offset) ==
-		(ssize_t)sizeof(entry) &&
-		(entry & PM_PRESENT) && (entry & PM_PFRAME_MASK);
-	close(fd);
-	if (valid)
-		*pfn = entry & PM_PFRAME_MASK;
-	return valid;
-}
 
 static bool pfn_is_dirty(uint64_t pfn, bool *dirty)
 {
@@ -79,10 +48,9 @@ static int run_test(const char *cached_dir)
 	bool resolved;
 	int fd;
 
+	ppps_require_compat();
 	ksft_print_header();
-	ksft_set_plan(4);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(3);
 	if (snprintf(cached_path, sizeof(cached_path), "%s/mmap-close.bin",
 		     cached_dir) >= (int)sizeof(cached_path))
 		ksft_exit_fail_msg("9p test path is too long\n");
@@ -101,7 +69,7 @@ static int run_test(const char *cached_dir)
 		ksft_exit_fail_msg("9p mmap failed: %s\n", strerror(errno));
 
 	mapping[WRITE_OFFSET] = TEST_VALUE;
-	resolved = mapped_pfn(mapping + WRITE_OFFSET, &pfn);
+	resolved = ppps_pfn(mapping + WRITE_OFFSET, &pfn);
 	ksft_test_result(resolved,
 			 "resolve the trailing folio through pagemap\n");
 	if (!resolved)
@@ -117,26 +85,13 @@ static int run_test(const char *cached_dir)
 	ksft_finished();
 }
 
-static int exec_compat(const char *cached_dir)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "v9fs_mmap_close_ppps", "--run", cached_dir,
-	      NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 2)
-		return exec_compat(argv[1]);
-	if (argc == 3 && !strcmp(argv[1], "--run"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode && argc == 2)
+		exec_compat(argv[0], "--run", argv[1], NULL);
+	if (mode && argc == 3 && !strcmp(mode, "--run"))
 		return run_test(argv[2]);
 	return EXIT_FAILURE;
 }

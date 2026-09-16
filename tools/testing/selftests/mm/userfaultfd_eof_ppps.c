@@ -1,28 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A 4K compat process can register a shmem 4K slice beyond the memfd's EOF
+ * with userfaultfd, but UFFDIO_COPY into it is rejected (EFAULT/ENOMEM).
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <linux/memfd.h>
 #include <linux/userfaultfd.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/syscall.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define MAPPING_SIZE	(2 * USER_PAGE_SIZE)
+#define MAPPING_SIZE	(2 * PROCESS_PAGE_SIZE)
 
 static int run_test(void)
 {
@@ -44,9 +35,7 @@ static int run_test(void)
 	int error;
 
 	ksft_print_header();
-	ksft_set_plan(4);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(3);
 
 	uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
 	if (uffd < 0) {
@@ -61,18 +50,18 @@ static int run_test(void)
 		ksft_exit_fail_msg("UFFDIO_API failed: %s\n", strerror(errno));
 
 	memfd = memfd_create("userfaultfd-eof-ppps", MFD_CLOEXEC);
-	if (memfd < 0 || ftruncate(memfd, USER_PAGE_SIZE))
+	if (memfd < 0 || ftruncate(memfd, PROCESS_PAGE_SIZE))
 		ksft_exit_fail_msg("memfd setup failed: %s\n", strerror(errno));
 	mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
 		       memfd, 0);
-	source = mmap(NULL, USER_PAGE_SIZE, PROT_READ | PROT_WRITE,
+	source = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (mapping == MAP_FAILED || source == MAP_FAILED)
 		ksft_exit_fail_msg("mmap setup failed: %s\n", strerror(errno));
-	memset(source, 0x45, USER_PAGE_SIZE);
+	memset(source, 0x45, PROCESS_PAGE_SIZE);
 
-	registration.range.start = (unsigned long)mapping + USER_PAGE_SIZE;
-	registration.range.len = USER_PAGE_SIZE;
+	registration.range.start = (unsigned long)mapping + PROCESS_PAGE_SIZE;
+	registration.range.len = PROCESS_PAGE_SIZE;
 	registered = !ioctl(uffd, UFFDIO_REGISTER, &registration);
 	ksft_test_result(registered, "register a shmem slice beyond EOF\n");
 	if (!registered)
@@ -80,8 +69,8 @@ static int run_test(void)
 				   strerror(errno));
 
 	copy.src = (unsigned long)source;
-	copy.dst = (unsigned long)mapping + USER_PAGE_SIZE;
-	copy.len = USER_PAGE_SIZE;
+	copy.dst = (unsigned long)mapping + PROCESS_PAGE_SIZE;
+	copy.len = PROCESS_PAGE_SIZE;
 	result = ioctl(uffd, UFFDIO_COPY, &copy);
 	error = errno;
 	rejected = result == -1 && (error == EFAULT || error == ENOMEM) &&
@@ -90,32 +79,11 @@ static int run_test(void)
 	ksft_print_msg("UFFDIO_COPY result=%d errno=%d copy=%lld\n",
 		       result, error, (long long)copy.copy);
 
-	munmap(source, USER_PAGE_SIZE);
+	munmap(source, PROCESS_PAGE_SIZE);
 	munmap(mapping, MAPPING_SIZE);
 	close(memfd);
 	close(uffd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "userfaultfd_eof_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

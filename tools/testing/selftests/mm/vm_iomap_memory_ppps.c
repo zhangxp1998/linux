@@ -1,29 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * vm_iomap_memory() through the vm_iomap_memory_ppps fixture maps single 4K
+ * slices for a 4K compat process: adjacent guard slices stay unmapped, a
+ * private PFN mapping COWs a complete 4K page, a 4K file offset selects the
+ * matching slice, and a mapping starting at the buffer end is rejected.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
-#include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
-#include <unistd.h>
 
-#include "../kselftest.h"
-#include "vm_iomap_memory_ppps.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define NATIVE_16K_SIZE	(4 * USER_PAGE_SIZE)
-#define PRIVATE_RESERVATION_SIZE (3 * NATIVE_16K_SIZE)
+#define PRIVATE_RESERVATION_SIZE (3 * NATIVE_PAGE_SIZE)
 #define FIRST_MARKER	0x71
 #define COW_MARKER	0xa5
 #define COW_OFFSET	37
@@ -48,7 +38,7 @@ static bool mapping_has_values(const unsigned char *mapping,
 {
 	unsigned long offset;
 
-	for (offset = 0; offset < USER_PAGE_SIZE; offset++) {
+	for (offset = 0; offset < PROCESS_PAGE_SIZE; offset++) {
 		unsigned char expected = offset == changed_offset ?
 			COW_MARKER : FIRST_MARKER;
 
@@ -77,18 +67,12 @@ static int run_test(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(12);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE,
-			 "process uses 4K pages\n");
+	ksft_set_plan(11);
 
-	fd = open("/dev/" VM_IOMAP_MEMORY_PPPS_DEVICE_NAME,
-		  O_RDWR | O_CLOEXEC);
+	fd = ppps_open_fixture_or_skip("/dev/vm_iomap_memory_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the vm_iomap_memory test device\n");
-	if (fd < 0)
-		ksft_exit_fail_msg("open test device failed: %s\n",
-				   strerror(errno));
 
-	reservation = mmap(NULL, NATIVE_16K_SIZE, PROT_NONE,
+	reservation = mmap(NULL, NATIVE_PAGE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	ksft_test_result(reservation != MAP_FAILED,
 			 "reserve one native 16K range as PROT_NONE\n");
@@ -96,7 +80,7 @@ static int run_test(void)
 		ksft_exit_fail_msg("guard reservation failed: %s\n",
 				   strerror(errno));
 
-	mapping = mmap(reservation, USER_PAGE_SIZE, PROT_READ,
+	mapping = mmap(reservation, PROCESS_PAGE_SIZE, PROT_READ,
 		       MAP_SHARED | MAP_FIXED, fd, 0);
 	ksft_test_result(mapping == reservation,
 			 "map only the first 4K slice with vm_iomap_memory\n");
@@ -112,7 +96,7 @@ static int run_test(void)
 			 "the requested 4K slice is readable\n");
 
 	for (guard = 1; guard < 4; guard++) {
-		if (read_byte(mapping + guard * USER_PAGE_SIZE, &value)) {
+		if (read_byte(mapping + guard * PROCESS_PAGE_SIZE, &value)) {
 			ksft_print_msg("guard %u is readable with value %#x\n",
 				       guard, value);
 			guards_fault = false;
@@ -120,23 +104,23 @@ static int run_test(void)
 	}
 	ksft_test_result(guards_fault,
 			 "vm_iomap_memory does not populate adjacent guard slices\n");
-	munmap(reservation, NATIVE_16K_SIZE);
+	munmap(reservation, NATIVE_PAGE_SIZE);
 
 	reservation = mmap(NULL, PRIVATE_RESERVATION_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reservation == MAP_FAILED)
 		ksft_exit_fail_msg("private guard reservation failed: %s\n",
 				   strerror(errno));
-	target_address = ((uintptr_t)reservation + NATIVE_16K_SIZE - 1) &
-		~(NATIVE_16K_SIZE - 1);
-	mapping = mmap((void *)target_address, USER_PAGE_SIZE,
+	target_address = ((uintptr_t)reservation + NATIVE_PAGE_SIZE - 1) &
+		~(NATIVE_PAGE_SIZE - 1);
+	mapping = mmap((void *)target_address, PROCESS_PAGE_SIZE,
 		       PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, 0);
 	ksft_test_result(mapping == (void *)target_address,
 			 "map one private PFN-backed process page\n");
 	if (mapping != (void *)target_address)
 		ksft_exit_fail_msg("private mmap failed: %s\n",
 				   strerror(errno));
-	mapping_ok = mapping_has_values(mapping, USER_PAGE_SIZE);
+	mapping_ok = mapping_has_values(mapping, PROCESS_PAGE_SIZE);
 	ksft_test_result(mapping_ok,
 			 "private PFN mapping initially contains device data\n");
 	if (!mapping_ok)
@@ -146,13 +130,13 @@ static int run_test(void)
 			 "COW preserves the complete process page\n");
 	munmap(reservation, PRIVATE_RESERVATION_SIZE);
 
-	reservation = mmap(NULL, NATIVE_16K_SIZE, PROT_NONE,
+	reservation = mmap(NULL, NATIVE_PAGE_SIZE, PROT_NONE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (reservation == MAP_FAILED)
 		ksft_exit_fail_msg("offset guard reservation failed: %s\n",
 				   strerror(errno));
-	mapping = mmap(reservation, USER_PAGE_SIZE, PROT_READ,
-		       MAP_SHARED | MAP_FIXED, fd, USER_PAGE_SIZE);
+	mapping = mmap(reservation, PROCESS_PAGE_SIZE, PROT_READ,
+		       MAP_SHARED | MAP_FIXED, fd, PROCESS_PAGE_SIZE);
 	ksft_test_result(mapping == reservation,
 			 "map one 4K slice at physical buffer offset 4K\n");
 	if (mapping == MAP_FAILED)
@@ -161,36 +145,15 @@ static int run_test(void)
 	ksft_test_result(read_byte(mapping, &value) && value == FIRST_MARKER + 1,
 			 "the offset mapping starts at the second 4K slice\n");
 
-	munmap(reservation, NATIVE_16K_SIZE);
-	past_end = mmap(NULL, USER_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
-			NATIVE_16K_SIZE);
+	munmap(reservation, NATIVE_PAGE_SIZE);
+	past_end = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_SHARED, fd,
+			NATIVE_PAGE_SIZE);
 	ksft_test_result(past_end == MAP_FAILED,
 			 "reject a 4K mapping starting at the buffer end\n");
 	if (past_end != MAP_FAILED)
-		munmap(past_end, USER_PAGE_SIZE);
+		munmap(past_end, PROCESS_PAGE_SIZE);
 	close(fd);
 	ksft_finished();
 }
 
-static int exec_compat(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0)
-		ksft_exit_fail_msg("personality get failed: %s\n",
-				   strerror(errno));
-	if (personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		ksft_exit_fail_msg("personality set failed: %s\n",
-				   strerror(errno));
-	execl("/proc/self/exe", "vm_iomap_memory_ppps", "--run", NULL);
-	ksft_exit_fail_msg("exec failed: %s\n", strerror(errno));
-}
-
-int main(int argc, char **argv)
-{
-	if (argc == 1)
-		return exec_compat();
-	if (argc == 2 && !strcmp(argv[1], "--run"))
-		return run_test();
-	return EXIT_FAILURE;
-}
+PPPS_COMPAT_MAIN(run_test)

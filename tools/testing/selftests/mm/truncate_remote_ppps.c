@@ -1,29 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * A native parent truncates a memfd at a native-page boundary while a 4K
+ * compat child maps two 4K slices across it: the child keeps reading the
+ * slice below the new EOF and faults with SIGBUS on the slice at it.
+ */
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <setjmp.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/personality.h>
 #include <sys/wait.h>
-#include <unistd.h>
 
-#include "kselftest.h"
+#include "kselftest_ppps.h"
 
-#ifndef ADDR_4KB_COMPAT_PAGE_SIZE
-#define ADDR_4KB_COMPAT_PAGE_SIZE 0x10000000
-#endif
-
-#define USER_PAGE_SIZE	4096UL
-#define MAPPING_OFFSET	(3 * USER_PAGE_SIZE)
-#define MAPPING_SIZE	(2 * USER_PAGE_SIZE)
-#define FILE_SIZE	(8 * USER_PAGE_SIZE)
-#define TRUNCATED_SIZE	(4 * USER_PAGE_SIZE)
+#define MAPPING_OFFSET	(3 * PROCESS_PAGE_SIZE)
+#define MAPPING_SIZE	(2 * PROCESS_PAGE_SIZE)
+#define FILE_SIZE	(8 * PROCESS_PAGE_SIZE)
+#define TRUNCATED_SIZE	(4 * PROCESS_PAGE_SIZE)
 
 struct child_report {
 	long page_size;
@@ -35,40 +28,6 @@ struct child_report {
 
 static sigjmp_buf fault_env;
 
-static bool write_full(int fd, const void *buffer, size_t size)
-{
-	const char *position = buffer;
-
-	while (size) {
-		ssize_t written = write(fd, position, size);
-
-		if (written < 0 && errno == EINTR)
-			continue;
-		if (written <= 0)
-			return false;
-		position += written;
-		size -= written;
-	}
-	return true;
-}
-
-static bool read_full(int fd, void *buffer, size_t size)
-{
-	char *position = buffer;
-
-	while (size) {
-		ssize_t bytes = read(fd, position, size);
-
-		if (bytes < 0 && errno == EINTR)
-			continue;
-		if (bytes <= 0)
-			return false;
-		position += bytes;
-		size -= bytes;
-	}
-	return true;
-}
-
 static unsigned char page_pattern(unsigned int page)
 {
 	return 0x41 + page;
@@ -76,14 +35,14 @@ static unsigned char page_pattern(unsigned int page)
 
 static bool initialize_file(int fd)
 {
-	unsigned char page[USER_PAGE_SIZE];
+	unsigned char page[PROCESS_PAGE_SIZE];
 	unsigned int i;
 
-	for (i = 0; i < FILE_SIZE / USER_PAGE_SIZE; i++) {
+	for (i = 0; i < FILE_SIZE / PROCESS_PAGE_SIZE; i++) {
 		ssize_t written;
 
 		memset(page, page_pattern(i), sizeof(page));
-		written = pwrite(fd, page, sizeof(page), i * USER_PAGE_SIZE);
+		written = pwrite(fd, page, sizeof(page), i * PROCESS_PAGE_SIZE);
 		if (written != sizeof(page))
 			return false;
 	}
@@ -120,7 +79,7 @@ static int run_compat_child(int file_fd, int report_fd, int command_fd)
 	report.mapped = mapping != MAP_FAILED;
 	if (report.mapped)
 		report.initial_contents = mapping[0] == page_pattern(3) &&
-			mapping[USER_PAGE_SIZE] == page_pattern(4);
+			mapping[PROCESS_PAGE_SIZE] == page_pattern(4);
 	if (!write_full(report_fd, &report, sizeof(report)) ||
 	    !read_full(command_fd, &command, sizeof(command)))
 		return EXIT_FAILURE;
@@ -129,7 +88,7 @@ static int run_compat_child(int file_fd, int report_fd, int command_fd)
 		report.below_eof_preserved = mapping[0] == page_pattern(3);
 		sigemptyset(&action.sa_mask);
 		if (!sigaction(SIGBUS, &action, NULL))
-			report.eof_faulted = !read_byte(&mapping[USER_PAGE_SIZE],
+			report.eof_faulted = !read_byte(&mapping[PROCESS_PAGE_SIZE],
 							&truncated_value);
 		munmap(mapping, MAPPING_SIZE);
 	}
@@ -144,16 +103,12 @@ static int exec_compat_child(int file_fd, int report_fd, int command_fd)
 	char command_fd_arg[16];
 	char file_fd_arg[16];
 	char report_fd_arg[16];
-	int persona = personality(0xffffffffUL);
 
-	if (persona < 0 ||
-	    personality(persona | ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
 	snprintf(file_fd_arg, sizeof(file_fd_arg), "%d", file_fd);
 	snprintf(report_fd_arg, sizeof(report_fd_arg), "%d", report_fd);
 	snprintf(command_fd_arg, sizeof(command_fd_arg), "%d", command_fd);
-	execl("/proc/self/exe", "truncate_remote_ppps", "--child",
-	      file_fd_arg, report_fd_arg, command_fd_arg, NULL);
+	ppps_execl(true, NULL, "--child", file_fd_arg, report_fd_arg,
+		   command_fd_arg, NULL);
 	return EXIT_FAILURE;
 }
 
@@ -171,10 +126,7 @@ static int run_parent(void)
 	int fd;
 
 	ksft_print_header();
-	ksft_set_plan(6);
-	ksft_test_result(sysconf(_SC_PAGESIZE) == USER_PAGE_SIZE ||
-			 sysconf(_SC_PAGESIZE) == 4 * USER_PAGE_SIZE,
-			 "truncating process uses a supported page size\n");
+	ksft_set_plan(5);
 
 	fd = memfd_create("truncate-remote-ppps", 0);
 	if (fd < 0 || ftruncate(fd, FILE_SIZE) || !initialize_file(fd))
@@ -193,7 +145,7 @@ static int run_parent(void)
 	close(report_pipe[1]);
 	close(command_pipe[0]);
 	initial_report = read_full(report_pipe[0], &report, sizeof(report));
-	ksft_test_result(initial_report && report.page_size == USER_PAGE_SIZE,
+	ksft_test_result(initial_report && report.page_size == PROCESS_PAGE_SIZE,
 			 "mapping process uses 4K pages\n");
 	ksft_test_result(initial_report && report.mapped &&
 			 report.initial_contents,
@@ -220,24 +172,15 @@ static int run_parent(void)
 	ksft_finished();
 }
 
-static int exec_native_parent(void)
-{
-	int persona = personality(0xffffffffUL);
-
-	if (persona < 0 ||
-	    personality(persona & ~ADDR_4KB_COMPAT_PAGE_SIZE) < 0)
-		return EXIT_FAILURE;
-	execl("/proc/self/exe", "truncate_remote_ppps", "--parent", NULL);
-	return EXIT_FAILURE;
-}
-
 int main(int argc, char **argv)
 {
-	if (argc == 1)
-		return exec_native_parent();
-	if (argc == 2 && !strcmp(argv[1], "--parent"))
+	const char *mode = ppps_run_mode(argc, argv, NULL);
+
+	if (!mode)
+		exec_native(argv[0], "--parent", NULL);
+	if (argc == 2 && !strcmp(mode, "--parent"))
 		return run_parent();
-	if (argc == 5 && !strcmp(argv[1], "--child"))
+	if (argc == 5 && !strcmp(mode, "--child"))
 		return run_compat_child(atoi(argv[2]), atoi(argv[3]),
 					atoi(argv[4]));
 	return EXIT_FAILURE;
