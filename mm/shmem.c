@@ -3178,7 +3178,6 @@ static inline struct inode *shmem_get_inode(struct mnt_idmap *idmap,
 
 #ifdef CONFIG_USERFAULTFD
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-#if defined(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) && defined(CONFIG_USERFAULTFD)
 static int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t pgoff,
 					   pmd_t *dst_pmd,
 					   struct vm_area_struct *dst_vma,
@@ -3202,8 +3201,6 @@ static inline int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t p
 }
 #endif
 
-#endif
-
 int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 			   struct vm_area_struct *dst_vma,
 			   unsigned long dst_addr,
@@ -3220,10 +3217,8 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 	struct folio *folio;
 	int ret;
 	pgoff_t max_off;
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	bool ppps_compat = ppps_mm_is_compat(dst_vma->vm_mm);
 	unsigned int nofs_flags = 0;
-#endif
 
 	if (shmem_inode_acct_blocks(inode, 1)) {
 		/*
@@ -3238,7 +3233,6 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 		return -ENOMEM;
 	}
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	/*
 	 * Keep the page-cache folio, slice mask, contents, and PTE installation
 	 * in one transaction.  Otherwise concurrent UFFDIO_COPY operations for
@@ -3247,31 +3241,32 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 	 */
 	if (ppps_compat) {
 		nofs_flags = memalloc_nofs_save();
-		mutex_lock(&info->ppps_uffd_lock);
+		shmem_ppps_uffd_lock(info);
 	}
 repeat:
 	if (ppps_compat) {
 		struct folio *existing;
 
 		ret = shmem_ppps_mfill_existing_slice(inode, pgoff, dst_pmd,
-				dst_vma, dst_addr, src_addr, flags, gfp,
-				foliop, &existing);
+						      dst_vma, dst_addr, src_addr,
+						      flags, gfp, foliop,
+						      &existing);
 		if (existing || ret)
 			goto out_unacct_blocks;
 	}
-#endif
 
 	if (!*foliop) {
-		unsigned int slice_idx = vma_address_to_slice(dst_vma, dst_addr);
 		unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
-		unsigned long offset = slice_idx * pgsize;
+		unsigned long offset = vma_page_slice_offset(dst_vma, NULL, dst_addr);
 
 		ret = -ENOMEM;
 		folio = shmem_alloc_folio(gfp, 0, info, pgoff);
 		if (!folio)
 			goto out_unacct_blocks;
 
-		folio_zero_range(folio, 0, folio_size(folio));
+		/* Only one slice is filled below; the rest must not leak. */
+		if (ppps_compat)
+			folio_zero_range(folio, 0, folio_size(folio));
 
 		if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
 			page_kaddr = kmap_local_folio(folio, 0);
@@ -3333,27 +3328,21 @@ repeat:
 		goto out_release;
 	ret = shmem_add_to_page_cache(folio, mapping, pgoff, NULL, gfp);
 	if (ret) {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		if (ret == -EEXIST && ppps_compat) {
 			folio_unlock(folio);
 			folio_put(folio);
 			goto repeat;
 		}
-#endif
 		goto out_release;
 	}
 
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (ppps_compat) {
-		unsigned long mask =
-			BIT(vma_address_to_slice(dst_vma, dst_addr));
-
-		ret = xa_err(xa_store(&info->ppps_uffd_slices, pgoff,
-				      xa_mk_value(mask), gfp & GFP_RECLAIM_MASK));
+		ret = shmem_ppps_uffd_set_slices(info, pgoff,
+				BIT(vma_address_to_slice(dst_vma, dst_addr)),
+				gfp);
 		if (ret)
 			goto out_delete_from_cache;
 	}
-#endif
 
 	/*
 	 * A newly allocated file folio is queued on the current CPU's deferred
@@ -3363,37 +3352,29 @@ repeat:
 	 * Keep the task on the CPU which owns the deferred batch until it is
 	 * drained.
 	 */
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (ppps_compat)
 		migrate_disable();
-#endif
 	ret = mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr,
 				       &folio->page, true,
 				       vma_address_to_slice(dst_vma, dst_addr),
 				       flags);
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (ppps_compat) {
 		if (!ret)
 			lru_add_drain();
 		migrate_enable();
 	}
-#endif
 	if (ret) {
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 		if (ppps_compat)
 			shmem_ppps_uffd_forget(info, pgoff);
-#endif
 		goto out_delete_from_cache;
 	}
 
 	shmem_recalc_inode(inode, 1, 0);
 	folio_unlock(folio);
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (ppps_compat) {
-		mutex_unlock(&info->ppps_uffd_lock);
+		shmem_ppps_uffd_unlock(info);
 		memalloc_nofs_restore(nofs_flags);
 	}
-#endif
 	return 0;
 out_delete_from_cache:
 	filemap_remove_folio(folio);
@@ -3402,12 +3383,10 @@ out_release:
 	folio_put(folio);
 out_unacct_blocks:
 	shmem_inode_unacct_blocks(inode, 1);
-#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (ppps_compat) {
-		mutex_unlock(&info->ppps_uffd_lock);
+		shmem_ppps_uffd_unlock(info);
 		memalloc_nofs_restore(nofs_flags);
 	}
-#endif
 	return ret;
 }
 #endif /* CONFIG_USERFAULTFD */
@@ -5595,6 +5574,7 @@ static unsigned long shmem_ppps_uffd_slices(struct shmem_inode_info *info,
 {
 	void *entry = xa_load(&info->ppps_uffd_slices, index);
 
+	/* No tracking entry means an ordinary, fully populated cache page. */
 	return xa_is_value(entry) ? xa_to_value(entry) :
 		GENMASK(PPPS_SLICES_PER_PAGE - 1, 0);
 }
@@ -5710,6 +5690,7 @@ static int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t pgoff,
 		staging = shmem_alloc_folio(gfp, 0, info, pgoff);
 		if (!staging)
 			goto out;
+		/* A retry may promote this staging folio into the page cache. */
 		folio_zero_range(staging, 0, folio_size(staging));
 		kaddr = kmap_local_folio(staging, 0);
 		if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
