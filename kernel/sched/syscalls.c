@@ -1100,8 +1100,9 @@ SYSCALL_DEFINE4(sched_getattr, pid_t, pid, struct sched_attr __user *, uattr,
 	struct task_struct *p;
 	int retval;
 
-	if (unlikely(!uattr || pid < 0 || usize > PAGE_SIZE ||
-		      usize < SCHED_ATTR_SIZE_VER0 || flags))
+	if (unlikely(!uattr || pid < 0 ||
+		     usize > PAGE_SIZE ||
+		     usize < SCHED_ATTR_SIZE_VER0 || flags))
 		return -EINVAL;
 
 	scoped_guard (rcu) {

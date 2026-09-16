@@ -250,8 +250,7 @@ static int system_heap_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
 		unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
 		loff_t offset = vma_file_offset(vma);
 		unsigned long pgoff = offset >> PAGE_SHIFT;
-		unsigned int slice = ((unsigned long)offset & ~PAGE_MASK) >>
-				     MM_PAGE_SHIFT(vma->vm_mm);
+		unsigned int slice = vma_offset_to_slice(vma, offset);
 
 		for_each_sgtable_page(table, &piter, pgoff) {
 			struct page *page = sg_page_iter_page(&piter);

@@ -4104,22 +4104,13 @@ static vm_fault_t kvm_vcpu_fault(struct vm_fault *vmf)
 
 		page = kvm_dirty_ring_get_page(&vcpu->dirty_ring,
 					       offset >> PAGE_SHIFT);
-		if (ppps_mm_is_compat(vma->vm_mm))
-			slice = (offset & ~PAGE_MASK) >>
-				MM_PAGE_SHIFT(vma->vm_mm);
+		slice = vma_offset_to_slice(vma, offset);
 	} else {
 		return kvm_arch_vcpu_fault(vcpu, vmf);
 	}
 
-	if (ppps_mm_is_compat(vma->vm_mm)) {
-		int err = vm_insert_page_slice(vma, vmf->address, page, slice);
-
-		if (err == -ENOMEM)
-			return VM_FAULT_OOM;
-		if (err < 0 && err != -EBUSY)
-			return VM_FAULT_SIGBUS;
-		return VM_FAULT_NOPAGE;
-	}
+	if (ppps_mm_is_compat(vma->vm_mm))
+		return vmf_insert_page_slice(vma, vmf->address, page, slice);
 
 	get_page(page);
 	vmf->page = page;
