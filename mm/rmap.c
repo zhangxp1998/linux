@@ -1919,6 +1919,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 		} else if (folio_test_anon(folio)) {
 			swp_entry_t entry = page_swap_entry(subpage);
 			pte_t swp_pte;
+			int duplicate;
 			/*
 			 * Store the swap location in the pte.
 			 * See handle_pte_fault() ...
@@ -1980,12 +1981,14 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 				goto walk_abort;
 			}
 
-			if (swap_duplicate(entry) < 0) {
+			duplicate = ppps_swap_pte_duplicate(vma, pvmw.pte,
+							    address, entry);
+			if (duplicate < 0) {
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				goto walk_abort;
 			}
 			if (arch_unmap_one(mm, vma, address, pteval) < 0) {
-				swap_free(entry);
+				ppps_swap_pte_undo_duplicate(entry, duplicate);
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				goto walk_abort;
 			}
@@ -1994,7 +1997,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			if (anon_exclusive &&
 			    ppps_anon_unmap_needs_share(&ppps) &&
 			    folio_try_share_anon_rmap_pte(folio, subpage)) {
-				swap_free(entry);
+				ppps_swap_pte_undo_duplicate(entry, duplicate);
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				goto walk_abort;
 			}
