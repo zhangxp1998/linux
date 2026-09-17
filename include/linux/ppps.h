@@ -65,7 +65,7 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 extern struct page_ext_operations ppps_file_page_ext_ops;
 void ppps_file_pte_refs_add(struct page *page, int nr_pages);
 void ppps_file_pte_refs_sub(struct page *page, int nr_pages);
-bool ppps_file_page_has_compat_ptes(struct page *page);
+int ppps_file_pte_refs(struct page *page);
 /* fork() must preserve the geometry of the page tables it copies. */
 #define mm_inherit_pagesize(mm, oldmm) \
 	((mm)->page_shift = (oldmm) ? (oldmm)->page_shift : PAGE_SHIFT)
@@ -91,9 +91,9 @@ static inline void mm_init_pagesize(struct mm_struct *mm,
 				    const struct linux_binprm *bprm) {}
 static inline void ppps_file_pte_refs_add(struct page *page, int nr_pages) {}
 static inline void ppps_file_pte_refs_sub(struct page *page, int nr_pages) {}
-static inline bool ppps_file_page_has_compat_ptes(struct page *page)
+static inline int ppps_file_pte_refs(struct page *page)
 {
-	return false;
+	return 0;
 }
 #define mm_inherit_pagesize(mm, oldmm)	((void)(mm), (void)(oldmm))
 #define vma_set_slice_off(vma, val)	((void)(vma), (void)(val))
