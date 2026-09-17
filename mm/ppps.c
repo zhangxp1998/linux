@@ -8,9 +8,11 @@
 #include <linux/dcache.h>
 #include <linux/fs.h>
 #include <linux/ppps.h>
+#include <linux/page_ext.h>
 #include <linux/string.h>
 #include <asm/memory.h>
 
+#include "internal.h"
 #include "ppps.h"
 
 /* Keep exported native fallbacks visible when public helpers are macros. */
@@ -52,6 +54,120 @@ unsigned long mm_default_map_window64(void)
 EXPORT_SYMBOL(mm_default_map_window64);
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * Number of compat file PTEs referencing each native page, not a process
+ * count or a PSS divisor.  Zero or one compat PTE lets a /proc walker infer
+ * the sharing from the normal mapcount without reverse-mapping every slice.
+ * Anonymous tuples have their own accounting and do not use this counter.
+ *
+ * page_ext is zeroed before userspace can create compat mappings.  Normal
+ * unmap (including reclaim/migration) balances every addition before the
+ * page can be reused; splitting a folio leaves its per-page counters in
+ * place.  Missing metadata never qualifies for the fast path.
+ */
+static bool __init ppps_file_page_ext_needed(void)
+{
+	return true;
+}
+
+struct page_ext_operations ppps_file_page_ext_ops = {
+	/* Keep the page_ext stride aligned for the other clients too. */
+	.size = ALIGN(sizeof(atomic_t), sizeof(unsigned long)),
+	.need = ppps_file_page_ext_needed,
+};
+
+static void ppps_file_pte_refs_update(struct page *page, int nr_pages, int delta)
+{
+	for (; nr_pages; nr_pages--, page++) {
+		struct page_ext *ext = page_ext_get(page);
+		atomic_t *refs;
+		int old, next;
+
+		if (!ext)
+			continue;
+		refs = page_ext_data(ext, &ppps_file_page_ext_ops);
+		old = atomic_read(refs);
+		do {
+			/* Overflow/invalid accounting must never manufacture zero. */
+			if (old == INT_MAX)
+				break;
+			if (WARN_ON_ONCE(old < 0 || (!old && delta < 0)))
+				next = INT_MAX;
+			else
+				next = old + delta;
+		} while (!atomic_try_cmpxchg(refs, &old, next));
+		page_ext_put(ext);
+	}
+}
+
+void ppps_file_pte_refs_add(struct page *page, int nr_pages)
+{
+	/* Full ordering: publish a nonzero count before adding the rmap. */
+	ppps_file_pte_refs_update(page, nr_pages, 1);
+}
+
+void ppps_file_pte_refs_sub(struct page *page, int nr_pages)
+{
+	/* Full ordering: remove the rmap before allowing the count to reach zero. */
+	ppps_file_pte_refs_update(page, nr_pages, -1);
+}
+
+/* Caller keeps @page alive; -1 means metadata is unavailable. */
+int ppps_file_pte_refs(struct page *page)
+{
+	struct page_ext *ext = page_ext_get(page);
+	atomic_t *refs;
+	int count;
+
+	if (!ext)
+		return -1;
+	refs = page_ext_data(ext, &ppps_file_page_ext_ops);
+	count = atomic_read_acquire(refs);
+	page_ext_put(ext);
+	return count;
+}
+
+/*
+ * The PPPS file fault path installs one process-sized PTE at a time, so the
+ * rmap addition above cannot tell when the final slice of a large folio has
+ * been mapped.  The caller has installed the PTE and dropped its page table
+ * lock, but still holds the folio lock and mmap_lock.  This makes it safe to
+ * walk across page table boundaries before mlocking the fully mapped folio.
+ */
+void ppps_file_fault_mlock(struct vm_area_struct *vma, struct folio *folio)
+{
+	unsigned long nr_ptes = folio_nr_ptes(folio, vma);
+	unsigned long address;
+	unsigned long ptes = 0;
+
+	if (!ppps_mm_is_compat(vma->vm_mm) || !vma->vm_file ||
+	    !folio_test_large(folio) || folio_test_anon(folio))
+		return;
+	if ((vma->vm_flags & (VM_LOCKED | VM_SPECIAL)) != VM_LOCKED ||
+	    !folio_within_vma(folio, vma))
+		return;
+	/* Avoid a page-table walk until this VMA could be a full mapping. */
+	if (folio_mapcount(folio) < nr_ptes)
+		return;
+
+	address = vma_address(vma, folio_pgoff(folio), folio_nr_pages(folio));
+	if (address == -EFAULT)
+		return;
+
+	{
+		DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, PVMW_SYNC);
+
+		while (page_vma_mapped_walk(&pvmw)) {
+			if (!pvmw.pte || ++ptes == nr_ptes)
+				break;
+		}
+		if (pvmw.pte && ptes == nr_ptes)
+			mlock_vma_folio(folio, vma);
+		page_vma_mapped_walk_done(&pvmw);
+	}
+}
+
+
 /* Testing only: select Android app runtimes, not init or its other services. */
 static bool ppps_test_app_runtime(const struct linux_binprm *bprm)
 {
