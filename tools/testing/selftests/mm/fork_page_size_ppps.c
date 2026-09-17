@@ -39,11 +39,11 @@ static int run_fork_case(bool compat)
 {
 	unsigned long page_size = sysconf(_SC_PAGESIZE);
 	unsigned char *mapping;
-	int persona;
+	int persona, previous;
 	pid_t child;
 	size_t i;
 
-	if (compat && page_size != PROCESS_PAGE_SIZE)
+	if (page_size != (compat ? PROCESS_PAGE_SIZE : NATIVE_PAGE_SIZE))
 		return EXIT_FAILURE;
 	mapping = mmap(NULL, 4 * page_size, PROT_READ | PROT_WRITE,
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -53,13 +53,17 @@ static int run_fork_case(bool compat)
 		mapping[i] = (unsigned char)(i * 37 + 11);
 
 	persona = personality(0xffffffffUL);
-	if (persona < 0)
+	if (persona < 0 || !!(persona & ADDR_4KB_COMPAT_PAGE_SIZE) != compat)
 		return EXIT_FAILURE;
+	previous = persona;
 	if (compat)
 		persona &= ~ADDR_4KB_COMPAT_PAGE_SIZE;
 	else
 		persona |= ADDR_4KB_COMPAT_PAGE_SIZE;
-	if (personality((unsigned int)persona) < 0)
+	/* Exercise libc's signed int return and an unrelated personality flag. */
+	persona |= UNAME26;
+	if (personality((unsigned int)persona) != previous ||
+	    personality(0xffffffffUL) != persona)
 		return EXIT_FAILURE;
 
 	child = fork();
@@ -68,6 +72,8 @@ static int run_fork_case(bool compat)
 	if (!child) {
 		unsigned long mmu_page_size;
 
+		if (personality(0xffffffffUL) != persona)
+			_exit(EXIT_FAILURE);
 		for (i = 0; i < 4 * page_size; i++) {
 			if (mapping[i] != (unsigned char)(i * 37 + 11))
 				_exit(EXIT_FAILURE);
