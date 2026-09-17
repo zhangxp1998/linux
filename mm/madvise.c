@@ -751,6 +751,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 				max_nr = (end - addr) / page_size;
 				nr = swap_pte_batch(pte, max_nr, ptent);
 				nr_swap -= nr;
+				ppps_swap_pte_remove(vma, pte, addr, nr, entry);
 				free_swap_and_cache_nr(entry, nr);
 				clear_not_present_full_ptes(mm, addr, pte, nr, tlb->fullmm);
 			} else if (is_hwpoison_entry(entry) ||

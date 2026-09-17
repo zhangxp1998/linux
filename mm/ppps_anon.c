@@ -25,6 +25,7 @@
 #include <linux/swapops.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/vmstat.h>
+#include <linux/xarray.h>
 
 #include <asm/cacheflush.h>
 #include <asm/cpufeature.h>
@@ -34,6 +35,161 @@
 #include "internal.h"
 #include "ppps.h"
 #include "swap.h"
+
+/*
+ * swap_map counts PTEs, while a packed tuple is one logical mapping.  Record
+ * only the redundant sibling-PTE references; subtracting them from swap_map
+ * preserves the exact native PSS divisor without changing swap lifetime.
+ */
+static DEFINE_XARRAY(ppps_swap_extra_refs);
+
+/* Private proc accounting adapter implemented with tuple-owned swap state. */
+int ppps_swap_mapcount(swp_entry_t entry);
+
+static inline pte_t *ppps_tuple_base_ptep(struct vm_area_struct *vma,
+					  pte_t *ptep,
+					  unsigned long address);
+static inline unsigned long ppps_tuple_base(struct vm_area_struct *vma,
+					    unsigned long address);
+
+static bool ppps_swap_pte_has_sibling(struct vm_area_struct *vma, pte_t *ptep,
+				      unsigned long address,
+				      swp_entry_t entry)
+{
+	pte_t *base_ptep = ppps_tuple_base_ptep(vma, ptep, address);
+	unsigned int slice = vma_address_to_slice(vma, address);
+	unsigned int i;
+
+	if (!base_ptep)
+		return false;
+	for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+		pte_t pte;
+
+		if (i == slice)
+			continue;
+		pte = ptep_get(base_ptep + i);
+		if (is_swap_pte(pte) && !non_swap_entry(pte_to_swp_entry(pte)) &&
+		    pte_to_swp_entry(pte).val == entry.val)
+			return true;
+	}
+	return false;
+}
+
+static int ppps_swap_extra_add(swp_entry_t entry)
+{
+	void *old, *stored;
+	unsigned long extra;
+
+	xa_lock(&ppps_swap_extra_refs);
+	old = xa_load(&ppps_swap_extra_refs, entry.val);
+	extra = old ? xa_to_value(old) : 0;
+	stored = __xa_store(&ppps_swap_extra_refs, entry.val,
+			    xa_mk_value(extra + 1), GFP_ATOMIC);
+	xa_unlock(&ppps_swap_extra_refs);
+	return xa_err(stored);
+}
+
+static void ppps_swap_extra_sub(swp_entry_t entry, unsigned int nr)
+{
+	void *old;
+	unsigned long extra;
+
+	if (!nr)
+		return;
+	xa_lock(&ppps_swap_extra_refs);
+	old = xa_load(&ppps_swap_extra_refs, entry.val);
+	extra = old ? xa_to_value(old) : 0;
+	if (WARN_ON_ONCE(extra < nr)) {
+		__xa_erase(&ppps_swap_extra_refs, entry.val);
+	} else if (extra == nr) {
+		__xa_erase(&ppps_swap_extra_refs, entry.val);
+	} else {
+		__xa_store(&ppps_swap_extra_refs, entry.val,
+			   xa_mk_value(extra - nr), GFP_NOWAIT);
+	}
+	xa_unlock(&ppps_swap_extra_refs);
+}
+
+int ppps_swap_pte_duplicate(struct vm_area_struct *vma, pte_t *ptep,
+			    unsigned long address, swp_entry_t entry)
+{
+	bool sibling = ppps_swap_pte_has_sibling(vma, ptep, address, entry);
+	int ret = swap_duplicate(entry);
+
+	if (!ret && sibling) {
+		ret = ppps_swap_extra_add(entry);
+		if (ret)
+			swap_free(entry);
+	}
+	return ret;
+}
+
+void ppps_swap_pte_remove(struct vm_area_struct *vma, pte_t *ptep,
+			  unsigned long address, unsigned int nr,
+			  swp_entry_t entry)
+{
+	unsigned long end = address + nr * MM_PAGE_SIZE(vma->vm_mm);
+	unsigned int removed_extra = 0;
+
+	if (!ppps_mm_is_compat(vma->vm_mm))
+		return;
+	while (address < end) {
+		unsigned long old_address = address;
+		pte_t *base_ptep = ppps_tuple_base_ptep(vma, ptep, address);
+		unsigned long base = ppps_tuple_base(vma, address);
+		unsigned int before = 0, removed = 0, i;
+
+		if (!base_ptep)
+			break;
+		for (i = 0; i < PPPS_SLICES_PER_PAGE; i++) {
+			unsigned long addr = base + i * PAGE_SIZE_COMPAT;
+			pte_t sibling;
+
+			if (addr < vma->vm_start || addr >= vma->vm_end)
+				continue;
+			sibling = ptep_get(base_ptep + i);
+			if (!is_swap_pte(sibling) ||
+			    non_swap_entry(pte_to_swp_entry(sibling)) ||
+			    pte_to_swp_entry(sibling).val != entry.val)
+				continue;
+			before++;
+			if (addr >= address && addr < end)
+				removed++;
+		}
+		if (removed)
+			removed_extra += removed - (removed == before);
+		address = min(end, base + PAGE_SIZE);
+		ptep += (address - old_address) >> PAGE_SHIFT_COMPAT;
+	}
+	ppps_swap_extra_sub(entry, removed_extra);
+}
+
+void ppps_anon_swapin_remove_swap_refs(const struct ppps_anon_swapin_ctx *ctx,
+				       swp_entry_t entry)
+{
+	if (ctx->compat)
+		ppps_swap_extra_sub(entry, hweight8(ctx->siblings));
+}
+
+int ppps_swap_mapcount(swp_entry_t entry)
+{
+	void *value;
+	unsigned long extra;
+	int refs = swp_swapcount(entry);
+
+	rcu_read_lock();
+	value = xa_load(&ppps_swap_extra_refs, entry.val);
+	extra = value ? xa_to_value(value) : 0;
+	rcu_read_unlock();
+	if (WARN_ON_ONCE(extra >= refs))
+		return refs;
+	return refs - extra;
+}
+
+void ppps_swap_entry_reset(swp_entry_t entry)
+{
+	xa_erase(&ppps_swap_extra_refs, entry.val);
+}
 
 static struct folio *ppps_folio_prealloc(struct mm_struct *mm,
 					 struct vm_area_struct *vma,
