@@ -159,7 +159,7 @@ static loff_t vaddr_to_offset(struct vm_area_struct *vma, unsigned long vaddr)
 static unsigned long uprobe_vma_page_offset(struct vm_area_struct *vma,
 					    unsigned long vaddr)
 {
-	return vma_page_slice_offset(vma, NULL, vaddr) +
+	return vma_page_slice_offset(vma, vaddr) +
 	       mm_offset_in_page(vma->vm_mm, vaddr);
 }
 
@@ -447,6 +447,8 @@ static int __uprobe_write(struct vm_area_struct *vma,
 	fw->pte = ptep_clear_flush(vma, vaddr, fw->ptep);
 	copy_to_page(fw->page, uprobe_vma_page_offset(vma, insn_vaddr),
 		     insn, nbytes);
+	/* The executable folio may still be marked D-cache clean. */
+	flush_dcache_page(fw->page);
 	trace_android_vh_uprobes_uprobe_write(page_folio(fw->page), folio);
 
 	/*

@@ -15,15 +15,14 @@
 #include <linux/slab.h>
 #include <linux/syscalls.h>
 
+#include "ppps.h"
+
 /**
  * process_vm_rw_pages - read/write pages from task specified
  * @pages: array of pointers to pages we want to copy
  * @offset: offset in page to start copying from/to
  * @len: number of bytes to copy
  * @iter: where to copy to/from locally
- * @page_size: page size of the target process
- * @slice_idx: first subpage slice within the host page
- * @advance_slice: whether each target page advances the subpage slice
  * @vm_write: 0 means copy from, 1 means copy to
  * Returns 0 on success, error code otherwise
  */
@@ -31,32 +30,26 @@ static int process_vm_rw_pages(struct page **pages,
 			       unsigned offset,
 			       size_t len,
 			       struct iov_iter *iter,
-			       unsigned int page_size,
-			       unsigned int slice_idx,
-			       bool advance_slice,
 			       int vm_write)
 {
 	/* Do the copy for each page */
 	while (len && iov_iter_count(iter)) {
 		struct page *page = *pages++;
-		unsigned int page_offset = slice_idx * page_size + offset;
-		size_t copy = page_size - offset;
+		size_t copy = PAGE_SIZE - offset;
 		size_t copied;
 
 		if (copy > len)
 			copy = len;
 
 		if (vm_write)
-			copied = copy_page_from_iter(page, page_offset, copy, iter);
+			copied = copy_page_from_iter(page, offset, copy, iter);
 		else
-			copied = copy_page_to_iter(page, page_offset, copy, iter);
+			copied = copy_page_to_iter(page, offset, copy, iter);
 
 		len -= copied;
 		if (copied < copy && iov_iter_count(iter))
 			return -EFAULT;
 		offset = 0;
-		if (advance_slice)
-			slice_idx = (slice_idx + 1) & PPPS_SLICE_MASK;
 	}
 	return 0;
 }
@@ -87,33 +80,26 @@ static int process_vm_rw_single_vec(unsigned long addr,
 				    struct task_struct *task,
 				    int vm_write)
 {
-	unsigned long page_size = MM_PAGE_SIZE(mm);
-	unsigned int page_shift = MM_PAGE_SHIFT(mm);
-	unsigned long pa;
-	unsigned long start_offset;
+	unsigned long pa = addr & PAGE_MASK;
+	unsigned long start_offset = addr - pa;
 	unsigned long nr_pages;
 	ssize_t rc = 0;
 	unsigned int flags = 0;
 
+	if (ppps_mm_is_compat(mm))
+		return ppps_process_vm_rw(mm, addr, len, iter, process_pages,
+					  PVM_MAX_USER_PAGES, vm_write);
+
 	/* Work out address and page range required */
 	if (len == 0)
 		return 0;
-	mmap_read_lock(mm);
-	addr = untagged_addr_remote(mm, addr);
-	mmap_read_unlock(mm);
-	pa = addr & MM_PAGE_MASK(mm);
-	start_offset = addr - pa;
-	nr_pages = (addr + len - 1) / page_size - addr / page_size + 1;
+	nr_pages = (addr + len - 1) / PAGE_SIZE - addr / PAGE_SIZE + 1;
 
 	if (vm_write)
 		flags |= FOLL_WRITE;
 
 	while (!rc && nr_pages && iov_iter_count(iter)) {
 		int pinned_pages = min_t(unsigned long, nr_pages, PVM_MAX_USER_PAGES);
-		struct vm_area_struct *vma;
-		unsigned long vma_pages;
-		unsigned int slice_idx;
-		bool advance_slice = ppps_mm_is_compat(mm);
 		int locked = 1;
 		size_t bytes;
 
@@ -122,16 +108,7 @@ static int process_vm_rw_single_vec(unsigned long addr,
 		 * access remotely because task/mm might not
 		 * current/current->mm
 		 */
-		if (mmap_read_lock_killable(mm))
-			return -EINTR;
-		vma = vma_lookup(mm, pa);
-		if (!vma) {
-			mmap_read_unlock(mm);
-			return -EFAULT;
-		}
-		slice_idx = vma_address_to_slice(vma, pa);
-		vma_pages = (vma->vm_end - pa) >> page_shift;
-		pinned_pages = min_t(unsigned long, pinned_pages, vma_pages);
+		mmap_read_lock(mm);
 		pinned_pages = pin_user_pages_remote(mm, pa, pinned_pages,
 						     flags, process_pages,
 						     &locked);
@@ -139,30 +116,18 @@ static int process_vm_rw_single_vec(unsigned long addr,
 			mmap_read_unlock(mm);
 		if (pinned_pages <= 0)
 			return -EFAULT;
-		/*
-		 * A fault may drop mmap_lock for UFFD or I/O.  Native pages need
-		 * no VMA metadata, but compat offsets must describe these exact
-		 * pins.  If geometry could have changed, discard the pins and
-		 * retry the now-faulted range under a fresh lock/VMA lookup.
-		 */
-		if (!locked && advance_slice) {
-			unpin_user_pages(process_pages, pinned_pages);
-			cond_resched();
-			continue;
-		}
 
-		bytes = pinned_pages * page_size - start_offset;
+		bytes = pinned_pages * PAGE_SIZE - start_offset;
 		if (bytes > len)
 			bytes = len;
 
 		rc = process_vm_rw_pages(process_pages,
-					 start_offset, bytes, iter, page_size,
-					 slice_idx, advance_slice,
+					 start_offset, bytes, iter,
 					 vm_write);
 		len -= bytes;
 		start_offset = 0;
 		nr_pages -= pinned_pages;
-		pa += pinned_pages * page_size;
+		pa += pinned_pages * PAGE_SIZE;
 
 		/* If vm_write is set, the pages need to be made dirty: */
 		unpin_user_pages_dirty_lock(process_pages, pinned_pages,

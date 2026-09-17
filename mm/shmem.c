@@ -3457,7 +3457,7 @@ repeat:
 
 	if (!*foliop) {
 		unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
-		unsigned long offset = vma_page_slice_offset(dst_vma, NULL, dst_addr);
+		unsigned long offset = vma_page_slice_offset(dst_vma, dst_addr);
 
 		ret = -ENOMEM;
 		folio = shmem_alloc_folio(gfp, 0, info, pgoff);

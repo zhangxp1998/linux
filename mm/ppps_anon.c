@@ -401,7 +401,7 @@ bool ppps_anon_tuple_is_complete(struct vm_area_struct *vma,
  * a fresh folio can populate in one go.  Returns its length and sets @base
  * to its first address.
  */
-int ppps_anon_installable_run(struct vm_area_struct *vma, pte_t *ptep,
+static int ppps_anon_installable_run(struct vm_area_struct *vma, pte_t *ptep,
 			      unsigned long address, unsigned long *base)
 {
 	unsigned long tuple_base = ppps_tuple_base(vma, address);
@@ -504,7 +504,7 @@ struct folio *ppps_anon_hole_fill_folio(struct vm_area_struct *vma,
 	return folio;
 }
 
-void ppps_anon_clear_slice(struct vm_area_struct *vma, struct folio *folio,
+static void ppps_anon_clear_slice(struct vm_area_struct *vma, struct folio *folio,
 			   unsigned long address)
 {
 	unsigned int start = vma_address_to_slice(vma, address) * PAGE_SIZE_COMPAT;
@@ -555,7 +555,7 @@ void ppps_anon_copy_slice(struct folio *dst, unsigned int dst_slice,
 	ppps_copy_slice_page(&dst->page, dst_slice, &src->page, src_slice);
 }
 
-void ppps_anon_fill_slice_from(struct folio *dst, struct vm_area_struct *vma,
+static void ppps_anon_fill_slice_from(struct folio *dst, struct vm_area_struct *vma,
 			       unsigned long address, struct page *src)
 {
 	unsigned int slice = vma_address_to_slice(vma, address);

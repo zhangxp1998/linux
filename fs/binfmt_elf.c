@@ -534,7 +534,9 @@ static struct elf_phdr *load_elf_phdrs(const struct elfhdr *elf_ex,
 	/* Sanity check the number of program headers... */
 	/* ...and their total size. */
 	size = sizeof(struct elf_phdr) * elf_ex->e_phnum;
-	if (size == 0 || size > 65536)
+	/* This check precedes exec's mm switch: use the native ELF limit. */
+	if (size == 0 || size > 65536 ||
+	    size > max_t(size_t, ELF_EXEC_PAGESIZE, PAGE_SIZE))
 		goto out;
 
 	elf_phdata = kmalloc(size, GFP_KERNEL);

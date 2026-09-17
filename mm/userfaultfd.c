@@ -293,7 +293,7 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	unsigned long pgsize = MM_PAGE_SIZE(dst_mm);
 	unsigned int slice_idx = vma_address_to_slice(dst_vma, dst_addr);
-	unsigned long offset = vma_page_slice_offset(dst_vma, NULL, dst_addr);
+	unsigned long offset = vma_page_slice_offset(dst_vma, dst_addr);
 	void *kaddr;
 	int ret;
 	struct folio *folio;
@@ -914,7 +914,7 @@ retry:
 			 * so start over rather than install it misplaced.
 			 */
 			if (unlikely(folio && pending_offset !=
-				     vma_page_slice_offset(dst_vma, NULL,
+				     vma_page_slice_offset(dst_vma,
 							   dst_addr))) {
 				folio_put(folio);
 				folio = NULL;
@@ -927,7 +927,7 @@ retry:
 		if (unlikely(err == -ENOENT)) {
 			/* A pending tuple folio is filled whole, at offset 0. */
 			unsigned long offset = tuple_folio ? 0 :
-				vma_page_slice_offset(dst_vma, NULL, dst_addr);
+				vma_page_slice_offset(dst_vma, dst_addr);
 			unsigned long size = tuple_folio ? PAGE_SIZE : page_size;
 			void *kaddr;
 

@@ -7310,12 +7310,13 @@ static int __access_remote_vm(struct mm_struct *mm, unsigned long addr,
 
 	/* ignore errors, just check how much was successfully transferred */
 	while (len) {
-		int bytes, offset;
+		unsigned long offset;
+		int bytes;
 		void *maddr;
 		struct folio *folio;
 		struct vm_area_struct *vma = NULL;
-		struct page *page = get_user_page_vma_remote(mm, addr,
-							     gup_flags, &vma);
+		struct page *page = get_user_page_vma_remote_with_offset(mm, addr,
+						gup_flags, &vma, &offset);
 
 		if (IS_ERR(page)) {
 			/* We might need to expand the stack to access it */
@@ -7349,8 +7350,6 @@ static int __access_remote_vm(struct mm_struct *mm, unsigned long addr,
 
 			folio = page_folio(page);
 			bytes = len;
-			offset = vma_page_slice_offset(vma, page, addr) +
-				 page_offset;
 			if (bytes > pg_size - page_offset)
 				bytes = pg_size - page_offset;
 
@@ -7442,13 +7441,14 @@ static int __copy_remote_vm_str(struct mm_struct *mm, unsigned long addr,
 	while (len) {
 		int bytes, offset, retval;
 		unsigned int page_offset, page_size;
-		unsigned long slice_off;
+		unsigned long captured_offset, slice_off;
 		void *maddr;
 		struct folio *folio;
 		struct page *page;
 		struct vm_area_struct *vma = NULL;
 
-		page = get_user_page_vma_remote(mm, addr, gup_flags, &vma);
+		page = get_user_page_vma_remote_with_offset(mm, addr, gup_flags,
+							  &vma, &captured_offset);
 		if (IS_ERR(page)) {
 			/*
 			 * Treat as a total failure for now until we decide how
@@ -7463,9 +7463,9 @@ static int __copy_remote_vm_str(struct mm_struct *mm, unsigned long addr,
 		folio = page_folio(page);
 		page_size = MM_PAGE_SIZE(mm);
 		page_offset = mm_offset_in_page(mm, addr);
-		slice_off = vma_page_slice_offset(vma, page, addr);
+		slice_off = captured_offset - page_offset;
 		bytes = len;
-		offset = slice_off + page_offset;
+		offset = captured_offset;
 		if (bytes > page_size - page_offset)
 			bytes = page_size - page_offset;
 
