@@ -1,0 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef DRM_GEM_DMA_IMPORT_PPPS_H
+#define DRM_GEM_DMA_IMPORT_PPPS_H
+
+#include <linux/ioctl.h>
+
+#define DRM_DMA_IMPORT_PPPS_CHECK _IO('P', 0x68)
+enum drm_dma_import_case {
+	DRM_DMA_ALIGNED,
+	DRM_DMA_SHORT_SIZE,
+	DRM_DMA_UNALIGNED_ADDRESS,
+	DRM_DMA_SHORT_SG,
+	DRM_DMA_CONTIGUOUS_SG,
+	DRM_DMA_NONCONTIGUOUS_SG,
+	DRM_DMA_CASES,
+};
+
+#endif

@@ -1,0 +1,38 @@
+PPPS deterministic boundary regressions
+======================================
+
+These tests use existing public APIs. They add no production test hooks,
+fault injection switches, exported symbols, or internal pause points.
+Use a native 16KB arm64 kernel with PPPS enabled. The mm and DMA-import
+programs also accept --native for a native-mm control run.
+
+  mm/userfaultfd_shmem_boundaries_ppps
+    Tests byte-granular hole-punch and truncate/regrow on initialized,
+    test-owned shmem. Checks retained/zero bytes and whether a page is still
+    populated. Drops mapping PTEs before the presence check so an existing
+    PTE cannot hide an incorrect missing-slice mask. Requires USERFAULTFD
+    and permission to use it. No worker race or allocator reuse is needed.
+
+  mm/vmalloc_align_ppps.sh
+    Tests remap_vmalloc_range(), the exported wrapper of the partial-range
+    implementation. The fixture owns two initialized vmalloc pages and
+    selects fixed aligned/unaligned backing addresses within that allocation.
+    Both accepted mappings are checked byte-for-byte. Requires the matching
+    vmalloc_align_ppps_module.ko.
+
+  drivers/gpu/drm_gem_mmap_ppps.sh
+    Uses its own GEM render-node fixture. Valid object cookies must work;
+    nonzero sub-native cookie offsets must fail without changing the object.
+
+  drivers/gpu/drm_gem_dma_import_ppps.sh
+    Requires DRM_GEM_DMA_HELPER and drm_gem_dma_import_ppps_module.ko. Load
+    drm_dma_helper first if it is modular. Tests the actual exported
+    drm_gem_dma_prime_import_sg_table(), not a duplicate validator. Uses
+    initialized attachment and DMA-SG metadata to check alignment, length
+    and contiguity; no device DMA is submitted. This is a helper contract
+    test, not an end-to-end hardware DMA-BUF import test.
+
+Build fixture modules against the exact running kernel's configuration,
+toolchain and Module.symvers. A missing helper/device is a skip, not a pass.
+Ordinary concurrency stress, cache-coherency checks and allocator-dependent
+initialization checks are not claimed to be deterministic by these tests.
