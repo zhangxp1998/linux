@@ -50,19 +50,27 @@ static inline int tlb_get_level(struct mmu_gather *tlb)
 	return TLBI_TTL_UNKNOWN;
 }
 
+/* Page-table teardown must invalidate each level in the target geometry. */
+static inline unsigned long tlb_get_unmap_size_mm(struct mmu_gather *tlb)
+{
+	if (tlb->cleared_ptes)
+		return MM_PAGE_SIZE(tlb->mm);
+	if (tlb->cleared_pmds)
+		return MM_PMD_SIZE(tlb->mm);
+	if (tlb->cleared_puds)
+		return MM_PUD_SIZE(tlb->mm);
+	if (tlb->cleared_p4ds)
+		return MM_P4D_SIZE(tlb->mm);
+
+	return MM_PAGE_SIZE(tlb->mm);
+}
+
 static inline void tlb_flush(struct mmu_gather *tlb)
 {
 	struct vm_area_struct vma = TLB_FLUSH_VMA(tlb->mm, 0);
 	bool last_level = !tlb->freed_tables;
-	unsigned long stride = tlb_get_unmap_size(tlb);
+	unsigned long stride = tlb_get_unmap_size_mm(tlb);
 	int tlb_level = tlb_get_level(tlb);
-
-	/*
-	 * tlb_get_unmap_size() reports PAGE_SIZE both for native PTEs and when
-	 * no size hint was recorded; a compat mm's PTEs are one process page.
-	 */
-	if (tlb->mm && stride == PAGE_SIZE)
-		stride = MM_PAGE_SIZE(tlb->mm);
 
 	/*
 	 * If we're tearing down the address space then we only care about
