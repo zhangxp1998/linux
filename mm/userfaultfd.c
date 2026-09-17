@@ -1864,98 +1864,20 @@ static void uffd_move_unlock(struct vm_area_struct *dst_vma,
 }
 #endif
 
-/**
- * move_pages - move arbitrary anonymous pages of an existing vma
- * @ctx: pointer to the userfaultfd context
- * @dst_start: start of the destination virtual memory range
- * @src_start: start of the source virtual memory range
- * @len: length of the virtual memory range
- * @mode: flags from uffdio_move.mode
- *
- * It will either use the mmap_lock in read mode or per-vma locks
- *
- * move_pages() remaps arbitrary anonymous pages atomically in zero
- * copy. It only works on non shared anonymous pages because those can
- * be relocated without generating non linear anon_vmas in the rmap
- * code.
- *
- * It provides a zero copy mechanism to handle userspace page faults.
- * The source vma pages should have mapcount == 1, which can be
- * enforced by using madvise(MADV_DONTFORK) on src vma.
- *
- * The thread receiving the page during the userland page fault
- * will receive the faulting page in the source vma through the network,
- * storage or any other I/O device (MADV_DONTFORK in the source vma
- * avoids move_pages() to fail with -EBUSY if the process forks before
- * move_pages() is called), then it will call move_pages() to map the
- * page in the faulting address in the destination vma.
- *
- * This userfaultfd command works purely via pagetables, so it's the
- * most efficient way to move physical non shared anonymous pages
- * across different virtual addresses. Unlike mremap()/mmap()/munmap()
- * it does not create any new vmas. The mapping in the destination
- * address is atomic.
- *
- * It only works if the vma protection bits are identical from the
- * source and destination vma.
- *
- * It can remap non shared anonymous pages within the same vma too.
- *
- * If the source virtual memory range has any unmapped holes, or if
- * the destination virtual memory range is not a whole unmapped hole,
- * move_pages() will fail respectively with -ENOENT or -EEXIST. This
- * provides a very strict behavior to avoid any chance of memory
- * corruption going unnoticed if there are userland race conditions.
- * Only one thread should resolve the userland page fault at any given
- * time for any given faulting address. This means that if two threads
- * try to both call move_pages() on the same destination address at the
- * same time, the second thread will get an explicit error from this
- * command.
- *
- * The command retval will return "len" is successful. The command
- * however can be interrupted by fatal signals or errors. If
- * interrupted it will return the number of bytes successfully
- * remapped before the interruption if any, or the negative error if
- * none. It will never return zero. Either it will return an error or
- * an amount of bytes successfully moved. If the retval reports a
- * "short" remap, the move_pages() command should be repeated by
- * userland with src+retval, dst+reval, len-retval if it wants to know
- * about the error that interrupted it.
- *
- * The UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES flag can be specified to
- * prevent -ENOENT errors to materialize if there are holes in the
- * source virtual range that is being remapped. The holes will be
- * accounted as successfully remapped in the retval of the
- * command. This is mostly useful to remap hugepage naturally aligned
- * virtual regions without knowing if there are transparent hugepage
- * in the regions or not, but preventing the risk of having to split
- * the hugepmd during the remap.
- */
-ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
-		   unsigned long src_start, unsigned long len, __u64 mode)
+/* One locked attempt; the caller owns any lock-dropping PPPS retry. */
+ssize_t uffd_move_pages_once(struct userfaultfd_ctx *ctx, unsigned long dst_start,
+			     unsigned long src_start, unsigned long len, __u64 mode,
+			     bool *ppps_fallback)
 {
 	struct mm_struct *mm = ctx->mm;
 	struct vm_area_struct *src_vma, *dst_vma;
-	unsigned long src_addr, dst_addr, src_end;
+	unsigned long src_addr = src_start, dst_addr = dst_start;
+	unsigned long src_end = src_start + len;
 	pmd_t *src_pmd, *dst_pmd;
-	bool ppps_fallback = false;
-	long err = -EINVAL;
+	long err;
 	ssize_t moved = 0;
 
-	/* Sanitize the command parameters. */
-	VM_WARN_ON_ONCE(src_start & ~MM_PAGE_MASK(mm));
-	VM_WARN_ON_ONCE(dst_start & ~MM_PAGE_MASK(mm));
-	VM_WARN_ON_ONCE(len & ~MM_PAGE_MASK(mm));
-
-	/* Does the address range wrap, or is the span zero-sized? */
-	VM_WARN_ON_ONCE(src_start + len < src_start);
-	VM_WARN_ON_ONCE(dst_start + len < dst_start);
-
-	src_addr = src_start;
-	dst_addr = dst_start;
-	src_end = src_start + len;
-
-retry_lock:
+	*ppps_fallback = false;
 	err = uffd_move_lock(mm, dst_addr, src_addr, &dst_vma, &src_vma);
 	if (err)
 		goto out;
@@ -2074,15 +1996,17 @@ retry_lock:
 			ret = move_pages_ptes(mm, dst_pmd, src_pmd,
 					      dst_vma, src_vma, dst_addr,
 					      src_addr, src_end - src_addr, mode,
-					      &ppps_fallback);
-			if (ppps_mm_is_compat(mm) && ppps_fallback) {
+					      ppps_fallback);
+			if (*ppps_fallback) {
 				err = -EAGAIN;
 				break;
 			}
-			if (ret < 0)
+			if (ret < 0) {
 				err = ret;
-			else
+			} else {
+				err = 0;
 				step_size = ret;
+			}
 		}
 
 		cond_resched();
@@ -2109,29 +2033,102 @@ retry_lock:
 out_unlock:
 	up_read(&ctx->map_changing_lock);
 	uffd_move_unlock(dst_vma, src_vma);
-	if (ppps_mm_is_compat(mm) && ppps_fallback) {
-		vm_fault_t fault;
-
-		ppps_fallback = false;
-		mmap_read_lock(mm);
-		src_vma = find_vma(mm, src_addr);
-		if (!src_vma || src_addr < src_vma->vm_start) {
-			err = -ENOENT;
-		} else {
-			fault = handle_mm_fault(src_vma, src_addr,
-						FAULT_FLAG_REMOTE, NULL);
-			err = fault & VM_FAULT_ERROR ?
-				vm_fault_to_errno(fault, 0) : 0;
-		}
-		mmap_read_unlock(mm);
-		if (!err)
-			goto retry_lock;
-	}
 out:
 	VM_WARN_ON_ONCE(moved < 0);
 	VM_WARN_ON_ONCE(err > 0);
 	VM_WARN_ON_ONCE(!moved && !err);
 	return moved ? moved : err;
+}
+
+/**
+ * move_pages - move arbitrary anonymous pages of an existing vma
+ * @ctx: pointer to the userfaultfd context
+ * @dst_start: start of the destination virtual memory range
+ * @src_start: start of the source virtual memory range
+ * @len: length of the virtual memory range
+ * @mode: flags from uffdio_move.mode
+ *
+ * It will either use the mmap_lock in read mode or per-vma locks
+ *
+ * move_pages() remaps arbitrary anonymous pages atomically in zero
+ * copy. It only works on non shared anonymous pages because those can
+ * be relocated without generating non linear anon_vmas in the rmap
+ * code.
+ *
+ * It provides a zero copy mechanism to handle userspace page faults.
+ * The source vma pages should have mapcount == 1, which can be
+ * enforced by using madvise(MADV_DONTFORK) on src vma.
+ *
+ * The thread receiving the page during the userland page fault
+ * will receive the faulting page in the source vma through the network,
+ * storage or any other I/O device (MADV_DONTFORK in the source vma
+ * avoids move_pages() to fail with -EBUSY if the process forks before
+ * move_pages() is called), then it will call move_pages() to map the
+ * page in the faulting address in the destination vma.
+ *
+ * This userfaultfd command works purely via pagetables, so it's the
+ * most efficient way to move physical non shared anonymous pages
+ * across different virtual addresses. Unlike mremap()/mmap()/munmap()
+ * it does not create any new vmas. The mapping in the destination
+ * address is atomic.
+ *
+ * It only works if the vma protection bits are identical from the
+ * source and destination vma.
+ *
+ * It can remap non shared anonymous pages within the same vma too.
+ *
+ * If the source virtual memory range has any unmapped holes, or if
+ * the destination virtual memory range is not a whole unmapped hole,
+ * move_pages() will fail respectively with -ENOENT or -EEXIST. This
+ * provides a very strict behavior to avoid any chance of memory
+ * corruption going unnoticed if there are userland race conditions.
+ * Only one thread should resolve the userland page fault at any given
+ * time for any given faulting address. This means that if two threads
+ * try to both call move_pages() on the same destination address at the
+ * same time, the second thread will get an explicit error from this
+ * command.
+ *
+ * The command retval will return "len" is successful. The command
+ * however can be interrupted by fatal signals or errors. If
+ * interrupted it will return the number of bytes successfully
+ * remapped before the interruption if any, or the negative error if
+ * none. It will never return zero. Either it will return an error or
+ * an amount of bytes successfully moved. If the retval reports a
+ * "short" remap, the move_pages() command should be repeated by
+ * userland with src+retval, dst+reval, len-retval if it wants to know
+ * about the error that interrupted it.
+ *
+ * The UFFDIO_MOVE_MODE_ALLOW_SRC_HOLES flag can be specified to
+ * prevent -ENOENT errors to materialize if there are holes in the
+ * source virtual range that is being remapped. The holes will be
+ * accounted as successfully remapped in the retval of the
+ * command. This is mostly useful to remap hugepage naturally aligned
+ * virtual regions without knowing if there are transparent hugepage
+ * in the regions or not, but preventing the risk of having to split
+ * the hugepmd during the remap.
+ */
+ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
+		   unsigned long src_start, unsigned long len, __u64 mode)
+{
+	struct mm_struct *mm = ctx->mm;
+	bool ppps_fallback;
+
+	/* Sanitize the command parameters. */
+	if (WARN_ON_ONCE(src_start & ~MM_PAGE_MASK(mm)) ||
+	    WARN_ON_ONCE(dst_start & ~MM_PAGE_MASK(mm)) ||
+	    WARN_ON_ONCE(len & ~MM_PAGE_MASK(mm)))
+		return -EINVAL;
+
+	/* Does the address range wrap, or is the span zero-sized? */
+	if (WARN_ON_ONCE(src_start + len <= src_start) ||
+	    WARN_ON_ONCE(dst_start + len <= dst_start))
+		return -EINVAL;
+
+	if (ppps_mm_is_compat(mm))
+		return ppps_uffd_move_pages(ctx, dst_start, src_start, len, mode);
+
+	return uffd_move_pages_once(ctx, dst_start, src_start, len, mode,
+				    &ppps_fallback);
 }
 
 static void userfaultfd_set_vm_flags(struct vm_area_struct *vma,

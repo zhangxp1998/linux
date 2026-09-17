@@ -6,6 +6,7 @@
 #include <linux/mm.h>
 #include <linux/ppps.h>
 #include <linux/rmap.h>
+#include <linux/sched/signal.h>
 #include <linux/swap.h>
 #include <linux/userfaultfd_k.h>
 
@@ -50,7 +51,7 @@ bool ppps_uffd_copy_tuple_ok(struct vm_area_struct *dst_vma, unsigned long dst_a
 	    (dst_vma->vm_flags & VM_SHARED))
 		return false;
 
-	/* Same VMA exclusions the packed fault path applies. */
+	/* Tuple COPY is narrower than the ordinary packed-fault path. */
 	if (dst_vma->vm_flags & (VM_MTE | VM_DROPPABLE | VM_LOCKED |
 				 VM_MERGEABLE))
 		return false;
@@ -377,4 +378,48 @@ long ppps_uffd_move_slice(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 out_unlock:
 	double_pt_unlock(dst_ptl, src_ptl);
 	return ret;
+}
+
+/* Fault a swapped source only after the MOVE attempt has dropped its locks. */
+static int ppps_uffd_move_fault(struct mm_struct *mm, unsigned long address)
+{
+	struct vm_area_struct *vma;
+	vm_fault_t fault;
+	int err = -ENOENT;
+
+	mmap_read_lock(mm);
+	vma = vma_lookup(mm, address);
+	if (vma) {
+		fault = handle_mm_fault(vma, address, FAULT_FLAG_REMOTE, NULL);
+		err = fault & VM_FAULT_ERROR ? vm_fault_to_errno(fault, 0) : 0;
+	}
+	mmap_read_unlock(mm);
+	return err;
+}
+
+ssize_t ppps_uffd_move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
+			     unsigned long src_start, unsigned long len, __u64 mode)
+{
+	ssize_t moved = 0, ret;
+	bool retry;
+
+	while (moved < len) {
+		ret = uffd_move_pages_once(ctx, dst_start + moved,
+					   src_start + moved, len - moved, mode,
+					   &retry);
+		if (ret > 0)
+			moved += ret;
+		if (!retry)
+			return moved ? moved : ret;
+
+		/* Reclaim may race the next attempt; keep retries interruptible. */
+		cond_resched();
+		if (fatal_signal_pending(current))
+			return moved ? moved : -EINTR;
+
+		ret = ppps_uffd_move_fault(ctx->mm, src_start + moved);
+		if (ret)
+			return moved ? moved : ret;
+	}
+	return moved;
 }
