@@ -1551,6 +1551,8 @@ static __always_inline void __folio_add_file_rmap(struct folio *folio,
 void folio_add_file_rmap_ptes(struct folio *folio, struct page *page,
 		int nr_pages, struct vm_area_struct *vma)
 {
+	if (ppps_mm_is_compat(vma->vm_mm))
+		ppps_file_pte_refs_add(page, nr_pages);
 	__folio_add_file_rmap(folio, page, nr_pages, vma, RMAP_LEVEL_PTE);
 }
 
@@ -1662,6 +1664,8 @@ void folio_remove_rmap_ptes(struct folio *folio, struct page *page,
 		int nr_pages, struct vm_area_struct *vma)
 {
 	__folio_remove_rmap(folio, page, nr_pages, vma, RMAP_LEVEL_PTE);
+	if (ppps_mm_is_compat(vma->vm_mm) && !folio_test_anon(folio))
+		ppps_file_pte_refs_sub(page, nr_pages);
 
 	trace_android_vh_folio_remove_rmap_ptes(folio);
 }
