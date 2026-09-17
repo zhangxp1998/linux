@@ -3608,6 +3608,7 @@ int get_user_pages_fast_only(unsigned long start, int nr_pages,
 }
 EXPORT_SYMBOL_GPL(get_user_pages_fast_only);
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 /*
  * Lockless lookup of the leaf PTE mapping @addr in @mm, run with IRQs
  * disabled like gup_fast().  Returns a pte_none() value when there is no
@@ -3644,6 +3645,7 @@ static pte_t gup_fast_lookup_pte(struct mm_struct *mm, unsigned long addr)
 	pte_unmap(ptep);
 	return pte;
 }
+#endif
 
 /**
  * get_user_page_fast_only_with_offset() - get_user_page_fast_only() plus the
@@ -3667,6 +3669,7 @@ bool get_user_page_fast_only_with_offset(unsigned long addr,
 	if (!page_offset || !get_user_page_fast_only(addr, gup_flags, pagep))
 		return false;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	if (ppps_mm_is_compat(mm)) {
 		unsigned long flags;
 		pte_t pte;
@@ -3680,6 +3683,7 @@ bool get_user_page_fast_only_with_offset(unsigned long addr,
 		}
 		slice_offset = pte_page_offset(pte);
 	}
+#endif
 
 	*page_offset = slice_offset + mm_offset_in_page(mm, addr);
 	return true;
