@@ -1724,6 +1724,51 @@ int access_process_vm(struct task_struct *tsk, unsigned long addr, void *buf, in
 }
 EXPORT_SYMBOL_GPL(access_process_vm);
 
+#ifdef CONFIG_BPF_SYSCALL
+/**
+ * copy_remote_vm_str - copy a string from a NOMMU task's mapping
+ * @tsk: task whose address space is read
+ * @addr: source address
+ * @buf: kernel destination buffer
+ * @len: destination buffer size
+ * @gup_flags: unused on NOMMU
+ *
+ * Return: copied length excluding the terminating NUL, or -EFAULT.
+ */
+int copy_remote_vm_str(struct task_struct *tsk, unsigned long addr,
+		       void *buf, int len, unsigned int gup_flags)
+{
+	struct vm_area_struct *vma;
+	struct mm_struct *mm;
+	int ret = -EFAULT;
+
+	if (len <= 0)
+		return len ? -EFAULT : 0;
+	*(char *)buf = '\0';
+	mm = get_task_mm(tsk);
+	if (!mm)
+		return ret;
+	if (mmap_read_lock_killable(mm))
+		goto out_mm;
+
+	/* Require the first byte to belong to the target's readable mapping. */
+	vma = vma_lookup(mm, addr);
+	if (!vma || !(vma->vm_flags & VM_MAYREAD))
+		goto out_unlock;
+	len = min_t(unsigned long, len, vma->vm_end - addr);
+	ret = strscpy(buf, (const char *)addr, len);
+	if (ret < 0)
+		ret = len - 1;
+
+out_unlock:
+	mmap_read_unlock(mm);
+out_mm:
+	mmput(mm);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(copy_remote_vm_str);
+#endif /* CONFIG_BPF_SYSCALL */
+
 /**
  * nommu_shrink_inode_mappings - Shrink the shared mappings on an inode
  * @inode: The inode to check
