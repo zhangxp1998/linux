@@ -36,7 +36,7 @@
  * The uapi <linux/personality.h> carries it as an enumerator, which the libc
  * <sys/personality.h> does not re-export, hence the macro.
  */
-#define ADDR_4KB_COMPAT_PAGE_SIZE	0x10000000
+#define ADDR_4KB_COMPAT_PAGE_SIZE	0x40000000
 
 /* Page size of a 4K compat process and of the native kernel. */
 #define PROCESS_PAGE_SIZE		4096UL

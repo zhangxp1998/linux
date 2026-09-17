@@ -9,6 +9,20 @@ pages. Pass byte addresses, offsets and lengths across subsystem interfaces.
 Convert to a page index only at the operation which requires that index.
 Always use the target mm, not implicitly current->mm, for remote operations.
 
+Personality selector
+====================
+
+ADDR_4KB_COMPAT_PAGE_SIZE uses bit 30 (0x40000000), the highest bit below the
+sign bit of libc's int personality() return value. Keeping the selector away
+from the currently allocated low flags leaves room for future additions;
+it does not reserve this bit against future upstream allocation.
+
+Setting or clearing this flag selects the page size at the next exec. It
+does not change the current mm or the page size inherited by fork. Preserve
+unrelated personality flags when changing the selector. Launchers and tests
+built for the previous 0x10000000 value must be rebuilt; the previous value
+is not retained as a PPPS alias.
+
 VMA offsets
 ===========
 
