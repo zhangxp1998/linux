@@ -44,9 +44,9 @@ EXPORT_SYMBOL(mm_default_map_window64);
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 /*
  * Number of compat file PTEs referencing each native page, not a process
- * count or a PSS divisor.  A zero value lets a native /proc walker use the
- * normal mapcount without reverse-mapping every slice.  Anonymous tuples
- * have their own accounting and do not use this counter.
+ * count or a PSS divisor.  Zero or one compat PTE lets a /proc walker infer
+ * the sharing from the normal mapcount without reverse-mapping every slice.
+ * Anonymous tuples have their own accounting and do not use this counter.
  *
  * page_ext is zeroed before userspace can create compat mappings.  Normal
  * unmap (including reclaim/migration) balances every addition before the
@@ -100,19 +100,19 @@ void ppps_file_pte_refs_sub(struct page *page, int nr_pages)
 	ppps_file_pte_refs_update(page, nr_pages, -1);
 }
 
-/* Caller holds a PTE lock or a reference keeping @page alive. */
-bool ppps_file_page_has_compat_ptes(struct page *page)
+/* Caller keeps @page alive; -1 means metadata is unavailable. */
+int ppps_file_pte_refs(struct page *page)
 {
 	struct page_ext *ext = page_ext_get(page);
 	atomic_t *refs;
-	bool present;
+	int count;
 
 	if (!ext)
-		return true;
+		return -1;
 	refs = page_ext_data(ext, &ppps_file_page_ext_ops);
-	present = atomic_read_acquire(refs) != 0;
+	count = atomic_read_acquire(refs);
 	page_ext_put(ext);
-	return present;
+	return count;
 }
 
 /*

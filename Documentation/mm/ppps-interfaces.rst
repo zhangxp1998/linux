@@ -120,8 +120,15 @@ File PSS fast path
 A page_ext counter records the number of compat file PTEs referencing each
 native page. It is not a process count, and is never divided by the number
 of slices to approximate PSS. A native reader may use the existing native
-mapcount only when this counter is zero; mixed pages retain the per-slice
-reverse-map walk and the existing PSS and pagemap exclusivity semantics.
+mapcount when this counter is zero. With exactly one compat PTE and N native
+mappings, the compat slice has N+1 mappings and the other three have N.
+A native PTE's PSS is therefore 12KiB/N + 4KiB/(N+1), while the compat PTE's
+PSS is 4KiB/(N+1). Neither requires locating the single shared slice. The
+native entry is not exclusive; the compat entry is exclusive only if N=0.
+The implementation retains per-slice fixed-point rounding and private/shared
+byte accounting, rather than charging all 16KiB at a single divisor.
+Larger compat counts retain the per-slice reverse-map walk and the existing
+PSS and pagemap exclusivity semantics.
 One process mapping all four slices and four processes mapping one slice
 can have equal counters but different sharing distributions.
 
@@ -137,8 +144,9 @@ all processes; the counter is not an ownership or memory-safety primitive.
 The counter has a 32-bit payload in an 8-byte-aligned page_ext slot on arm64
 (about 4 MiB for 8 GiB of 16K pages, in addition to other page_ext clients).
 No struct page layout, public rmap function signature or proc unit changes.
-The selftest smaps_native_fallback_ppps checks mixed sharing, partial unmap,
-mremap and fork/exit transitions using normal userspace interfaces.
+The selftest smaps_native_fallback_ppps checks zero/single/multiple compat
+PTEs, mixed sharing, partial unmap, mremap and fork/exit transitions using
+normal userspace interfaces.
 
 Pagemap entries
 ===============
