@@ -885,7 +885,6 @@ static inline unsigned int vma_address_to_slice(const struct vm_area_struct *vma
 
 /* Byte offset within the native page for the process page at @addr. */
 static inline unsigned long vma_page_slice_offset(struct vm_area_struct *vma,
-						  struct page *page,
 						  unsigned long addr)
 {
 	return (unsigned long)vma_address_to_slice(vma, addr) <<

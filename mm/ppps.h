@@ -12,6 +12,7 @@
 
 struct page_vma_mapped_walk;
 struct ppps_mremap_folios;
+struct iov_iter;
 
 /* Only the PPPS implementation reads or writes these walk/fault states. */
 struct ppps_anon_unmap_ctx {
@@ -60,6 +61,14 @@ static inline pte_t ppps_pte_inherit(pte_t new, pte_t old)
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 
+void ppps_file_fault_mlock(struct vm_area_struct *vma, struct folio *folio);
+int ppps_process_vm_rw(struct mm_struct *mm, unsigned long addr,
+		unsigned long len, struct iov_iter *iter, struct page **pages,
+		unsigned long capacity, bool write);
+bool ppps_anon_restore_migration(struct vm_area_struct *vma,
+		struct folio *old, struct folio *new, pte_t *ptep,
+		unsigned long address);
+
 /* Tuple geometry. */
 /* Return zero to use the generic walk end (also for native mms). */
 unsigned long ppps_pvmw_walk_end(struct page_vma_mapped_walk *pvmw);
@@ -90,8 +99,6 @@ bool ppps_anon_tuple_is_complete(struct vm_area_struct *vma,
 bool ppps_anon_tuple_within(struct vm_area_struct *vma, struct folio *folio,
 			    pte_t *ptep, unsigned long address,
 			    unsigned long start, unsigned long end);
-int ppps_anon_installable_run(struct vm_area_struct *vma, pte_t *ptep,
-			      unsigned long address, unsigned long *base);
 
 /* The one decision point for writing into a packed folio in place. */
 bool ppps_anon_try_reuse_folio(struct folio *folio, struct vm_area_struct *vma);
@@ -101,13 +108,8 @@ bool ppps_anon_tuple_has_folio_hint(struct vm_fault *vmf);
 struct folio *ppps_anon_hole_fill_folio(struct vm_area_struct *vma,
 					pte_t *ptep, unsigned long address,
 					bool *multi_folio);
-void ppps_anon_clear_slice(struct vm_area_struct *vma, struct folio *folio,
-			   unsigned long address);
 void ppps_anon_copy_slice(struct folio *dst, unsigned int dst_slice,
 			  struct folio *src, unsigned int src_slice);
-void ppps_anon_fill_slice_from(struct folio *dst,
-		struct vm_area_struct *vma, unsigned long address,
-		struct page *src);
 
 /* Fault and rmap operation contracts are documented in ppps_anon.c. */
 void ppps_anon_unmap_begin(struct ppps_anon_unmap_ctx *ctx,
@@ -159,6 +161,24 @@ int ppps_vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
 			 struct page **pages, unsigned long *num);
 
 #else /* !CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
+static inline void ppps_file_fault_mlock(struct vm_area_struct *vma,
+					 struct folio *folio)
+{
+}
+static inline int ppps_process_vm_rw(struct mm_struct *mm, unsigned long addr,
+		unsigned long len, struct iov_iter *iter, struct page **pages,
+		unsigned long capacity, bool write)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline bool ppps_anon_restore_migration(struct vm_area_struct *vma,
+		struct folio *old, struct folio *new, pte_t *ptep,
+		unsigned long address)
+{
+	return true;
+}
+
 
 static inline unsigned long
 ppps_pvmw_walk_end(struct page_vma_mapped_walk *pvmw)
@@ -313,15 +333,6 @@ static inline bool ppps_anon_tuple_within(struct vm_area_struct *vma,
 	return true;
 }
 
-static inline int ppps_anon_installable_run(struct vm_area_struct *vma,
-					    pte_t *ptep,
-					    unsigned long address,
-					    unsigned long *base)
-{
-	*base = address;
-	return 1;
-}
-
 static inline bool ppps_anon_tuple_has_folio_hint(struct vm_fault *vmf)
 {
 	return false;
@@ -336,20 +347,9 @@ ppps_anon_hole_fill_folio(struct vm_area_struct *vma, pte_t *ptep,
 	return NULL;
 }
 
-static inline void ppps_anon_clear_slice(struct vm_area_struct *vma,
-		struct folio *folio, unsigned long address)
-{
-}
-
 static inline void ppps_anon_copy_slice(struct folio *dst,
 		unsigned int dst_slice, struct folio *src,
 		unsigned int src_slice)
-{
-}
-
-static inline void ppps_anon_fill_slice_from(struct folio *dst,
-		struct vm_area_struct *vma, unsigned long address,
-		struct page *src)
 {
 }
 
@@ -405,7 +405,12 @@ static inline int ppps_vm_insert_pages(struct vm_area_struct *vma,
 #endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
 
 #ifdef CONFIG_USERFAULTFD
+ssize_t uffd_move_pages_once(struct userfaultfd_ctx *ctx, unsigned long dst_start,
+			     unsigned long src_start, unsigned long len, __u64 mode,
+			     bool *ppps_fallback);
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+ssize_t ppps_uffd_move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
+			     unsigned long src_start, unsigned long len, __u64 mode);
 bool ppps_uffd_copy_tuple_ok(struct vm_area_struct *dst_vma, unsigned long dst_addr,
 		unsigned long remaining, uffd_flags_t flags);
 int ppps_uffd_copy_tuple(pmd_t *dst_pmd, struct vm_area_struct *dst_vma, unsigned long dst_addr,
@@ -425,6 +430,12 @@ long ppps_uffd_move_slice(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 		pmd_t *dst_pmd, pmd_t dst_pmdval, spinlock_t *dst_ptl, spinlock_t *src_ptl,
 		struct folio *src_folio, struct folio **preallocp);
 #else
+static inline ssize_t ppps_uffd_move_pages(struct userfaultfd_ctx *ctx,
+		unsigned long dst_start, unsigned long src_start, unsigned long len, __u64 mode)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline bool ppps_uffd_copy_tuple_ok(struct vm_area_struct *dst_vma,
 		unsigned long dst_addr, unsigned long remaining, uffd_flags_t flags)
 {

@@ -4584,7 +4584,7 @@ int remap_vmalloc_range_partial(struct vm_area_struct *vma, unsigned long uaddr,
 	if (check_shl_overflow(pgoff, PAGE_SHIFT, &off))
 		return -EINVAL;
 	/* A sliced VMA starts part way into the first vmalloc page. */
-	off += vma_page_slice_offset(vma, NULL, uaddr);
+	off += vma_page_slice_offset(vma, uaddr);
 
 	size = MM_PAGE_ALIGN(vma->vm_mm, size);
 
