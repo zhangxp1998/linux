@@ -405,7 +405,12 @@ static inline int ppps_vm_insert_pages(struct vm_area_struct *vma,
 #endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
 
 #ifdef CONFIG_USERFAULTFD
+ssize_t uffd_move_pages_once(struct userfaultfd_ctx *ctx, unsigned long dst_start,
+			     unsigned long src_start, unsigned long len, __u64 mode,
+			     bool *ppps_fallback);
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+ssize_t ppps_uffd_move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
+			     unsigned long src_start, unsigned long len, __u64 mode);
 bool ppps_uffd_copy_tuple_ok(struct vm_area_struct *dst_vma, unsigned long dst_addr,
 		unsigned long remaining, uffd_flags_t flags);
 int ppps_uffd_copy_tuple(pmd_t *dst_pmd, struct vm_area_struct *dst_vma, unsigned long dst_addr,
@@ -423,6 +428,13 @@ long ppps_uffd_move_slice(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 		pmd_t *dst_pmd, pmd_t dst_pmdval, spinlock_t *dst_ptl, spinlock_t *src_ptl,
 		struct folio *src_folio);
 #else
+static inline ssize_t ppps_uffd_move_pages(struct userfaultfd_ctx *ctx,
+					   unsigned long dst_start, unsigned long src_start,
+					   unsigned long len, __u64 mode)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline bool ppps_uffd_copy_tuple_ok(struct vm_area_struct *dst_vma,
 		unsigned long dst_addr, unsigned long remaining, uffd_flags_t flags)
 {
