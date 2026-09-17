@@ -2611,6 +2611,29 @@ failed_nolock:
 	return error;
 }
 
+/* Complete a locked cache lookup, including the swap-in shortcut. */
+static int shmem_complete_folio(struct inode *inode, pgoff_t index,
+		struct folio *folio, struct folio **foliop,
+		struct vm_fault *vmf, vm_fault_t *fault_type)
+{
+	struct vm_area_struct *vma = vmf ? vmf->vma : NULL;
+
+	/* Check under the folio lock, including after swap-in and fill retries. */
+	if (vma && ppps_mm_is_compat(vma->vm_mm) && userfaultfd_missing(vma)) {
+		if (!(shmem_ppps_uffd_slices(SHMEM_I(inode), index) &
+		      BIT(vma_address_to_slice(vma, vmf->address)))) {
+			folio_unlock(folio);
+			folio_put(folio);
+			*fault_type = handle_userfault(vmf, VM_UFFD_MISSING);
+			return 0;
+		}
+	} else if (vma) {
+		shmem_ppps_uffd_forget(SHMEM_I(inode), index);
+	}
+	*foliop = folio;
+	return 0;
+}
+
 /*
  * shmem_get_folio_gfp - find page in cache, or get from swap, or allocate
  *
@@ -2662,7 +2685,8 @@ repeat:
 			*foliop = folio;
 			return error;
 		}
-		goto out;
+		return shmem_complete_folio(inode, index, folio, foliop,
+					    vmf, fault_type);
 	}
 
 	if (folio) {
@@ -2795,20 +2819,7 @@ clear:
 		goto unlock;
 	}
 out:
-	/* Check under the folio lock, including after swap-in and fill retries. */
-	if (vma && ppps_mm_is_compat(vma->vm_mm) && userfaultfd_missing(vma)) {
-		if (!(shmem_ppps_uffd_slices(SHMEM_I(inode), index) &
-		      BIT(vma_address_to_slice(vma, vmf->address)))) {
-			folio_unlock(folio);
-			folio_put(folio);
-			*fault_type = handle_userfault(vmf, VM_UFFD_MISSING);
-			return 0;
-		}
-	} else if (vma) {
-		shmem_ppps_uffd_forget(SHMEM_I(inode), index);
-	}
-	*foliop = folio;
-	return 0;
+	return shmem_complete_folio(inode, index, folio, foliop, vmf, fault_type);
 
 	/*
 	 * Error recovery.
@@ -3401,12 +3412,15 @@ static inline int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t p
 }
 #endif
 
-int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
-			   struct vm_area_struct *dst_vma,
-			   unsigned long dst_addr,
-			   unsigned long src_addr,
-			   uffd_flags_t flags,
-			   struct folio **foliop)
+/*
+ * Install a new cache folio using the caller's reserved inode block. On
+ * failure, leave block accounting to the caller. Only a cache insertion
+ * collision requests a retry; an occupied destination PTE is terminal.
+ */
+static int shmem_mfill_atomic_pte_new(pmd_t *dst_pmd,
+				      struct vm_area_struct *dst_vma, unsigned long dst_addr,
+				      unsigned long src_addr, uffd_flags_t flags,
+				      struct folio **foliop, bool *retry)
 {
 	struct inode *inode = file_inode(dst_vma->vm_file);
 	struct shmem_inode_info *info = SHMEM_I(inode);
@@ -3418,43 +3432,8 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 	int ret;
 	pgoff_t max_off;
 	bool ppps_compat = ppps_mm_is_compat(dst_vma->vm_mm);
-	unsigned int nofs_flags = 0;
 
-	if (shmem_inode_acct_blocks(inode, 1)) {
-		/*
-		 * We may have got a page, returned -ENOENT triggering a retry,
-		 * and now we find ourselves with -ENOMEM. Release the page, to
-		 * avoid a BUG_ON in our caller.
-		 */
-		if (unlikely(*foliop)) {
-			folio_put(*foliop);
-			*foliop = NULL;
-		}
-		return -ENOMEM;
-	}
-
-	/*
-	 * Keep the page-cache folio, slice mask, contents, and PTE installation
-	 * in one transaction.  Otherwise concurrent UFFDIO_COPY operations for
-	 * sibling slices can race initial folio insertion and strand a locked
-	 * winner while another operation retries it.
-	 */
-	if (ppps_compat) {
-		nofs_flags = memalloc_nofs_save();
-		shmem_ppps_uffd_lock(info);
-	}
-repeat:
-	if (ppps_compat) {
-		struct folio *existing;
-
-		ret = shmem_ppps_mfill_existing_slice(inode, pgoff, dst_pmd,
-						      dst_vma, dst_addr, src_addr,
-						      flags, gfp, foliop,
-						      &existing);
-		if (existing || ret)
-			goto out_unacct_blocks;
-	}
-
+	*retry = false;
 	if (!*foliop) {
 		unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
 		unsigned long offset = vma_page_slice_offset(dst_vma, dst_addr);
@@ -3462,7 +3441,7 @@ repeat:
 		ret = -ENOMEM;
 		folio = shmem_alloc_folio(gfp, 0, info, pgoff);
 		if (!folio)
-			goto out_unacct_blocks;
+			return ret;
 
 		/* Only one slice is filled below; the rest must not leak. */
 		if (ppps_compat)
@@ -3497,7 +3476,7 @@ repeat:
 				*foliop = folio;
 				ret = -ENOENT;
 				/* don't free the page */
-				goto out_unacct_blocks;
+				return ret;
 			}
 
 			flush_dcache_folio(folio);
@@ -3528,14 +3507,9 @@ repeat:
 		goto out_release;
 	ret = shmem_add_to_page_cache(folio, mapping, pgoff, NULL, gfp);
 	if (ret) {
-		if (ret == -EEXIST && ppps_compat) {
-			folio_unlock(folio);
-			folio_put(folio);
-			goto repeat;
-		}
+		*retry = ret == -EEXIST && ppps_compat;
 		goto out_release;
 	}
-
 	if (ppps_compat) {
 		ret = shmem_ppps_uffd_set_slices(info, pgoff,
 				BIT(vma_address_to_slice(dst_vma, dst_addr)),
@@ -3571,18 +3545,93 @@ repeat:
 
 	shmem_recalc_inode(inode, 1, 0);
 	folio_unlock(folio);
-	if (ppps_compat) {
-		shmem_ppps_uffd_unlock(info);
-		memalloc_nofs_restore(nofs_flags);
-	}
 	return 0;
 out_delete_from_cache:
 	filemap_remove_folio(folio);
 out_release:
 	folio_unlock(folio);
 	folio_put(folio);
+	return ret;
+}
+
+int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
+			   struct vm_area_struct *dst_vma,
+			   unsigned long dst_addr,
+			   unsigned long src_addr,
+			   uffd_flags_t flags,
+			   struct folio **foliop)
+{
+	struct inode *inode = file_inode(dst_vma->vm_file);
+	struct shmem_inode_info *info = SHMEM_I(inode);
+	struct address_space *mapping = inode->i_mapping;
+	gfp_t gfp = mapping_gfp_mask(mapping);
+	pgoff_t pgoff = linear_page_index(dst_vma, dst_addr);
+	unsigned int nofs_flags = 0;
+	bool ppps_compat = ppps_mm_is_compat(dst_vma->vm_mm);
+	bool blocks_reserved = false;
+	bool retry;
+	int ret;
+
+	/*
+	 * Keep the page-cache folio, slice mask, contents, and PTE installation
+	 * in one transaction.  Otherwise concurrent UFFDIO_COPY operations for
+	 * sibling slices can race initial folio insertion and strand a locked
+	 * winner while another operation retries it.
+	 */
+	if (ppps_compat) {
+		nofs_flags = memalloc_nofs_save();
+		shmem_ppps_uffd_lock(info);
+	}
+	for (;;) {
+		if (ppps_compat) {
+			struct folio *existing;
+
+			ret = shmem_ppps_mfill_existing_slice(inode, pgoff, dst_pmd,
+							      dst_vma, dst_addr, src_addr,
+							      flags, gfp, foliop,
+							      &existing);
+			if (existing || ret)
+				goto out_unacct_blocks;
+		}
+
+		/* Existing PPPS folios need no new cache-block reservation. */
+		if (!blocks_reserved) {
+			if (shmem_inode_acct_blocks(inode, 1)) {
+				/* Drop a copy page retained for the lockless retry. */
+				if (unlikely(*foliop)) {
+					folio_put(*foliop);
+					*foliop = NULL;
+				}
+				ret = -ENOMEM;
+				break;
+			}
+			blocks_reserved = true;
+		}
+
+		ret = shmem_mfill_atomic_pte_new(dst_pmd, dst_vma, dst_addr,
+						 src_addr, flags, foliop, &retry);
+		if (!retry)
+			break;
+
+		/* Re-check the cache winner without retaining the losing folio. */
+		cond_resched();
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
+			break;
+		}
+	}
+	if (ret)
+		goto out_unacct_blocks;
+
+	if (ppps_compat) {
+		shmem_ppps_uffd_unlock(info);
+		memalloc_nofs_restore(nofs_flags);
+	}
+	return 0;
+
 out_unacct_blocks:
-	shmem_inode_unacct_blocks(inode, 1);
+	if (blocks_reserved)
+		shmem_inode_unacct_blocks(inode, 1);
 	if (ppps_compat) {
 		shmem_ppps_uffd_unlock(info);
 		memalloc_nofs_restore(nofs_flags);
@@ -3876,7 +3925,7 @@ static ssize_t shmem_file_splice_read(struct file *in, loff_t *ppos,
 			break;
 		}
 		if (folio) {
-			shmem_ppps_uffd_forget(SHMEM_I(inode), index);
+			shmem_ppps_uffd_forget(SHMEM_I(inode), *ppos >> PAGE_SHIFT);
 			folio_unlock(folio);
 
 			page = folio_file_page(folio, index);
@@ -6233,6 +6282,8 @@ static int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t pgoff,
 		staging = shmem_alloc_folio(gfp, 0, info, pgoff);
 		if (!staging)
 			goto out;
+		/* A retry may promote this staging folio into the page cache. */
+		folio_zero_range(staging, 0, folio_size(staging));
 		kaddr = kmap_local_folio(staging, 0);
 		if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
 			pagefault_disable();
