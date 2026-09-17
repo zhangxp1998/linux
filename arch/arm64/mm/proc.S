@@ -136,8 +136,8 @@ SYM_FUNC_START(cpu_do_resume)
 	bfi	x8, x7, TCR_T0SZ_OFFSET, TCR_TxSZ_WIDTH
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 	/* TTBR0 still contains the native-granule idmap. */
-	ubfx	x7, x7, #14, #2
-	bfi	x8, x7, #14, #2
+	ubfx	x7, x7, #TCR_TG0_SHIFT, #2
+	bfi	x8, x7, #TCR_TG0_SHIFT, #2
 #endif
 
 	msr	tcr_el1, x8

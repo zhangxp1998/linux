@@ -1394,18 +1394,9 @@ static inline pmd_t pmd_modify(pmd_t pmd, pgprot_t newprot)
 	return pte_pmd(pte_modify(pmd_pte(pmd), newprot));
 }
 
-extern int __ptep_set_access_flags_anysz(struct vm_area_struct *vma,
-					 unsigned long address, pte_t *ptep,
-					 pte_t entry, int dirty,
-					 unsigned long pgsize);
-
-static inline int __ptep_set_access_flags(struct vm_area_struct *vma,
-					  unsigned long address, pte_t *ptep,
-					  pte_t entry, int dirty)
-{
-	return __ptep_set_access_flags_anysz(vma, address, ptep, entry, dirty,
-					     MM_PAGE_SIZE(vma->vm_mm));
-}
+extern int __ptep_set_access_flags(struct vm_area_struct *vma,
+				   unsigned long address, pte_t *ptep,
+				   pte_t entry, int dirty);
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 #define __HAVE_ARCH_PMDP_SET_ACCESS_FLAGS

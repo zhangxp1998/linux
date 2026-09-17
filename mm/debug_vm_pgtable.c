@@ -473,7 +473,7 @@ static void __init p4d_basic_tests(struct pgtable_debug_args *args)
 
 static void __init pxd_index_tests(struct pgtable_debug_args *args)
 {
-	unsigned long address = args->vaddr;
+	unsigned long address __maybe_unused = args->vaddr;
 
 	pr_debug("Validating page table indices\n");
 
@@ -490,7 +490,7 @@ static void __init pxd_index_tests(struct pgtable_debug_args *args)
 #ifdef __PAGETABLE_P4D_FOLDED
 	WARN_ON(MM_PTRS_PER_P4D(args->mm) != 1);
 	WARN_ON(MM_P4D_SHIFT(args->mm) != MM_PGD_SHIFT(args->mm));
-	WARN_ON(p4d_index(address));
+	WARN_ON(p4d_index_mm(args->mm, address));
 #endif
 }
 
