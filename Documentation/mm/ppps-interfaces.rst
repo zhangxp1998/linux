@@ -72,10 +72,32 @@ The older pin_user_pages_with_offsets() and get_vaddr_frames() count-based
 interfaces remain compatibility wrappers. New call sites should use the
 byte-range interfaces rather than reconstructing byte spans themselves.
 
+Module interfaces and backing alignment
+=======================================
+
+An EXPORT_SYMBOL declaration is not a vendor KMI guarantee. In this branch,
+vm_insert_page_native() is exported for in-tree consumers such as Rust Binder,
+but is not in the Pixel GKI symbol list. In-tree module dependencies can keep
+it through symbol trimming without making it available as a supported vendor
+interface. Vendor modules must use helpers included in their target kernel's
+KMI list; adding a new dependency requires a separate KMI update.
+
+vm_insert_page_native() inserts a whole native page, whereas
+vm_insert_page_slice() identifies one physical slice explicitly. Neither is
+a substitute for the other without reviewing the mapping's byte geometry.
+
+udmabuf can export 4K-aligned subranges for compat processes. Importers with
+a native-page-sized backing contract must validate that contract before
+initializing their own objects. In particular, a custom GEM importer which
+bypasses drm_gem_dma_prime_import_sg_table() must check the dma-buf size
+before drm_gem_private_object_init(). The common helper's validation does
+not cover private importer callbacks. Rejecting an unsupported import does
+not require disabling 4K udmabuf exports globally.
+
 RSS readers
 ===========
 
-Raw FILE/SHMEM counters count process-page mappings; ANON/SWAP counters use
+Raw FILE/SHMEM/SWAP counters count process-page mappings; ANON uses
 native-page units. This storage choice belongs to accounting code, not to
 proc, trace or OOM consumers.
 
@@ -91,6 +113,50 @@ Do not round the file and shmem components independently. These reads are
 not atomic snapshots and do not change the synchronization or rounding
 guarantees of the underlying counters. Storage units and proc/trace ABIs
 are unchanged.
+
+File PSS fast path
+==================
+
+A page_ext counter records the number of compat file PTEs referencing each
+native page. It is not a process count, and is never divided by the number
+of slices to approximate PSS. A native reader may use the existing native
+mapcount when this counter is zero. With exactly one compat PTE and N native
+mappings, the compat slice has N+1 mappings and the other three have N.
+A native PTE's PSS is therefore 12KiB/N + 4KiB/(N+1), while the compat PTE's
+PSS is 4KiB/(N+1). Neither requires locating the single shared slice. The
+native entry is not exclusive; the compat entry is exclusive only if N=0.
+The implementation retains per-slice fixed-point rounding and private/shared
+byte accounting, rather than charging all 16KiB at a single divisor.
+Larger compat counts retain the per-slice reverse-map walk and the existing
+PSS and pagemap exclusivity semantics.
+One process mapping all four slices and four processes mapping one slice
+can have equal counters but different sharing distributions.
+
+Additions (including fork's file-rmap duplication) increment the counter
+before the ordinary rmap update. Removal decrements it after the rmap update.
+Moving a PTE in the same mm does not change the count; migration removes the
+old page's mappings and adds the new page's mappings. Folio splitting keeps
+the counters associated with the same native pages. Missing metadata and
+saturated counters retain the slow path. Like native mapcounts and the
+existing reverse-map walk, these statistics are not atomic snapshots of
+all processes; the counter is not an ownership or memory-safety primitive.
+
+The counter has a 32-bit payload in an 8-byte-aligned page_ext slot on arm64
+(about 4 MiB for 8 GiB of 16K pages, in addition to other page_ext clients).
+No struct page layout, public rmap function signature or proc unit changes.
+The selftest smaps_native_fallback_ppps checks zero/single/multiple compat
+PTEs, mixed sharing, partial unmap, mremap and fork/exit transitions using
+normal userspace interfaces.
+
+Pagemap entries
+===============
+
+/proc/PID/pagemap is indexed in the target process's page units. The PFN
+field remains a native PAGE_SHIFT PFN: four compat entries may identify the
+same 16K backing page. It does not encode the physical slice offset, so a
+compat pagemap entry alone is not a complete byte physical address. Kernel
+consumers needing the exact byte range must use the page_span returned by
+the range GUP interfaces rather than infer the slice from a PFN or a VMA.
 
 Native-only device APIs
 ======================
@@ -130,3 +196,13 @@ reference does not guarantee page-cache membership: acquire the lock, then
 re-read and validate folio_mapping() before using its inode and index.
 Do not acquire the inode UFFD mutex while holding the folio lock. Internal
 truncate/hole lookups and UFFD's SGP_NOALLOC path do not adopt this policy.
+
+Driver-RAM accounting
+=====================
+
+A driver mapping may supply normal pages without a page-cache mapping.
+The slice reverse walk cannot recover their sharing distribution. In that
+case use folio_precise_page_mapcount() for the selected native page, not the
+whole large folio. This conservative fallback avoids reporting shared RAM
+as exclusive, but can underestimate compat PSS when several slice PTEs
+belong to one process; it is not precise per-process or per-slice accounting.
