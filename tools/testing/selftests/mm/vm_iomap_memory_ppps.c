@@ -64,10 +64,10 @@ static int run_test(void)
 	bool mapping_ok;
 	unsigned int guard;
 	void *past_end;
-	int fd;
+	int fd, unaligned_fd;
 
 	ksft_print_header();
-	ksft_set_plan(11);
+	ksft_set_plan(14);
 
 	fd = ppps_open_fixture_or_skip("/dev/vm_iomap_memory_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the vm_iomap_memory test device\n");
@@ -152,6 +152,25 @@ static int run_test(void)
 			 "reject a 4K mapping starting at the buffer end\n");
 	if (past_end != MAP_FAILED)
 		munmap(past_end, PROCESS_PAGE_SIZE);
+
+	unaligned_fd = ppps_open_fixture_or_skip("/dev/vm_iomap_unaligned_ppps", O_RDWR);
+	ksft_test_result(unaligned_fd >= 0,
+			 "open the unaligned vm_iomap_memory test device\n");
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_SHARED,
+		       unaligned_fd, 0);
+	value = 0;
+	ksft_test_result(mapping != MAP_FAILED &&
+			 read_byte(mapping, &value) && value == FIRST_MARKER + 1,
+			 "an unaligned resource maps its first physical 4K slice\n");
+	if (mapping != MAP_FAILED)
+		munmap(mapping, PROCESS_PAGE_SIZE);
+	past_end = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ, MAP_SHARED,
+			unaligned_fd, PROCESS_PAGE_SIZE);
+	ksft_test_result(past_end == MAP_FAILED,
+			 "reject an offset at the end of an unaligned resource\n");
+	if (past_end != MAP_FAILED)
+		munmap(past_end, PROCESS_PAGE_SIZE);
+	close(unaligned_fd);
 	close(fd);
 	ksft_finished();
 }

@@ -32,7 +32,7 @@ static int run_test(void)
 	int i;
 
 	ksft_print_header();
-	ksft_set_plan(7);
+	ksft_set_plan(11);
 
 	fd = ppps_open_fixture_or_skip("/dev/drm_gem_mmap_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the DRM render node\n");
@@ -56,6 +56,28 @@ static int run_test(void)
 	}
 
 	munmap(mapping, MAPPING_SIZE);
+	/* GEM offsets are object cookies, not byte offsets within the object. */
+	for (i = 1; i < 4; i++) {
+		errno = 0;
+		mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+			       MAP_SHARED, fd, create.offset + i * PROCESS_PAGE_SIZE);
+		ksft_test_result(mapping == MAP_FAILED && errno == EINVAL,
+				 "reject GEM cookie with slice offset %d\n", i);
+		if (mapping != MAP_FAILED)
+			munmap(mapping, PROCESS_PAGE_SIZE);
+	}
+	mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, create.offset);
+	{
+		bool ok = mapping != MAP_FAILED;
+
+		if (ok)
+			for (i = 0; i < 4; i++)
+				ok &= mapping[i * PROCESS_PAGE_SIZE] == values[i];
+		ksft_test_result(ok, "rejected cookies leave the valid object intact\n");
+	}
+	if (mapping != MAP_FAILED)
+		munmap(mapping, MAPPING_SIZE);
 	close(fd);
 	ksft_finished();
 }

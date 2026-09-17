@@ -22,4 +22,11 @@ struct page_range_ppps_args {
 };
 
 #define PAGE_RANGE_PPPS_IOCTL _IOWR('i', 0x72, struct page_range_ppps_args)
+
+struct file_refs_ppps_args {
+	__s32 fd;
+	__s32 refs;
+};
+
+#define FILE_REFS_PPPS_IOCTL _IOWR('i', 0x73, struct file_refs_ppps_args)
 #endif

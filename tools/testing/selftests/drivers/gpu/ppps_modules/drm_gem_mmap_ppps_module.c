@@ -53,7 +53,7 @@ static int test_object_mmap(struct drm_gem_object *obj,
 	vma->vm_ops = &test_vm_ops;
 	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
 	return remap_pfn_range(vma, vma->vm_start,
-			       virt_to_pfn((void *)test_obj->buffer),
+			       page_to_pfn(virt_to_page((void *)test_obj->buffer)),
 			       vma->vm_end - vma->vm_start, vma->vm_page_prot);
 }
 

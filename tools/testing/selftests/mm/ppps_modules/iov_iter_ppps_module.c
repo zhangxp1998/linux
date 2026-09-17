@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include <linux/fs.h>
+#include <linux/file.h>
 #include <linux/highmem.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/pagemap.h>
+#include <linux/shmem_fs.h>
 #include <linux/uaccess.h>
 #include <linux/uio.h>
 
@@ -15,6 +18,49 @@
 #define PROCESS_PAGE_SIZE 4096UL
 
 static const u8 expected[] = { 0x31, 0x72, 0x93, 0xb4 };
+
+/* An owned, fully initialized mapping with deliberately non-linear slices. */
+static int page_range_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	static const unsigned int slices[] = { 3, 1, 0, 2 };
+	unsigned long size = MM_PAGE_SIZE(vma->vm_mm);
+	struct page *page;
+	void *base;
+	int ret = 0, i;
+
+	if (vma_file_offset(vma) || vma->vm_end - vma->vm_start != 4 * size)
+		return -EINVAL;
+	if (ppps_mm_is_compat(vma->vm_mm)) {
+		page = alloc_page(GFP_KERNEL | __GFP_ZERO);
+		if (!page)
+			return -ENOMEM;
+		base = kmap_local_page(page);
+		for (i = 0; i < ARRAY_SIZE(expected); i++)
+			memset(base + i * size, expected[i], size);
+		kunmap_local(base);
+		for (i = 0; i < ARRAY_SIZE(slices); i++) {
+			ret = vm_insert_page_slice(vma, vma->vm_start + i * size,
+						   page, slices[i]);
+			if (ret)
+				break;
+		}
+		put_page(page);
+		return ret;
+	}
+	for (i = 0; i < ARRAY_SIZE(expected); i++) {
+		page = alloc_page(GFP_KERNEL | __GFP_ZERO);
+		if (!page)
+			return -ENOMEM;
+		base = kmap_local_page(page);
+		memset(base, expected[i], size);
+		kunmap_local(base);
+		ret = vm_insert_page(vma, vma->vm_start + i * size, page);
+		put_page(page);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
 
 static int check_page_value(struct page *page, size_t offset, u8 value)
 {
@@ -274,6 +320,37 @@ static long page_range_ioctl(unsigned long arg)
 		       0;
 }
 
+/* Observe only the test's small shmem backing, with no persistent reference. */
+static long file_refs_ioctl(unsigned long arg)
+{
+	struct file_refs_ppps_args request;
+	struct folio *folio;
+	struct file *file;
+	long ret = 0;
+
+	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
+		return -EFAULT;
+	file = fget(request.fd);
+	if (!file)
+		return -EBADF;
+	if (!shmem_file(file) || i_size_read(file_inode(file)) != PAGE_SIZE) {
+		ret = -EINVAL;
+		goto out_file;
+	}
+	folio = filemap_get_folio(file->f_mapping, 0);
+	if (IS_ERR(folio)) {
+		ret = PTR_ERR(folio);
+		goto out_file;
+	}
+	request.refs = folio_ref_count(folio);
+	folio_put(folio);
+	if (copy_to_user((void __user *)arg, &request, sizeof(request)))
+		ret = -EFAULT;
+out_file:
+	fput(file);
+	return ret;
+}
+
 static long iov_iter_ppps_ioctl(struct file *file, unsigned int cmd,
 				unsigned long arg)
 {
@@ -282,6 +359,8 @@ static long iov_iter_ppps_ioctl(struct file *file, unsigned int cmd,
 
 	if (cmd == PAGE_RANGE_PPPS_IOCTL)
 		return page_range_ioctl(arg);
+	if (cmd == FILE_REFS_PPPS_IOCTL)
+		return file_refs_ioctl(arg);
 	if (cmd != IOV_ITER_PPPS_IOCTL)
 		return -EINVAL;
 	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
@@ -308,6 +387,7 @@ static long iov_iter_ppps_ioctl(struct file *file, unsigned int cmd,
 
 static const struct file_operations iov_iter_ppps_fops = {
 	.owner = THIS_MODULE,
+	.mmap = page_range_mmap,
 	.unlocked_ioctl = iov_iter_ppps_ioctl,
 	.compat_ioctl = iov_iter_ppps_ioctl,
 };

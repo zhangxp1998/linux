@@ -49,6 +49,24 @@ static bool mmap_edge_case(int fd, unsigned long offset, bool readable)
 	return result;
 }
 
+static bool native_partial_insert_rolled_back(int fd, bool *conflict_ok)
+{
+	unsigned char value;
+	unsigned char *mapping;
+	bool prefix_faults;
+
+	mapping = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd,
+		       VM_MAP_PAGES_PPPS_NATIVE_PARTIAL * PROCESS_PAGE_SIZE);
+	if (mapping == MAP_FAILED)
+		return false;
+	prefix_faults = !read_mapping(mapping, &value);
+	*conflict_ok = read_mapping(mapping + PROCESS_PAGE_SIZE, &value) &&
+		value == 0x44;
+	munmap(mapping, NATIVE_PAGE_SIZE);
+	return prefix_faults;
+}
+
 static int run_test(void)
 {
 	struct sigaction action = {
@@ -58,12 +76,13 @@ static int run_test(void)
 	unsigned char *mapping;
 	bool readable;
 	bool marker_ok;
+	bool conflict_ok = false;
 	unsigned int page;
 	int fd, status;
 	pid_t pid;
 
 	ksft_print_header();
-	ksft_set_plan(10);
+	ksft_set_plan(12);
 
 	fd = ppps_open_fixture_or_skip("/dev/vm_map_pages_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the vm_map_pages test device\n");
@@ -129,6 +148,10 @@ static int run_test(void)
 			 "vm_insert_pages rejects too many native pages\n");
 	ksft_test_result(mmap_edge_case(fd, VM_MAP_PAGES_PPPS_BUSY, true),
 			 "vm_insert_pages reports a duplicate PTE and remaining page\n");
+	ksft_test_result(native_partial_insert_rolled_back(fd, &conflict_ok),
+			 "vm_insert_page_native rolls back a prefix on failure\n");
+	ksft_test_result(conflict_ok,
+			 "rollback preserves the pre-existing conflicting PTE\n");
 
 	munmap(mapping, MAPPING_SIZE);
 	close(fd);

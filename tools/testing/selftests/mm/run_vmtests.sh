@@ -349,6 +349,7 @@ CATEGORY="mmap" run_test ./mincore_ppps --native
 CATEGORY="mmap" run_ppps_module_test gup_retry ./mmap_action_cleanup_ppps
 CATEGORY="mmap" run_test ./selinux_status_mmap_ppps.sh
 CATEGORY="mmap" run_ppps_module_test vm_iomap_memory ./vm_iomap_memory_ppps
+CATEGORY="mmap" run_ppps_module_test remap_pfn_cow ./remap_pfn_cow_ppps
 CATEGORY="mmap" run_ppps_module_test dma_mmap_attrs ./dma_mmap_ppps attrs
 CATEGORY="mmap" run_ppps_module_test dma_mmap_pages ./dma_mmap_ppps pages
 CATEGORY="mmap" run_test ./iommu_dma_mmap_ppps.sh
@@ -395,12 +396,14 @@ fi
 CATEGORY="gup_test" run_test ./gup_test -ct -F 0x1 0 19 0x1000
 CATEGORY="gup_test" run_test ./gup_longterm
 CATEGORY="gup_test" run_ppps_module_test gup_retry ./gup_retry_ppps
+CATEGORY="gup_test" run_ppps_module_test frame_vector ./frame_vector_ppps
 CATEGORY="gup_test" run_ppps_module_test iov_iter ./iov_iter_ppps
 CATEGORY="gup_test" run_ppps_module_test iov_iter ./page_range_ppps
 CATEGORY="gup_test" run_ppps_module_test iov_iter ./page_range_ppps --native
 CATEGORY="gup_test" run_ppps_module_test fault_in ./fault_in_ppps
 CATEGORY="mmap" run_test ./futex_shared_ppps
 CATEGORY="mmap" run_test ./xdp_umem_ppps
+CATEGORY="mmap" run_ppps_module_test xdp_pin_probe ./xdp_umem_race_ppps
 CATEGORY="mmap" run_test ./tcp_zerocopy_align_ppps
 
 CATEGORY="userfaultfd" run_test ./uffd-unit-tests
@@ -409,6 +412,8 @@ CATEGORY="userfaultfd" run_test ./userfaultfd_mixed_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_remap_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_retry_ppps
 CATEGORY="userfaultfd" run_test ./userfaultfd_shmem_ppps
+CATEGORY="userfaultfd" run_test ./userfaultfd_shmem_boundaries_ppps
+CATEGORY="userfaultfd" run_test ./userfaultfd_shmem_boundaries_ppps --native
 CATEGORY="userfaultfd" run_test ./userfaultfd_zeropage_ppps
 uffd_stress_bin=./uffd-stress
 CATEGORY="userfaultfd" run_test ${uffd_stress_bin} anon 20 16
@@ -598,6 +603,8 @@ then
 fi
 
 CATEGORY="pagemap" run_test ./pagemap_ioctl
+CATEGORY="pagemap" run_test ./pagemap_ioctl_ppps
+CATEGORY="pagemap" run_test ./pagemap_scan_ppps
 
 CATEGORY="pfnmap" run_test ./pfnmap
 CATEGORY="pfnmap" run_test ./remap_pfn_range_ppps
