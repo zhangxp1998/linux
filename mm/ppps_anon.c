@@ -25,6 +25,7 @@
 #include <linux/swapops.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/vmstat.h>
+#include <linux/xarray.h>
 
 #include <asm/cacheflush.h>
 #include <asm/cpufeature.h>

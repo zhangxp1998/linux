@@ -928,7 +928,7 @@ copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 	swp_entry_t entry = pte_to_swp_entry(orig_pte);
 
 	if (likely(!non_swap_entry(entry))) {
-		if (swap_duplicate(entry) < 0)
+		if (ppps_swap_pte_duplicate(dst_vma, dst_pte, addr, entry) < 0)
 			return -EIO;
 
 		/* make sure dst_mm is on swapoff's mmlist. */
@@ -1792,8 +1792,10 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
 		nr = swap_pte_batch(pte, max_nr, ptent);
 		rss[MM_SWAPENTS] -= nr;
 		trace_android_vh_swapmem_gather_add_bypass(vma->vm_mm, entry, nr, &bypass);
-		if (!bypass)
+		if (!bypass) {
+			ppps_swap_pte_remove(vma, pte, addr, nr, entry);
 			free_swap_and_cache_nr(entry, nr);
+		}
 	} else if (is_migration_entry(entry)) {
 		struct folio *folio = pfn_swap_entry_folio(entry);
 
@@ -5268,6 +5270,7 @@ check_folio:
 	 * We're already holding a reference on the page but haven't mapped it
 	 * yet.
 	 */
+	ppps_anon_swapin_remove_swap_refs(&ppps, entry);
 	swap_free_nr(entry, nr_pages);
 	ppps_anon_swapin_release(&ppps, entry, &exclusive);
 	if (should_try_to_free_swap(folio, vma, vmf->flags))

@@ -379,6 +379,9 @@ CATEGORY="mmap" run_ppps_module_test pagewalk ./pagewalk_ppps
 CATEGORY="mmap" run_ppps_module_test folio_within_range ./folio_within_range_ppps
 CATEGORY="mmap" run_test ./remap_file_pages_ppps
 CATEGORY="mmap" run_test ./shmem_swap_usage_ppps
+CATEGORY="mmap" run_test ./shmem_quota_ppps
+CATEGORY="mmap" run_test ./swap_header_ppps
+CATEGORY="mmap" run_test ./swap_pss_ppps
 CATEGORY="mmap" run_test ./trace_ring_buffer_mmap_ppps
 CATEGORY="mmap" run_test ./truncate_ppps
 
