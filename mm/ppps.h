@@ -6,6 +6,7 @@
 #define MM_PPPS_H
 
 #include <linux/pagemap.h>
+#include <linux/swap.h>
 #include <linux/userfaultfd_k.h>
 
 #include "vma.h"
@@ -128,6 +129,14 @@ void ppps_anon_unmap_commit_share(struct ppps_anon_unmap_ctx *ctx);
 void ppps_anon_swapin_begin(struct ppps_anon_swapin_ctx *ctx,
 		struct vm_area_struct *vma, struct folio *folio,
 		pte_t *ptep, unsigned long address, swp_entry_t entry);
+int ppps_swap_pte_duplicate(struct vm_area_struct *vma, pte_t *ptep,
+			    unsigned long address, swp_entry_t entry);
+void ppps_swap_pte_remove(struct vm_area_struct *vma, pte_t *ptep,
+			  unsigned long address, unsigned int nr,
+			  swp_entry_t entry);
+void ppps_anon_swapin_remove_swap_refs(const struct ppps_anon_swapin_ctx *ctx,
+				       swp_entry_t entry);
+void ppps_swap_entry_reset(swp_entry_t entry);
 void ppps_anon_swapin_release(const struct ppps_anon_swapin_ctx *ctx,
 		swp_entry_t entry, bool *exclusive);
 bool ppps_anon_swapin_takes_ownership(const struct ppps_anon_swapin_ctx *ctx);
@@ -227,6 +236,29 @@ static inline void ppps_anon_unmap_commit_share(struct ppps_anon_unmap_ctx *ctx)
 static inline void ppps_anon_swapin_begin(struct ppps_anon_swapin_ctx *ctx,
 		struct vm_area_struct *vma, struct folio *folio,
 		pte_t *ptep, unsigned long address, swp_entry_t entry)
+{
+}
+
+static inline int ppps_swap_pte_duplicate(struct vm_area_struct *vma,
+					  pte_t *ptep, unsigned long address,
+					  swp_entry_t entry)
+{
+	return swap_duplicate(entry);
+}
+
+static inline void ppps_swap_pte_remove(struct vm_area_struct *vma,
+					pte_t *ptep, unsigned long address,
+					unsigned int nr, swp_entry_t entry)
+{
+}
+
+static inline void
+ppps_anon_swapin_remove_swap_refs(const struct ppps_anon_swapin_ctx *ctx,
+				  swp_entry_t entry)
+{
+}
+
+static inline void ppps_swap_entry_reset(swp_entry_t entry)
 {
 }
 

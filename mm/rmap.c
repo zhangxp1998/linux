@@ -1980,11 +1980,12 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 				goto walk_abort;
 			}
 
-			if (swap_duplicate(entry) < 0) {
+			if (ppps_swap_pte_duplicate(vma, pvmw.pte, address, entry) < 0) {
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				goto walk_abort;
 			}
 			if (arch_unmap_one(mm, vma, address, pteval) < 0) {
+				ppps_swap_pte_remove(vma, pvmw.pte, address, 1, entry);
 				swap_free(entry);
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				goto walk_abort;
@@ -1994,6 +1995,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			if (anon_exclusive &&
 			    ppps_anon_unmap_needs_share(&ppps) &&
 			    folio_try_share_anon_rmap_pte(folio, subpage)) {
+				ppps_swap_pte_remove(vma, pvmw.pte, address, 1, entry);
 				swap_free(entry);
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				goto walk_abort;

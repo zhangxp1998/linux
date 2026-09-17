@@ -1433,6 +1433,8 @@ static unsigned char __swap_entry_free_locked(struct swap_info_struct *si,
 	}
 
 	usage = count | has_cache;
+	if (!count)
+		ppps_swap_entry_reset(swp_entry(si->type, offset));
 	if (usage)
 		WRITE_ONCE(si->swap_map[offset], usage);
 	else
@@ -2186,6 +2188,7 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 		}
 	}
 setpte:
+	ppps_swap_pte_remove(vma, pte, addr, 1, entry);
 	set_pte_at(vma->vm_mm, addr, pte, new_pte);
 	swap_free(entry);
 out:
