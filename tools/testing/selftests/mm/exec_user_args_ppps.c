@@ -96,8 +96,7 @@ int main(int argc, char **argv)
 	if (argc == 2 && !strcmp(mode, "--owner"))
 		return run_compat_owner();
 	if (argc == 2 && !strcmp(mode, "--native"))
-		return sysconf(_SC_PAGESIZE) == PROCESS_PAGE_SIZE ||
-		       sysconf(_SC_PAGESIZE) == NATIVE_PAGE_SIZE ?
+		return sysconf(_SC_PAGESIZE) == NATIVE_PAGE_SIZE ?
 			EXIT_SUCCESS : EXIT_FAILURE;
 	return EXIT_FAILURE;
 }
