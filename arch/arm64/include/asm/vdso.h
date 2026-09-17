@@ -12,7 +12,11 @@
  */
 #define VDSO_LBASE	0x0
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+#define __VVAR_PAGES    3
+#else
 #define __VVAR_PAGES    2
+#endif
 
 #ifndef __ASSEMBLY__
 

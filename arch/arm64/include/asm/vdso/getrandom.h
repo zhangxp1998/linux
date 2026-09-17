@@ -9,10 +9,10 @@
 #include <asm/vdso/vsyscall.h>
 #include <vdso/datapage.h>
 
-/* PPPS tasks may use 4K pages even when the kernel uses 16K pages. */
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
-#define VGETRANDOM_PAGE_SHIFT 12
-#define VGETRANDOM_FALLBACK_ON_CROSS_PAGE
+/* The kernel selects a read-only geometry page for the mapping's mm. */
+extern const unsigned long _vdso_page_shift __attribute__((visibility("hidden")));
+#define VGETRANDOM_PAGE_SHIFT READ_ONCE(_vdso_page_shift)
 #endif
 
 /**
