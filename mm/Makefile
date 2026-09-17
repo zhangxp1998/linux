@@ -155,6 +155,7 @@ obj-$(CONFIG_TMPFS_QUOTA) += shmem_quota.o
 obj-$(CONFIG_PT_RECLAIM) += pt_reclaim.o
 obj-$(CONFIG_ARM64) += ppps.o
 obj-$(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) += ppps_anon.o ppps_gup.o
+obj-$(CONFIG_PPPS_KUNIT_TEST) += ppps_test.o
 ifeq ($(CONFIG_USERFAULTFD),y)
 obj-$(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) += ppps_uffd.o
 endif
