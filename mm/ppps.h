@@ -405,28 +405,29 @@ static inline int ppps_vm_insert_pages(struct vm_area_struct *vma,
 #endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
 
 #ifdef CONFIG_USERFAULTFD
+/* Carried across source-fault retries; only ppps_uffd.c interprets it. */
+struct ppps_uffd_copy_state {
+	unsigned long offset;
+	bool tuple;
+};
+
 ssize_t uffd_move_pages_once(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 			     unsigned long src_start, unsigned long len, __u64 mode,
 			     bool *ppps_fallback);
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 ssize_t ppps_uffd_move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 			     unsigned long src_start, unsigned long len, __u64 mode);
-bool ppps_uffd_copy_tuple_ok(struct vm_area_struct *dst_vma, unsigned long dst_addr,
-		unsigned long remaining, uffd_flags_t flags);
-int ppps_uffd_copy_tuple(pmd_t *dst_pmd, struct vm_area_struct *dst_vma, unsigned long dst_addr,
-		unsigned long src_addr, struct folio **foliop, bool *tuple_folio);
-bool ppps_uffd_move_tuple_ok(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
-		unsigned long dst_addr, unsigned long src_addr, unsigned long len);
-long ppps_uffd_move_tuple(struct mm_struct *mm, struct vm_area_struct *dst_vma,
-		struct vm_area_struct *src_vma, unsigned long dst_addr, unsigned long src_addr,
-		pte_t *dst_pte, pte_t *src_pte, pte_t orig_dst_pte, pte_t orig_src_pte,
-		pmd_t *dst_pmd, pmd_t dst_pmdval, spinlock_t *dst_ptl, spinlock_t *src_ptl,
-		struct folio **src_foliop, bool *ppps_fallback);
-long ppps_uffd_move_slice(struct mm_struct *mm, struct vm_area_struct *dst_vma,
-		struct vm_area_struct *src_vma, unsigned long dst_addr, unsigned long src_addr,
-		pte_t *dst_pte, pte_t *src_pte, pte_t orig_dst_pte, pte_t orig_src_pte,
-		pmd_t *dst_pmd, pmd_t dst_pmdval, spinlock_t *dst_ptl, spinlock_t *src_ptl,
-		struct folio *src_folio);
+long ppps_uffd_copy(pmd_t *pmd, struct vm_area_struct *vma,
+		unsigned long dst, unsigned long src, unsigned long remaining,
+		uffd_flags_t flags, struct folio **foliop,
+		struct ppps_uffd_copy_state *state);
+unsigned long ppps_uffd_copy_retry(struct ppps_uffd_copy_state *state,
+		struct vm_area_struct *vma, unsigned long dst, unsigned long *size);
+long ppps_uffd_move_present(struct vm_area_struct *dst_vma,
+		struct vm_area_struct *src_vma, unsigned long dst_addr,
+		unsigned long src_addr, unsigned long len,
+		pmd_t *dst_pmd, pmd_t *src_pmd, struct folio *folio,
+		pte_t orig_src_pte);
 #else
 static inline ssize_t ppps_uffd_move_pages(struct userfaultfd_ctx *ctx,
 					   unsigned long dst_start, unsigned long src_start,
@@ -435,40 +436,25 @@ static inline ssize_t ppps_uffd_move_pages(struct userfaultfd_ctx *ctx,
 	return -EOPNOTSUPP;
 }
 
-static inline bool ppps_uffd_copy_tuple_ok(struct vm_area_struct *dst_vma,
-		unsigned long dst_addr, unsigned long remaining, uffd_flags_t flags)
+static inline long ppps_uffd_copy(pmd_t *pmd, struct vm_area_struct *vma,
+		unsigned long dst, unsigned long src, unsigned long remaining,
+		uffd_flags_t flags, struct folio **foliop,
+		struct ppps_uffd_copy_state *state)
 {
-	return false;
+	return 0;
 }
 
-static inline int ppps_uffd_copy_tuple(pmd_t *dst_pmd, struct vm_area_struct *dst_vma,
-		unsigned long dst_addr, unsigned long src_addr, struct folio **foliop,
-		bool *tuple_folio)
+static inline unsigned long ppps_uffd_copy_retry(struct ppps_uffd_copy_state *state,
+		struct vm_area_struct *vma, unsigned long dst, unsigned long *size)
 {
-	return -EOPNOTSUPP;
+	return vma_page_slice_offset(vma, dst);
 }
 
-static inline bool ppps_uffd_move_tuple_ok(struct vm_area_struct *dst_vma,
-		struct vm_area_struct *src_vma, unsigned long dst_addr, unsigned long src_addr,
-		unsigned long len)
-{
-	return false;
-}
-
-static inline long ppps_uffd_move_tuple(struct mm_struct *mm, struct vm_area_struct *dst_vma,
-		struct vm_area_struct *src_vma, unsigned long dst_addr, unsigned long src_addr,
-		pte_t *dst_pte, pte_t *src_pte, pte_t orig_dst_pte, pte_t orig_src_pte,
-		pmd_t *dst_pmd, pmd_t dst_pmdval, spinlock_t *dst_ptl, spinlock_t *src_ptl,
-		struct folio **src_foliop, bool *ppps_fallback)
-{
-	return -EOPNOTSUPP;
-}
-
-static inline long ppps_uffd_move_slice(struct mm_struct *mm, struct vm_area_struct *dst_vma,
-		struct vm_area_struct *src_vma, unsigned long dst_addr, unsigned long src_addr,
-		pte_t *dst_pte, pte_t *src_pte, pte_t orig_dst_pte, pte_t orig_src_pte,
-		pmd_t *dst_pmd, pmd_t dst_pmdval, spinlock_t *dst_ptl, spinlock_t *src_ptl,
-		struct folio *src_folio)
+static inline long ppps_uffd_move_present(struct vm_area_struct *dst_vma,
+		struct vm_area_struct *src_vma, unsigned long dst_addr,
+		unsigned long src_addr, unsigned long len,
+		pmd_t *dst_pmd, pmd_t *src_pmd, struct folio *folio,
+		pte_t orig_src_pte)
 {
 	return -EOPNOTSUPP;
 }

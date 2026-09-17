@@ -769,8 +769,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
 	unsigned long src_addr, dst_addr;
 	long copied;
 	struct folio *folio;
-	bool tuple_folio = false;
-	unsigned long pending_offset = 0;
+	struct ppps_uffd_copy_state copy_state = {};
 	unsigned long page_size = MM_PAGE_SIZE(ctx->mm);
 
 	/*
@@ -875,67 +874,28 @@ retry:
 		 * tables under us; pte_offset_map_lock() will deal with that.
 		 */
 
-		/*
-		 * PPPS: try to fill a whole native page (all its compat
-		 * slices) from one folio before falling back to the
-		 * per-compat-page path.  Skipped when a folio is already
-		 * pending for the other path.
-		 */
-		step = page_size;
-		if (ppps_uffd_copy_tuple_ok(dst_vma, dst_addr,
-					  src_start + len - src_addr, flags) &&
-		    (!folio || tuple_folio)) {
-			err = ppps_uffd_copy_tuple(dst_pmd, dst_vma,
-							  dst_addr, src_addr,
-							  &folio, &tuple_folio);
-			if (!err) {
-				step = PAGE_SIZE;
-			} else if (err == -EBUSY) {
-				/*
-				 * Not all slices were none.  Redo this tuple
-				 * one compat page at a time so the ioctl keeps
-				 * its exact stop-at-first-EEXIST semantics.
-				 */
-				err = mfill_atomic_pte(dst_pmd, dst_vma,
-						       dst_addr, src_addr,
-						       flags, &folio);
-			}
-		} else {
-			if (unlikely(folio && tuple_folio)) {
-				/* The tuple path became ineligible; drop it. */
-				folio_put(folio);
-				folio = NULL;
-				tuple_folio = false;
-			}
-			/*
-			 * The VMA may have been replaced while the mmap lock
-			 * was dropped for the copy, moving dst_addr to another
-			 * slice of its page.  The data sits in the old slice,
-			 * so start over rather than install it misplaced.
-			 */
-			if (unlikely(folio && pending_offset !=
-				     vma_page_slice_offset(dst_vma,
-							   dst_addr))) {
-				folio_put(folio);
-				folio = NULL;
-			}
+		err = ppps_uffd_copy(dst_pmd, dst_vma, dst_addr, src_addr,
+				     src_start + len - src_addr, flags,
+				     &folio, &copy_state);
+		step = err > 0 ? err : page_size;
+		if (!err)
 			err = mfill_atomic_pte(dst_pmd, dst_vma, dst_addr,
 					       src_addr, flags, &folio);
-		}
+		else if (err > 0)
+			err = 0;
+
 		cond_resched();
 
 		if (unlikely(err == -ENOENT)) {
-			/* A pending tuple folio is filled whole, at offset 0. */
-			unsigned long offset = tuple_folio ? 0 :
-				vma_page_slice_offset(dst_vma, dst_addr);
-			unsigned long size = tuple_folio ? PAGE_SIZE : page_size;
+			unsigned long size = page_size;
+			unsigned long offset = ppps_uffd_copy_retry(&copy_state,
+							dst_vma, dst_addr, &size);
 			void *kaddr;
 
 			up_read(&ctx->map_changing_lock);
 			uffd_mfill_unlock(dst_vma);
 			BUG_ON(!folio);
 
-			pending_offset = offset;
 			kaddr = kmap_local_folio(folio, 0);
 			err = copy_from_user(kaddr + offset,
 					     (const void __user *) src_addr,
@@ -1526,35 +1486,15 @@ retry:
 			goto retry;
 		}
 
-		if (ppps_mm_is_compat(mm) &&
-		    folio_test_ppps_compat_anon(src_folio) &&
-		    ppps_uffd_move_tuple_ok(dst_vma, src_vma, dst_addr,
-					 src_addr, len)) {
-			ret = ppps_uffd_move_tuple(mm, dst_vma, src_vma,
-						     dst_addr, src_addr,
-						     dst_pte, src_pte,
-						     orig_dst_pte, orig_src_pte,
-						     dst_pmd, dst_pmdval,
-						     dst_ptl, src_ptl,
-						     &src_folio, ppps_fallback);
-			if (*ppps_fallback && src_folio) {
-				*ppps_fallback = false;
-				ret = ppps_uffd_move_slice(mm, dst_vma,
-						src_vma, dst_addr, src_addr,
-						dst_pte, src_pte, orig_dst_pte,
-						orig_src_pte, dst_pmd, dst_pmdval,
-						dst_ptl, src_ptl, src_folio);
-			}
-		} else if (ppps_mm_is_compat(mm))
-			ret = ppps_uffd_move_slice(mm, dst_vma, src_vma,
-							  dst_addr, src_addr,
-							  dst_pte, src_pte,
-							  orig_dst_pte,
-							  orig_src_pte,
-							  dst_pmd, dst_pmdval,
-							  dst_ptl, src_ptl,
-							  src_folio);
-		else
+		if (ppps_mm_is_compat(mm)) {
+			/* Private dispatch owns its PTE snapshots, never this folio. */
+			pte_unmap(src_pte);
+			pte_unmap(dst_pte);
+			src_pte = dst_pte = NULL;
+			ret = ppps_uffd_move_present(dst_vma, src_vma,
+					dst_addr, src_addr, len, dst_pmd, src_pmd,
+					src_folio, orig_src_pte);
+		} else
 			ret = move_present_ptes(mm, dst_vma, src_vma,
 					dst_addr, src_addr, dst_pte, src_pte,
 					orig_dst_pte, orig_src_pte,
