@@ -43,12 +43,22 @@ static bool tuple_has_markers(const unsigned char *tuple)
 static int child_check(unsigned char *tuple)
 {
 	unsigned long anonymous = 0;
+	uint64_t first_pfn, pfn;
+	unsigned int slice;
 
 	if (!tuple_has_markers(tuple) ||
 	    !ppps_smaps_bytes(tuple, NATIVE_PAGE_SIZE, "Anonymous",
 			      &anonymous) ||
 	    anonymous != NATIVE_PAGE_SIZE)
 		return EXIT_FAILURE;
+	/* smaps counts logical 4K mappings, not the number of backing folios. */
+	if (!ppps_pfn(tuple, &first_pfn))
+		return EXIT_FAILURE;
+	for (slice = 1; slice < TUPLE_SLICES; slice++) {
+		if (!ppps_pfn(tuple + slice * PROCESS_PAGE_SIZE, &pfn) ||
+		    pfn != first_pfn)
+			return EXIT_FAILURE;
+	}
 	tuple[2 * PROCESS_PAGE_SIZE] = 0xa5;
 	return tuple[2 * PROCESS_PAGE_SIZE] == 0xa5 ? EXIT_SUCCESS :
 						      EXIT_FAILURE;
@@ -67,6 +77,8 @@ static int run_test(void)
 
 	ksft_print_header();
 	ksft_set_plan(6);
+	if (geteuid())
+		ksft_exit_skip("root is needed to inspect this test's own backing pages\n");
 
 	ring_fd = setup_ring(2);
 	ksft_test_result(ring_fd >= 0, "create io_uring pin owner\n");

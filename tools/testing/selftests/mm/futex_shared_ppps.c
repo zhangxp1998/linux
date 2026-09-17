@@ -12,6 +12,7 @@
 #include <sched.h>
 #include <stdatomic.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <time.h>
 
@@ -118,6 +119,9 @@ static int run_test(void)
 		ksft_exit_fail_msg("anonymous mapping failed: %s\n",
 				   strerror(errno));
 #ifdef __aarch64__
+	if (prctl(PR_SET_TAGGED_ADDR_CTRL, PR_TAGGED_ADDR_ENABLE, 0, 0, 0))
+		ksft_exit_fail_msg("enable tagged-address ABI: %s\n",
+				   strerror(errno));
 	*anonymous_word = 0;
 	errno = 0;
 	wake_result = futex_wake((uint32_t *)((uintptr_t)anonymous_word |
