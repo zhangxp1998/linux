@@ -8,12 +8,18 @@
 #define _GNU_SOURCE
 
 #include <sys/mman.h>
+#include <sys/wait.h>
 
 #include "kselftest_ppps.h"
 
 #define MAPPING_SIZE (4 * PROCESS_PAGE_SIZE)
 #define PHYSICAL_MAP_HINT ((void *)0x100001000ULL)
 #define PHYSICAL_MARKER 0x11223344U
+
+static void exit_on_sigbus(int signal_number)
+{
+	_exit(signal_number == SIGBUS ? 0 : 2);
+}
 
 static int read_proc_mem(void *address, void *value, size_t size)
 {
@@ -34,14 +40,18 @@ static int run_test(void)
 	uint32_t direct_value;
 	uint32_t proc_value = 0;
 	uint8_t *physical;
+	uint8_t *oversized;
 	uint8_t *map2;
 	uint8_t *map1;
 	uint8_t *mapping;
+	void *invalid;
+	pid_t pid;
+	int status;
 	int fd;
 	int i;
 
 	ksft_print_header();
-	ksft_set_plan(14);
+	ksft_set_plan(17);
 
 	fd = ppps_open_fixture_or_skip("/dev/uio_mmap_ppps", O_RDWR);
 	ksft_test_result(fd >= 0, "open the UIO test device\n");
@@ -66,6 +76,31 @@ static int run_test(void)
 	ksft_test_result(map1[0] == 0x5a,
 			 "one-process-page offset selects UIO map1 (value=0x%02x)\n",
 			 map1[0]);
+	invalid = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, 4 * PROCESS_PAGE_SIZE);
+	ksft_test_result(invalid == MAP_FAILED && errno == EINVAL,
+			 "reject an empty UIO map selector\n");
+	oversized = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE,
+			 MAP_SHARED, fd, PROCESS_PAGE_SIZE);
+	ksft_test_result(oversized != MAP_FAILED,
+			 "map a native-sized window over a one-slice logical map\n");
+	if (oversized == MAP_FAILED)
+		ksft_exit_fail_msg("oversized mmap failed: %s\n", strerror(errno));
+	pid = fork();
+	if (!pid) {
+		if (signal(SIGBUS, exit_on_sigbus) == SIG_ERR)
+			_exit(2);
+		(void)__atomic_load_n(&oversized[PROCESS_PAGE_SIZE],
+				      __ATOMIC_RELAXED);
+		_exit(1);
+	}
+	if (pid < 0)
+		ksft_exit_fail_msg("fork failed: %s\n", strerror(errno));
+	if (waitpid(pid, &status, 0) != pid)
+		ksft_exit_fail_msg("waitpid failed: %s\n", strerror(errno));
+	ksft_test_result(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+			 "fault past the logical map size raises SIGBUS\n");
+	munmap(oversized, MAPPING_SIZE);
 	map2 = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
 		    MAP_SHARED, fd, 2 * PROCESS_PAGE_SIZE);
 	ksft_test_result(map2 != MAP_FAILED,

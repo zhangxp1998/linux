@@ -320,9 +320,11 @@ CATEGORY="mmap" run_test ./shmem_mmap_offset_ppps
 CATEGORY="mmap" run_test ./memfd_eof_ppps secretmem
 CATEGORY="mmap" run_test ./memfd_eof_ppps shmem
 CATEGORY="mmap" run_test ./mincore_ppps
+CATEGORY="mmap" run_test ./mincore_ppps --native
 CATEGORY="mmap" run_ppps_module_test gup_retry ./mmap_action_cleanup_ppps
 CATEGORY="mmap" run_test ./selinux_status_mmap_ppps.sh
 CATEGORY="mmap" run_ppps_module_test vm_iomap_memory ./vm_iomap_memory_ppps
+CATEGORY="mmap" run_ppps_module_test remap_pfn_cow ./remap_pfn_cow_ppps
 CATEGORY="mmap" run_ppps_module_test dma_mmap_attrs ./dma_mmap_ppps attrs
 CATEGORY="mmap" run_ppps_module_test dma_mmap_pages ./dma_mmap_ppps pages
 CATEGORY="mmap" run_test ./iommu_dma_mmap_ppps.sh
@@ -353,6 +355,7 @@ CATEGORY="mmap" run_ppps_module_test folio_within_range ./folio_within_range_ppp
 CATEGORY="mmap" run_test ./remap_file_pages_ppps
 CATEGORY="mmap" run_test ./shmem_swap_usage_ppps
 CATEGORY="mmap" run_test ./shmem_quota_ppps
+CATEGORY="mmap" run_test ./swap_header_ppps
 CATEGORY="mmap" run_test ./trace_ring_buffer_mmap_ppps
 CATEGORY="mmap" run_test ./truncate_ppps
 
@@ -368,12 +371,14 @@ fi
 CATEGORY="gup_test" run_test ./gup_test -ct -F 0x1 0 19 0x1000
 CATEGORY="gup_test" run_test ./gup_longterm
 CATEGORY="gup_test" run_ppps_module_test gup_retry ./gup_retry_ppps
+CATEGORY="gup_test" run_ppps_module_test frame_vector ./frame_vector_ppps
 CATEGORY="gup_test" run_ppps_module_test iov_iter ./iov_iter_ppps
 CATEGORY="gup_test" run_ppps_module_test iov_iter ./page_range_ppps
 CATEGORY="gup_test" run_ppps_module_test iov_iter ./page_range_ppps --native
 CATEGORY="gup_test" run_ppps_module_test fault_in ./fault_in_ppps
 CATEGORY="mmap" run_test ./futex_shared_ppps
 CATEGORY="mmap" run_test ./xdp_umem_ppps
+CATEGORY="mmap" run_ppps_module_test xdp_pin_probe ./xdp_umem_race_ppps
 CATEGORY="mmap" run_test ./tcp_zerocopy_align_ppps
 
 CATEGORY="userfaultfd" run_test ./uffd-unit-tests
@@ -415,8 +420,11 @@ CATEGORY="mempolicy" run_test ./mbind_ppps
 CATEGORY="mlock" run_test ./mlock-random-test
 
 CATEGORY="mlock" run_test ./mlock2-tests
+CATEGORY="mlock" run_test ./mlock_onfault_ppps
+CATEGORY="mlock" run_test ./mlock_onfault_ppps --native
 
 CATEGORY="mlock" run_test ./mlock_large_file_ppps
+CATEGORY="mlock" run_test ./mlock_partial_file_ppps
 
 CATEGORY="mlock" run_test ./mlock_reclaim_ppps
 
@@ -534,6 +542,8 @@ then
 fi
 
 CATEGORY="pagemap" run_test ./pagemap_ioctl
+CATEGORY="pagemap" run_test ./pagemap_ioctl_ppps
+CATEGORY="pagemap" run_test ./pagemap_scan_ppps
 
 CATEGORY="pfnmap" run_test ./remap_pfn_range_ppps
 

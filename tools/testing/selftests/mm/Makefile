@@ -50,29 +50,30 @@ PPPS_TESTS := \
 	bpf_array_mmap_ppps bpf_ringbuf_mmap_ppps bpf_stack_build_id_ppps \
 	dma_mmap_ppps elf_core_ppps \
 	exec_user_args_ppps fadvise_dontneed_ppps fault_in_ppps \
-	file_cow_ppps file_cow_refs_ppps filemap_eof_ppps folio_within_range_ppps \
+	file_cow_ppps file_cow_refs_ppps filemap_eof_ppps folio_within_range_ppps frame_vector_ppps \
 	fork_filemap_ppps fork_page_size_ppps fork_pinned_anon_ppps \
 	futex_shared_ppps \
 	gup_retry_ppps hole_anon_ppps io_uring_fixed_buffer_ppps \
 	io_uring_mmap_ppps iommu_dma_mmap_ppps iov_iter_ppps kcov_ppps \
 	madv_cold_large_file_ppps madvise_free_ppps madvise_guard_ppps \
 	madvise_remove_ppps madvise_willneed_ppps mbind_ppps memfd_eof_ppps \
-	mglru_folded_ppps mglru_ppps mincore_ppps mixed_context_switch_ppps \
-	mixed_mm_access_ppps mlock_large_file_ppps mlock_reclaim_ppps \
+	memory_failure_anon_ppps mglru_folded_ppps mglru_ppps mincore_ppps mixed_context_switch_ppps \
+	mixed_mm_access_ppps mlock_large_file_ppps mlock_onfault_ppps \
+	mlock_partial_file_ppps mlock_reclaim_ppps \
 	mmap_action_cleanup_ppps mmap_hint_ppps mmap_page_zero_ppps \
 	mmu_notifier_ppps mremap_commit_ppps mremap_hint_ppps mremap_split_ppps \
 	mremap_pgoff_ppps mremap_rlimit_ppps msync_offset_ppps munmap_ppps \
 	oom_anon_score_ppps oom_score_ppps oom_trace_ppps packed_anon_ppps \
-	packed_swap_ppps page_range_ppps pagemap_exclusive_ppps pagewalk_ppps pci_mmap_ppps \
+	packed_swap_ppps page_range_ppps pagemap_exclusive_ppps pagemap_ioctl_ppps pagemap_scan_ppps pagewalk_ppps pci_mmap_ppps \
 	perf_mmap_offset_ppps perf_page_size_ppps perf_phys_addr_ppps \
 	print_vma_addr_ppps proc_pagewalk_ppps process_madvise_ppps \
 	process_mrelease_ppps process_vm_access_ppps remap_file_pages_ppps \
-	remap_pfn_range_ppps rmap_file_referenced_ppps rss_stat_trace_ppps \
+	remap_pfn_cow_ppps remap_pfn_range_ppps rmap_file_referenced_ppps rss_stat_trace_ppps \
 	rusage_ppps selinux_status_mmap_ppps sg_page_slices_ppps \
 	shmem_mmap_offset_ppps \
 	shmem_quota_ppps shmem_swap_usage_ppps smaps_native_fallback_ppps smaps_page_size_ppps \
 	smaps_pss_ppps \
-	stack_guard_gap_ppps swap_vma_readahead_ppps swapoff_ppps \
+	stack_guard_gap_ppps swap_header_ppps swap_vma_readahead_ppps swapoff_ppps \
 	sysv_shm_lock_ppps sysv_shm_ppps taskstats_ppps \
 	tcp_zerocopy_align_ppps thp_mmap_offset_ppps \
 	trace_ring_buffer_mmap_ppps truncate_ppps truncate_remote_ppps \
@@ -80,10 +81,11 @@ PPPS_TESTS := \
 	userfaultfd_mixed_ppps userfaultfd_poison_remote_ppps uffd_move_retry_ppps \
 	userfaultfd_remap_ppps userfaultfd_remote_ppps \
 	userfaultfd_retry_ppps userfaultfd_shmem_ppps userfaultfd_shmem_boundaries_ppps \
+	userfaultfd_shmem_external_ppps \
 	userfaultfd_unregister_remote_ppps userfaultfd_wp_remote_ppps \
 	userfaultfd_zeropage_ppps v9fs_mmap_close_ppps vb2_mmap_ppps \
 	vb2_userptr_ppps vhost_dirty_log_ppps vm_iomap_memory_ppps \
-	vm_map_pages_ppps vmalloc_align_ppps xdp_umem_ppps
+	vm_map_pages_ppps vmalloc_align_ppps xdp_umem_ppps xdp_umem_race_ppps
 
 PPPS_TESTS_arm64 := \
 	brk_aslr_ppps brk_aslr_ppps_sample elf_brk_gap_ppps exec_aslr_ppps \
@@ -227,6 +229,7 @@ $(OUTPUT)/$(1): $(2)
 endef
 $(eval $(call ppps_test_hdrs,fault_in_ppps,fault_in_ppps.h))
 $(eval $(call ppps_test_hdrs,folio_within_range_ppps,folio_within_range_ppps.h))
+$(eval $(call ppps_test_hdrs,frame_vector_ppps,frame_vector_ppps.h))
 $(eval $(call ppps_test_hdrs,gup_retry_ppps,gup_retry_ppps.h))
 $(eval $(call ppps_test_hdrs,iov_iter_ppps,iov_iter_ppps.h))
 $(eval $(call ppps_test_hdrs,page_range_ppps,iov_iter_ppps.h page_range_ppps.h))
@@ -234,6 +237,8 @@ $(eval $(call ppps_test_hdrs,file_cow_refs_ppps,iov_iter_ppps.h page_range_ppps.
 $(eval $(call ppps_test_hdrs,mmu_notifier_ppps,mmu_notifier_ppps.h))
 $(eval $(call ppps_test_hdrs,pagewalk_ppps,pagewalk_ppps.h))
 $(eval $(call ppps_test_hdrs,vm_map_pages_ppps,vm_map_pages_ppps.h))
+$(foreach t,mincore_ppps mlock_onfault_ppps, \
+	$(eval $(call ppps_test_hdrs,$(t),../kselftest_ppps.h)))
 $(foreach t,file_cow_ppps hole_anon_ppps mte_anon_ppps packed_anon_ppps \
 	    packed_swap_ppps uffd_copy_tuple_ppps uffd_move_retry_ppps, \
 	$(eval $(call ppps_test_hdrs,$(t),ppps_tuple_test.h)))
@@ -296,6 +301,9 @@ $(OUTPUT)/taskstats_ppps: CFLAGS += -Wunreachable-code -U_FORTIFY_SOURCE
 $(OUTPUT)/taskstats_ppps: CFLAGS += -I$(selfdir)
 
 $(OUTPUT)/vb2_mmap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
+$(OUTPUT)/frame_vector_ppps $(OUTPUT)/pagemap_ioctl \
+$(OUTPUT)/pagemap_ioctl_ppps $(OUTPUT)/pagemap_scan_ppps \
+$(OUTPUT)/xdp_umem_race_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 $(OUTPUT)/process_madvise_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 $(OUTPUT)/exec_aslr_ppps: LDFLAGS += -Wl,-z,max-page-size=16384
 $(OUTPUT)/fork_filemap_ppps: LDFLAGS += -Wl,-z,max-page-size=16384

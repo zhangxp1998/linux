@@ -18,7 +18,7 @@
 #include "kselftest_ppps.h"
 
 #define RACE_ITERATIONS		128UL
-#define MAPPING_SIZE		((3 + RACE_ITERATIONS) * NATIVE_PAGE_SIZE)
+#define MAPPING_SIZE		((4 + RACE_ITERATIONS) * NATIVE_PAGE_SIZE)
 
 struct read_args {
 	unsigned char *address;
@@ -240,7 +240,7 @@ static int run_test(void)
 	ksft_test_result(race_folio_insertion(uffd, mapping, source),
 			 "concurrent slice copies retry shmem folio insertion races\n");
 
-	/* A populated destination PTE can exist while its slice mask is empty. */
+	/* An external alias adopts native population before UFFD registration. */
 	{
 		unsigned long off = (2 + RACE_ITERATIONS) * NATIVE_PAGE_SIZE;
 		struct uffdio_register alias_reg = {
@@ -253,7 +253,7 @@ static int run_test(void)
 
 		alias[off + PROCESS_PAGE_SIZE] = 0x9d;
 		ok = ok && !ioctl(uffd, UFFDIO_REGISTER, &alias_reg);
-		ksft_test_result(ok, "prepare present PTE in an unfilled tracked slice\n");
+		ksft_test_result(ok, "register an externally populated shmem slice\n");
 		rejected = (struct uffdio_copy) {
 			.src = (unsigned long)source,
 			.dst = (unsigned long)alias + off + PROCESS_PAGE_SIZE,
@@ -263,10 +263,13 @@ static int run_test(void)
 		ok = ok && ioctl(uffd, UFFDIO_COPY, &rejected) == -1 &&
 			errno == EEXIST && rejected.copy == -EEXIST;
 		ksft_test_result(ok && alias[off + PROCESS_PAGE_SIZE] == 0x9d,
-				 "failed PTE installation does not alter shared data\n");
+				 "rejected COPY does not alter externally written data\n");
 		ioctl(uffd, UFFDIO_UNREGISTER, &alias_reg.range);
 
-		ok = !madvise(source + off, PROCESS_PAGE_SIZE, MADV_DONTNEED) &&
+		/* Keep the source-fault retry on a separate, still tracked folio. */
+		off += NATIVE_PAGE_SIZE;
+		ok = copy_page(uffd, mapping + off, source);
+		ok = ok && !madvise(source + off, PROCESS_PAGE_SIZE, MADV_DONTNEED) &&
 			!mincore(source + off, PROCESS_PAGE_SIZE, &resident) &&
 			!(resident & 1);
 		ksft_test_result(ok, "COPY source is verified nonresident\n");

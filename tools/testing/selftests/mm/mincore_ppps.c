@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * mincore() for a 4K compat process accepts 4K-only-aligned addresses,
- * reports one vector byte per 4K page, rounds partial lengths at 4K
- * granularity and indexes the page cache by 4K file slice.
+ * mincore() reports process-page-sized vectors in both native and compat
+ * processes.  Check alignment, rounding, cache lookup without PTEs and the
+ * anonymous mapping residency lifecycle without assuming one fault populates
+ * exactly one process page.
  */
 #define _GNU_SOURCE
 
@@ -11,8 +12,10 @@
 
 #include "kselftest_ppps.h"
 
-#define MAPPING_SIZE	(12 * PROCESS_PAGE_SIZE)
+#define MAPPING_SIZE	(4 * NATIVE_PAGE_SIZE)
 #define SENTINEL	0xa5
+
+static size_t page_size;
 
 static uintptr_t align_up(uintptr_t value, size_t alignment)
 {
@@ -34,9 +37,13 @@ static bool test_4k_only_alignment(unsigned char *large_page_aligned)
 {
 	unsigned char vec = SENTINEL;
 	void *start = large_page_aligned + PROCESS_PAGE_SIZE;
+	int ret;
 
 	errno = 0;
-	if (mincore(start, PROCESS_PAGE_SIZE, &vec)) {
+	ret = mincore(start, PROCESS_PAGE_SIZE, &vec);
+	if (page_size == NATIVE_PAGE_SIZE)
+		return ret == -1 && errno == EINVAL && vec == SENTINEL;
+	if (ret) {
 		ksft_print_msg("mincore(4K-only aligned) failed: %s\n",
 			       strerror(errno));
 		return false;
@@ -55,12 +62,12 @@ static bool test_vector_granularity(unsigned char *large_page_aligned)
 	}
 	ksft_print_msg("16K vector: %02x,%02x,%02x,%02x next=%02x\n",
 		       vec[0], vec[1], vec[2], vec[3], vec[4]);
-	return entries_are_resident(vec, 4);
+	return entries_are_resident(vec, NATIVE_PAGE_SIZE / page_size);
 }
 
 static bool test_partial_length_rounding(unsigned char *large_page_aligned)
 {
-	const size_t length = 3 * PROCESS_PAGE_SIZE + 1;
+	const size_t length = page_size + 1;
 	unsigned char vec[8];
 
 	memset(vec, SENTINEL, sizeof(vec));
@@ -71,7 +78,7 @@ static bool test_partial_length_rounding(unsigned char *large_page_aligned)
 	}
 	ksft_print_msg("partial vector: %02x,%02x,%02x,%02x next=%02x\n",
 		       vec[0], vec[1], vec[2], vec[3], vec[4]);
-	return entries_are_resident(vec, 4);
+	return entries_are_resident(vec, 2);
 }
 
 static bool test_file_page_cache_index(void)
@@ -114,7 +121,7 @@ static bool test_file_page_cache_index(void)
 	}
 	ksft_print_msg("file vector: %02x,%02x,%02x,%02x next=%02x\n",
 		       vec[0], vec[1], vec[2], vec[3], vec[4]);
-	passed = entries_are_resident(vec, 4);
+	passed = entries_are_resident(vec, NATIVE_PAGE_SIZE / page_size);
 
 out:
 	if (mapping != MAP_FAILED)
@@ -125,14 +132,88 @@ out:
 	return passed;
 }
 
+static bool entries_are_absent(const unsigned char *vec, size_t nr)
+{
+	size_t i;
+
+	for (i = 0; i < nr; i++) {
+		if (vec[i] == SENTINEL || (vec[i] & 1))
+			return false;
+	}
+	return vec[nr] == SENTINEL;
+}
+
+static void test_residency(void)
+{
+	unsigned char vec[MAPPING_SIZE / PROCESS_PAGE_SIZE + 1];
+	size_t nr = MAPPING_SIZE / page_size;
+	unsigned char *map;
+	bool pass;
+	size_t i;
+	int ret;
+
+	map = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (map == MAP_FAILED)
+		ksft_exit_fail_msg("residency mmap: %s\n", strerror(errno));
+	/* Keep readahead/THP policy out of this base-page API test. */
+	if (madvise(map, MAPPING_SIZE, MADV_NOHUGEPAGE) && errno != EINVAL)
+		ksft_exit_fail_msg("MADV_NOHUGEPAGE: %s\n", strerror(errno));
+
+	memset(vec, SENTINEL, sizeof(vec));
+	pass = !mincore(map, MAPPING_SIZE, vec) && entries_are_absent(vec, nr);
+	ksft_test_result(pass, "fresh anonymous mapping is not resident\n");
+
+	map[0] = 0x5a;
+	memset(vec, SENTINEL, sizeof(vec));
+	pass = !mincore(map, MAPPING_SIZE, vec) && vec[0] != SENTINEL &&
+	       (vec[0] & 1) &&
+	       !(vec[nr - 1] & 1) && vec[nr] == SENTINEL;
+	ksft_test_result(pass, "one fault leaves the distant native page absent\n");
+	for (i = 0; i < MAPPING_SIZE; i += page_size)
+		map[i] = 0x5a;
+	memset(vec, SENTINEL, sizeof(vec));
+	pass = !mincore(map, MAPPING_SIZE, vec) && entries_are_resident(vec, nr);
+	ksft_test_result(pass, "touching every process page populates the vector\n");
+
+	errno = 0;
+	vec[0] = SENTINEL;
+	ret = mincore(map + 1, page_size, vec);
+	ksft_test_result(ret == -1 && errno == EINVAL && vec[0] == SENTINEL,
+			 "byte-unaligned address is rejected without writing the vector\n");
+
+	if (mprotect(map, MAPPING_SIZE, PROT_NONE))
+		ksft_exit_fail_msg("mprotect: %s\n", strerror(errno));
+	memset(vec, SENTINEL, sizeof(vec));
+	pass = !mincore(map, MAPPING_SIZE, vec) && entries_are_resident(vec, nr);
+	ksft_test_result(pass, "PROT_NONE retains residency without a data access\n");
+	if (mprotect(map, MAPPING_SIZE, PROT_READ | PROT_WRITE) ||
+	    madvise(map, MAPPING_SIZE, MADV_DONTNEED))
+		ksft_exit_fail_msg("restore/discard mapping: %s\n", strerror(errno));
+	memset(vec, SENTINEL, sizeof(vec));
+	pass = !mincore(map, MAPPING_SIZE, vec) && entries_are_absent(vec, nr);
+	ksft_test_result(pass, "MADV_DONTNEED clears the entire anonymous vector\n");
+	pass = true;
+	for (i = 0; i < MAPPING_SIZE; i++)
+		pass &= map[i] == 0;
+	ksft_test_result(pass, "discarded anonymous data refaults as zero\n");
+	vec[0] = SENTINEL;
+	ksft_test_result(!mincore(map, 0, vec) && vec[0] == SENTINEL,
+			 "zero-length request leaves the vector unchanged\n");
+	if (munmap(map, MAPPING_SIZE))
+		ksft_exit_fail_msg("munmap: %s\n", strerror(errno));
+}
+
 static int run_test(void)
 {
 	unsigned char *large_page_aligned;
 	unsigned char *mapping;
 	unsigned int i;
 
+	page_size = getpagesize();
 	ksft_print_header();
-	ksft_set_plan(4);
+	ksft_set_plan(12);
+	ksft_print_msg("process page size: %zu bytes\n", page_size);
 
 	mapping = mmap(NULL, MAPPING_SIZE, PROT_READ | PROT_WRITE,
 		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -140,23 +221,27 @@ static int run_test(void)
 		ksft_exit_fail_msg("anonymous mmap failed: %s\n", strerror(errno));
 	large_page_aligned = (unsigned char *)align_up((uintptr_t)mapping,
 							NATIVE_PAGE_SIZE);
-	if (large_page_aligned + NATIVE_PAGE_SIZE > mapping + MAPPING_SIZE)
+	if (large_page_aligned + 2 * NATIVE_PAGE_SIZE > mapping + MAPPING_SIZE)
 		ksft_exit_fail_msg("aligned range exceeds mapping\n");
 
-	for (i = 0; i < NATIVE_PAGE_SIZE / PROCESS_PAGE_SIZE; i++)
-		large_page_aligned[i * PROCESS_PAGE_SIZE] = (unsigned char)(0x40 + i);
+	for (i = 0; i < 2 * NATIVE_PAGE_SIZE; i += page_size)
+		large_page_aligned[i] = 0x40;
 
 	ksft_test_result(test_4k_only_alignment(large_page_aligned),
-			 "mincore accepts a 4K-only-aligned address\n");
+			 "4K-only alignment follows the process page size\n");
 	ksft_test_result(test_vector_granularity(large_page_aligned),
-			 "mincore returns one byte per userspace 4K page\n");
+			 "mincore returns one byte per process page\n");
 	ksft_test_result(test_partial_length_rounding(large_page_aligned),
-			 "mincore rounds partial lengths at 4K granularity\n");
+			 "mincore rounds partial lengths at process granularity\n");
 	ksft_test_result(test_file_page_cache_index(),
-			 "file-backed 4K slices use the correct page-cache index\n");
+			 "file pages use the correct cache index without present PTEs\n");
 
 	munmap(mapping, MAPPING_SIZE);
+	test_residency();
 	ksft_finished();
 }
 
-PPPS_COMPAT_MAIN(run_test)
+int main(int argc, char **argv)
+{
+	return ppps_geometry_main(argc, argv, run_test);
+}

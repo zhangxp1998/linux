@@ -51,6 +51,15 @@ static int vm_insert_pages_edge_case(struct vm_area_struct *vma)
 		if (count != 1)
 			return -EINVAL;
 		return expected_error(error, -EBUSY);
+	case VM_MAP_PAGES_PPPS_NATIVE_PARTIAL:
+		error = vm_insert_page_slice(vma,
+					     vma->vm_start + USER_PAGE_SIZE,
+					     test_pages[1], 0);
+		if (error)
+			return error;
+		error = vm_insert_page_native(vma, vma->vm_start,
+					      test_pages[0]);
+		return expected_error(error, -EBUSY);
 	default:
 		return -EINVAL;
 	}

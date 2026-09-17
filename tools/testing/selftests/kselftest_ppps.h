@@ -38,6 +38,13 @@
  */
 #define ADDR_4KB_COMPAT_PAGE_SIZE	0x40000000
 
+#ifndef AF_XDP
+#define AF_XDP 44
+#endif
+#ifndef SOL_XDP
+#define SOL_XDP 283
+#endif
+
 /* Page size of a 4K compat process and of the native kernel. */
 #define PROCESS_PAGE_SIZE		4096UL
 #define NATIVE_PAGE_SIZE		16384UL
@@ -171,6 +178,61 @@ static inline int ppps_compat_main(int argc, char **argv, int (*run)(void))
 int main(int argc, char **argv)					\
 {								\
 	return ppps_compat_main(argc, argv, run_fn);		\
+}
+
+/*
+ * Opt-in entry point for tests with the same assertions in both geometries.
+ * Default to compat; --native selects the 16K control.  Always prove native
+ * 16K exec first: getpagesize() == 4096 alone also matches a native 4K kernel.
+ * Existing single-mode tests keep their current entry point.
+ */
+static inline void __noreturn
+ppps_geometry_exec(bool compat, const char *stage, const char *mode)
+{
+	int error;
+
+	ppps_execl(compat, NULL, stage, mode, NULL);
+	error = errno;
+	ksft_print_header();
+	if (error == EINVAL || error == EPERM)
+		ksft_exit_skip("PPPS personality/exec unavailable: %s\n",
+			       strerror(error));
+	ksft_exit_fail_msg("PPPS re-exec failed: %s\n", strerror(error));
+}
+
+static inline int ppps_geometry_main(int argc, char **argv, int (*run)(void))
+{
+	ppps_argv0 = argv[0];
+#ifndef __aarch64__
+	ksft_print_header();
+	ksft_exit_skip("requires arm64 16K native / 4K compat geometry\n");
+#else
+	if (argc == 1 || (argc == 2 && !strcmp(argv[1], "--native")))
+		ppps_geometry_exec(false, "--ppps-native",
+				   argc == 1 ? "compat" : "native");
+	if (argc == 3 && !strcmp(argv[1], "--ppps-native")) {
+		if (getpagesize() != NATIVE_PAGE_SIZE) {
+			ksft_print_header();
+			ksft_exit_skip("native exec does not use 16K pages\n");
+		}
+		if (!strcmp(argv[2], "native"))
+			return run();
+		if (!strcmp(argv[2], "compat"))
+			ppps_geometry_exec(true, "--ppps-compat", NULL);
+	}
+	if (argc == 2 && !strcmp(argv[1], "--ppps-compat")) {
+		int persona = personality(0xffffffffUL);
+
+		if (getpagesize() != PROCESS_PAGE_SIZE || persona < 0 ||
+		    !(persona & ADDR_4KB_COMPAT_PAGE_SIZE)) {
+			ksft_print_header();
+			ksft_exit_skip("4K compat exec is unavailable\n");
+		}
+		return run();
+	}
+	ksft_print_header();
+	ksft_exit_fail_msg("usage: %s [--native]\n", argv[0]);
+#endif
 }
 
 /*

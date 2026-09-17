@@ -7,6 +7,7 @@
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 
 #include "kselftest_ppps.h"
@@ -38,6 +39,24 @@ static ssize_t save_core_pattern(char *pattern, size_t size)
 	if (close(fd) && length >= 0)
 		return -1;
 	return length;
+}
+
+static void crash_with_default_signal(void)
+{
+	struct sigaction action = {
+		.sa_handler = SIG_DFL,
+	};
+	sigset_t signals;
+
+	sigemptyset(&action.sa_mask);
+	if (sigaction(SIGSEGV, &action, NULL))
+		_exit(126);
+	sigemptyset(&signals);
+	sigaddset(&signals, SIGSEGV);
+	if (sigprocmask(SIG_UNBLOCK, &signals, NULL))
+		_exit(126);
+	syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGSEGV);
+	_exit(126);
 }
 
 static int run_test(void)
@@ -89,7 +108,7 @@ static int run_test(void)
 	}
 	if (!child) {
 		prctl(PR_SET_DUMPABLE, 1);
-		raise(SIGSEGV);
+		crash_with_default_signal();
 		_exit(127);
 	}
 	if (waitpid(child, &status, 0) != child) {

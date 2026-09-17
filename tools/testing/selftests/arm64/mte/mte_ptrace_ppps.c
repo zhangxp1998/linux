@@ -44,14 +44,14 @@ static void store_allocation_tag(void *address, unsigned int tag)
 {
 	uintptr_t tagged = (uintptr_t)address | ((uintptr_t)tag << 56);
 
-	asm volatile("stg %0, [%0]" : : "r" (tagged) : "memory");
+	asm volatile(".arch_extension memtag\n\tstg %0, [%0]" : : "r" (tagged) : "memory");
 }
 
 static unsigned int load_allocation_tag(void *address)
 {
 	uintptr_t tagged;
 
-	asm volatile("ldg %0, [%1]" : "=r" (tagged) : "r" (address));
+	asm volatile(".arch_extension memtag\n\tldg %0, [%1]" : "=r" (tagged) : "r" (address));
 	return (tagged >> 56) & 0xf;
 }
 

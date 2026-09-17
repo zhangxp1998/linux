@@ -92,8 +92,17 @@ static long pagemap_ioc(void *start, int len, void *vec, int vec_len, int flag,
 int init_uffd(void)
 {
 	struct uffdio_api uffdio_api;
+	int dev;
 
 	uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
+	if (uffd == -1) {
+		dev = open("/dev/userfaultfd", O_RDWR | O_CLOEXEC);
+		if (dev >= 0) {
+			uffd = ioctl(dev, USERFAULTFD_IOC_NEW,
+				     O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
+			close(dev);
+		}
+	}
 	if (uffd == -1)
 		return uffd;
 
@@ -1055,7 +1064,6 @@ int sanity_tests(void)
 	struct page_region *vec;
 	char *mem, *fmem;
 	struct stat sbuf;
-	char *tmp_buf;
 
 	/* 1. wrong operation */
 	mem_size = 10 * page_size;
@@ -1166,8 +1174,8 @@ int sanity_tests(void)
 	if (fmem == MAP_FAILED)
 		ksft_exit_fail_msg("error nomem %d %s\n", errno, strerror(errno));
 
-	tmp_buf = malloc(sbuf.st_size);
-	memcpy(tmp_buf, fmem, sbuf.st_size);
+	for (i = 0; i < sbuf.st_size; i += page_size)
+		(void)__atomic_load_n(&fmem[i], __ATOMIC_RELAXED);
 
 	ret = pagemap_ioctl(fmem, sbuf.st_size, vec, vec_size, 0, 0,
 			    0, PAGEMAP_NON_WRITTEN_BITS, 0, PAGEMAP_NON_WRITTEN_BITS);
@@ -1480,7 +1488,7 @@ static void transact_test(int page_size)
 			      extra_thread_faults);
 }
 
-int main(int __attribute__((unused)) argc, char *argv[])
+int main(int argc, char *argv[])
 {
 	int shmid, buf_size, fd, i, ret;
 	unsigned long long mem_size;
@@ -1488,6 +1496,8 @@ int main(int __attribute__((unused)) argc, char *argv[])
 	struct stat sbuf;
 
 	progname = argv[0];
+	if (argc != 1 && (argc != 2 || strcmp(argv[1], "--ppps-compat")))
+		ksft_exit_fail_msg("Usage: %s [--ppps-compat]\n", progname);
 
 	ksft_print_header();
 
@@ -1575,21 +1585,24 @@ int main(int __attribute__((unused)) argc, char *argv[])
 	/* 7. File Hugetlb testing */
 	mem_size = 2*1024*1024;
 	fd = memfd_create("uffd-test", MFD_HUGETLB | MFD_NOEXEC_SEAL);
-	if (fd < 0)
-		ksft_exit_fail_msg("uffd-test creation failed %d %s\n", errno, strerror(errno));
-	mem = mmap(NULL, mem_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (mem != MAP_FAILED) {
-		wp_init(mem, mem_size);
-		wp_addr_range(mem, mem_size);
-
-		base_tests("Hugetlb shmem testing:", mem, mem_size, 0);
-
-		wp_free(mem, mem_size);
-		shmctl(shmid, IPC_RMID, NULL);
+	if (fd < 0) {
+		base_tests("File Hugetlb testing:", NULL, 0, 1);
 	} else {
-		base_tests("Hugetlb shmem testing:", NULL, 0, 1);
+		mem = mmap(NULL, mem_size, PROT_READ | PROT_WRITE,
+			   MAP_SHARED, fd, 0);
+		if (mem != MAP_FAILED) {
+			wp_init(mem, mem_size);
+			wp_addr_range(mem, mem_size);
+
+			base_tests("File Hugetlb testing:", mem, mem_size, 0);
+
+			wp_free(mem, mem_size);
+			munmap(mem, mem_size);
+		} else {
+			base_tests("File Hugetlb testing:", NULL, 0, 1);
+		}
+		close(fd);
 	}
-	close(fd);
 
 	/* 8. File memory testing */
 	buf_size = page_size * 10;
@@ -1670,5 +1683,5 @@ int main(int __attribute__((unused)) argc, char *argv[])
 	userfaultfd_tests();
 
 	close(pagemap_fd);
-	ksft_exit_pass();
+	ksft_finished();
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Native-only device APIs must also reject FDs inherited across compat exec. */
 #define _GNU_SOURCE
+#include <linux/falloc.h>
 #include <linux/io_uring.h>
 #include <linux/kvm.h>
 #include <linux/ublk_cmd.h>
@@ -214,6 +215,163 @@ static void channel_test(int ctrl)
 			 "ublk channel: compat open and inherited-FD mmap/read/write/uring rejected; native cleanup\n");
 }
 
+static bool rejected_ioctl(int fd, unsigned long command, unsigned long arg)
+{
+	errno = 0;
+	return ioctl(fd, command, arg) == -1 && errno == EOPNOTSUPP;
+}
+
+static bool rejected_mmap(int fd)
+{
+	void *mapping;
+	int error;
+
+	errno = 0;
+	mapping = mmap(NULL, PROCESS_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		       MAP_SHARED, fd, 0);
+	error = errno;
+	if (mapping != MAP_FAILED)
+		munmap(mapping, PROCESS_PAGE_SIZE);
+	return mapping == MAP_FAILED && error == EOPNOTSUPP;
+}
+
+static bool rejected_read(int fd)
+{
+	unsigned char byte;
+
+	errno = 0;
+	return read(fd, &byte, sizeof(byte)) == -1 && errno == EOPNOTSUPP;
+}
+
+static int check_kvm_fds(int vm, int vcpu, int vm_stats, int vcpu_stats,
+			 int guest_memfd, int device)
+{
+	struct kvm_device_attr attr = {};
+	struct kvm_mp_state state;
+	int result = 0;
+
+	if (getpagesize() != PROCESS_PAGE_SIZE)
+		return 77;
+	if (!rejected_ioctl(vm, KVM_CHECK_EXTENSION, KVM_CAP_USER_MEMORY))
+		result |= 1U << 0;
+	if (!rejected_ioctl(vcpu, KVM_GET_MP_STATE,
+			    (unsigned long)&state) || !rejected_mmap(vcpu))
+		result |= 1U << 1;
+	if (!rejected_read(vm_stats) || !rejected_read(vcpu_stats))
+		result |= 1U << 2;
+	if (guest_memfd >= 0 &&
+	    (fallocate(guest_memfd, FALLOC_FL_KEEP_SIZE, 0, NATIVE_PAGE_SIZE) != -1 ||
+	     errno != EOPNOTSUPP || !rejected_mmap(guest_memfd)))
+		result |= 1U << 3;
+	if (device >= 0 &&
+	    (!rejected_ioctl(device, KVM_HAS_DEVICE_ATTR,
+			     (unsigned long)&attr) || !rejected_mmap(device)))
+		result |= 1U << 4;
+	return result;
+}
+
+static int kvm_fds_child(int vm, int vcpu, int vm_stats, int vcpu_stats,
+			  int guest_memfd, int device)
+{
+	char args[6][16];
+	pid_t pid;
+	int status;
+
+	snprintf(args[0], sizeof(args[0]), "%d", vm);
+	snprintf(args[1], sizeof(args[1]), "%d", vcpu);
+	snprintf(args[2], sizeof(args[2]), "%d", vm_stats);
+	snprintf(args[3], sizeof(args[3]), "%d", vcpu_stats);
+	snprintf(args[4], sizeof(args[4]), "%d", guest_memfd);
+	snprintf(args[5], sizeof(args[5]), "%d", device);
+	fflush(NULL);
+	pid = fork();
+	if (!pid) {
+		ppps_execl(true, NULL, "--kvm-child", args[0], args[1], args[2],
+			   args[3], args[4], args[5], NULL);
+		_exit(15);
+	}
+	if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status))
+		return 15;
+	return WEXITSTATUS(status);
+}
+
+static bool make_inheritable(int fd)
+{
+	return fd >= 0 && !fcntl(fd, F_SETFD, 0);
+}
+
+static void kvm_fd_test(int kvm)
+{
+	struct kvm_create_guest_memfd gmem = { .size = NATIVE_PAGE_SIZE };
+	struct kvm_create_device device = { .type = KVM_DEV_TYPE_ARM_VGIC_V3 };
+	int fds[4] = { -1, -1, -1, -1 };
+	int vm, vcpu, vm_stats, vcpu_stats;
+	void *run = MAP_FAILED;
+	int mmap_size, result = 15;
+	bool setup;
+	unsigned int i;
+
+	vm = ioctl(kvm, KVM_CREATE_VM, 0);
+	vcpu = vm < 0 ? -1 : ioctl(vm, KVM_CREATE_VCPU, 0);
+	mmap_size = ioctl(kvm, KVM_GET_VCPU_MMAP_SIZE, 0);
+	if (vcpu >= 0 && mmap_size > 0)
+		run = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+			   vcpu, 0);
+	setup = vm >= 0 && vcpu >= 0 && mmap_size > 0 && run != MAP_FAILED;
+	ksft_test_result(setup, "KVM native VM/vCPU and run mapping\n");
+	if (!setup) {
+		for (i = 0; i < 5; i++)
+			ksft_test_result_skip("KVM inherited sub-FD setup unavailable\n");
+		goto out;
+	}
+
+	vm_stats = ioctl(vm, KVM_GET_STATS_FD, 0);
+	vcpu_stats = ioctl(vcpu, KVM_GET_STATS_FD, 0);
+	fds[0] = vm_stats;
+	fds[1] = vcpu_stats;
+	fds[2] = ioctl(vm, KVM_CREATE_GUEST_MEMFD, &gmem);
+	fds[3] = ioctl(vm, KVM_CREATE_DEVICE, &device) < 0 ? -1 :
+		(int)device.fd;
+	ksft_print_msg("KVM FDs: vm=%d vcpu=%d vm-stats=%d\n",
+		       vm, vcpu, vm_stats);
+	ksft_print_msg("KVM FDs: vcpu-stats=%d guest-memfd=%d device=%d\n",
+		       vcpu_stats, fds[2], fds[3]);
+	setup = make_inheritable(vm) && make_inheritable(vcpu) &&
+		make_inheritable(vm_stats) && make_inheritable(vcpu_stats) &&
+		(fds[2] < 0 || make_inheritable(fds[2])) &&
+		(fds[3] < 0 || make_inheritable(fds[3]));
+	if (setup)
+		result = kvm_fds_child(vm, vcpu, vm_stats, vcpu_stats,
+					fds[2], fds[3]);
+	ksft_test_result(setup && !(result & (1U << 0)),
+			 "KVM inherited VM ioctl rejected\n");
+	ksft_test_result(setup && !(result & (1U << 1)),
+			 "KVM inherited vCPU ioctl and mmap rejected\n");
+	ksft_test_result(setup && !(result & (1U << 2)),
+			 "KVM inherited VM/vCPU stats reads rejected\n");
+	if (fds[2] < 0)
+		ksft_test_result_skip("KVM guest_memfd unavailable\n");
+	else
+		ksft_test_result(setup && !(result & (1U << 3)),
+				 "KVM inherited guest_memfd fallocate and mmap rejected\n");
+	if (fds[3] < 0)
+		ksft_test_result_skip("KVM device FD unavailable\n");
+	else
+		ksft_test_result(setup && !(result & (1U << 4)),
+				 "KVM inherited device ioctl and mmap rejected\n");
+out:
+	if (run != MAP_FAILED)
+		munmap(run, mmap_size);
+	for (i = 0; i < ARRAY_SIZE(fds); i++) {
+		if (fds[i] >= 0)
+			close(fds[i]);
+	}
+	if (vcpu >= 0)
+		close(vcpu);
+	if (vm >= 0)
+		close(vm);
+}
+
 int main(int argc, char **argv)
 {
 	static const char * const paths[] = { "/dev/ublk-control", "/dev/vfio/vfio", "/dev/kvm" };
@@ -222,6 +380,11 @@ int main(int argc, char **argv)
 	unsigned int i, j;
 	int fd, fd2, persona, ret;
 
+	setvbuf(stdout, NULL, _IONBF, 0);
+
+	if (argc == 8 && !strcmp(argv[1], "--kvm-child"))
+		return check_kvm_fds(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]),
+				      atoi(argv[5]), atoi(argv[6]), atoi(argv[7]));
 	if (argc == 5 && !strcmp(argv[1], "--child"))
 		return check_compat(atoi(argv[2]), atoi(argv[3]), argv[4]);
 	if (argc == 4 && !strcmp(argv[1], "--channel"))
@@ -231,11 +394,11 @@ int main(int argc, char **argv)
 	ksft_print_header();
 	if (getpagesize() != NATIVE_PAGE_SIZE)
 		ksft_exit_skip("requires native 16K PPPS kernel\n");
-	ksft_set_plan(19);
+	ksft_set_plan(25);
 	for (i = 0; i < 3; i++) {
 		fd = open(paths[i], O_RDWR);
 		if (fd < 0 && ppps_fixture_unavailable(errno)) {
-			for (j = 0; j < 6 + (i == 0); j++)
+			for (j = 0; j < 6U + (i == 0) + 6U * (i == 2); j++)
 				ksft_test_result_skip("%s unavailable: %s\n",
 						      paths[i], strerror(errno));
 			continue;
@@ -261,6 +424,8 @@ int main(int argc, char **argv)
 		}
 		if (i == 0)
 			channel_test(fd);
+		if (i == 2)
+			kvm_fd_test(fd);
 		if (fd >= 0)
 			close(fd);
 	}

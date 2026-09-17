@@ -27,7 +27,8 @@ static int new_uffd(void)
 	return fd;
 }
 
-static void check_range(const char *name, size_t start, size_t len, bool truncate)
+static void check_one(const char *name, size_t start, size_t len, bool truncate,
+		      bool bytes_only)
 {
 	size_t page = getpagesize(), size = 4 * page;
 	struct uffdio_register reg = { .mode = UFFDIO_REGISTER_MODE_MISSING };
@@ -75,31 +76,37 @@ static void check_range(const char *name, size_t start, size_t len, bool truncat
 	if (madvise(map, size, MADV_DONTNEED))
 		ksft_exit_fail_msg("drop mapping PTEs: %s\n", strerror(errno));
 	memset(expected + start, 0, len);
-	/* pread checks file bytes without blocking on a registered missing PTE. */
-	ksft_test_result(pread(fd, actual, size, 0) == size &&
-			 !memcmp(actual, expected, size),
-			 "%s: only the requested bytes become zero\n", name);
-	for (i = 0; i < size; i += page) {
-		struct uffdio_copy copy = {
-			.src = (unsigned long)source + i,
-			.dst = (unsigned long)map + i,
-			.len = page,
-		};
-		bool whole = i >= start && i + page <= start + len;
-		int ret = ioctl(uffd, UFFDIO_COPY, &copy);
+	/*
+	 * A file read adopts native backing-page population.  Use a fresh
+	 * file for byte checks so it cannot change the missing-state check.
+	 */
+	if (bytes_only) {
+		ksft_test_result(pread(fd, actual, size, 0) == size &&
+				 !memcmp(actual, expected, size),
+				 "%s: only the requested bytes become zero\n", name);
+	} else {
+		for (i = 0; i < size; i += page) {
+			struct uffdio_copy copy = {
+				.src = (unsigned long)source + i,
+				.dst = (unsigned long)map + i,
+				.len = page,
+			};
+			bool whole = i >= start && i + page <= start + len;
+			int ret = ioctl(uffd, UFFDIO_COPY, &copy);
 
-		if (whole) {
-			masks_ok &= !ret && copy.copy == page;
-			memcpy(expected + i, source + i, page);
-		} else {
-			masks_ok &= ret == -1 && errno == EEXIST &&
-				    copy.copy == -EEXIST;
+			if (whole) {
+				masks_ok &= !ret && copy.copy == page;
+				memcpy(expected + i, source + i, page);
+			} else {
+				masks_ok &= ret == -1 && errno == EEXIST &&
+					    copy.copy == -EEXIST;
+			}
 		}
+		ksft_test_result(masks_ok, "%s: only whole pages become missing\n", name);
+		ksft_test_result(pread(fd, actual, size, 0) == size &&
+				 !memcmp(actual, expected, size),
+				 "%s: COPY leaves retained bytes intact\n", name);
 	}
-	ksft_test_result(masks_ok, "%s: only whole pages become missing\n", name);
-	ksft_test_result(pread(fd, actual, size, 0) == size &&
-			 !memcmp(actual, expected, size),
-			 "%s: COPY leaves retained bytes intact\n", name);
 	if (ioctl(uffd, UFFDIO_UNREGISTER, &reg.range))
 		ksft_exit_fail_msg("UFFDIO_UNREGISTER failed\n");
 	free(actual);
@@ -108,6 +115,12 @@ static void check_range(const char *name, size_t start, size_t len, bool truncat
 	munmap(map, size);
 	close(fd);
 	close(uffd);
+}
+
+static void check_range(const char *name, size_t start, size_t len, bool truncate)
+{
+	check_one(name, start, len, truncate, true);
+	check_one(name, start, len, truncate, false);
 }
 
 static int run_test(void)

@@ -6,11 +6,15 @@
  */
 #define _GNU_SOURCE
 
+#include <fcntl.h>
 #include <signal.h>
+#include <stdint.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <sys/swap.h>
 #include <sys/wait.h>
 
+#include "anon_exclusive_probe_ppps.h"
 #include "kselftest_ppps.h"
 
 #define TEST_PAGES	32
@@ -26,6 +30,18 @@ struct child_status {
 	bool paged_out;
 	unsigned long rss_bytes;
 	unsigned long swap_bytes;
+	int swapped_index;
+};
+
+struct child_result {
+	bool content_preserved;
+	bool probe_available;
+	bool anon_exclusive;
+	bool pagemap_available;
+	bool exclusive_reused;
+	uint64_t probe_pfn;
+	uint64_t before_pfn;
+	uint64_t after_pfn;
 };
 
 static bool swap_device_active(const char *device)
@@ -160,6 +176,10 @@ static int run_compat_child(int ready_fd, int command_fd)
 {
 	struct child_status status = {
 		.page_size = sysconf(_SC_PAGESIZE),
+		.swapped_index = -1,
+	};
+	struct child_result result = {
+		.content_preserved = true,
 	};
 	unsigned long span = 0;
 	unsigned char *mapping;
@@ -175,6 +195,8 @@ static int run_compat_child(int ready_fd, int command_fd)
 		     PROT_READ | PROT_WRITE,
 		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 	if (mapping != MAP_FAILED) {
+		uint64_t entry;
+
 		madvise(mapping, MAPPING_SIZE, MADV_NOHUGEPAGE);
 		for (i = 0; i < TEST_PAGES; i++)
 			mapping[i * PROCESS_PAGE_SIZE] = 0x40 + i;
@@ -182,25 +204,67 @@ static int run_compat_child(int ready_fd, int command_fd)
 		status.isolated = vma_span(mapping, &span) &&
 				  span == MAPPING_SIZE;
 		status.paged_out = page_out_mapping(mapping,
-						    &status.rss_bytes,
-						    &status.swap_bytes);
+					    &status.rss_bytes,
+					    &status.swap_bytes);
+		for (i = 0; i < TEST_PAGES; i++) {
+			void *target = mapping + i * PROCESS_PAGE_SIZE;
+
+			if (ppps_pagemap_entry(target, &entry) &&
+			    (entry & PAGEMAP_SWAPPED)) {
+				status.swapped_index = i;
+				break;
+			}
+		}
 	}
 
 	if (!write_full(ready_fd, &status, sizeof(status)) ||
 	    !read_full(command_fd, &command, sizeof(command)))
-		preserved = false;
+		result.content_preserved = false;
 	if (mapping == MAP_FAILED) {
-		preserved = false;
+		result.content_preserved = false;
 	} else {
+		struct anon_exclusive_probe_ppps probe = {};
+		uint64_t after = 0, before = 0;
+		unsigned char *target;
+		int probe_fd;
+
 		for (i = 0; i < TEST_PAGES; i++) {
 			if (mapping[i * PROCESS_PAGE_SIZE] !=
 			    (unsigned char)(0x40 + i)) {
-				preserved = false;
+				result.content_preserved = false;
 				break;
+			}
+		}
+		target = status.swapped_index < 0 ? mapping :
+			 mapping + status.swapped_index * PROCESS_PAGE_SIZE;
+		probe_fd = open("/dev/anon_exclusive_probe_ppps",
+				O_RDWR | O_CLOEXEC);
+		probe.address = (uintptr_t)target;
+		if (probe_fd >= 0 &&
+		    !ioctl(probe_fd, ANON_EXCLUSIVE_PROBE_PPPS_IOCTL, &probe)) {
+			result.probe_available = probe.anon;
+			result.anon_exclusive = probe.exclusive;
+			result.probe_pfn = probe.pfn;
+		}
+		if (probe_fd >= 0)
+			close(probe_fd);
+		if (ppps_pagemap_entry(target, &before) &&
+		    (before & PAGEMAP_PRESENT) && (before & PAGEMAP_PFN_MASK)) {
+			target[0] ^= 1;
+			if (ppps_pagemap_entry(target, &after) &&
+			    (after & PAGEMAP_PRESENT) &&
+			    (after & PAGEMAP_PFN_MASK)) {
+				result.pagemap_available = true;
+				result.before_pfn = before & PAGEMAP_PFN_MASK;
+				result.after_pfn = after & PAGEMAP_PFN_MASK;
+				result.exclusive_reused =
+					result.before_pfn == result.after_pfn;
 			}
 		}
 		munmap(reservation, RESERVE_SIZE);
 	}
+	write_full(ready_fd, &result, sizeof(result));
+	preserved = result.content_preserved;
 	return preserved ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
@@ -213,6 +277,7 @@ static int run_parent(void)
 {
 	const char *swap_device = getenv("PPPS_SWAP_DEVICE");
 	struct child_status child = {};
+	struct child_result result = {};
 	struct sigaction action = {
 		.sa_handler = alarm_handler,
 	};
@@ -234,7 +299,7 @@ static int run_parent(void)
 	ksft_print_header();
 	if (!swap_device)
 		ksft_exit_skip("PPPS_SWAP_DEVICE is not set\n");
-	ksft_set_plan(9);
+	ksft_set_plan(13);
 	if (!swap_info(&total_swap, &free_swap))
 		ksft_exit_fail_msg("could not read /proc/meminfo\n");
 	ksft_test_result(total_swap && free_swap, "swap device is active\n");
@@ -258,7 +323,6 @@ static int run_parent(void)
 	close(ready_pipe[1]);
 	close(command_pipe[0]);
 	child_ready = read_full(ready_pipe[0], &child, sizeof(child));
-	close(ready_pipe[0]);
 	ksft_test_result(child_ready, "start compat child process\n");
 	if (!child_ready) {
 		close(command_pipe[1]);
@@ -273,6 +337,8 @@ static int run_parent(void)
 	ksft_test_result(child.paged_out,
 			 "child has swap PTEs (Swap: %lu, Rss: %lu bytes)\n",
 			 child.swap_bytes, child.rss_bytes);
+	ksft_test_result(child.swapped_index >= 0,
+			 "identify a swapped tuple for exclusivity checking\n");
 
 	sigemptyset(&action.sa_mask);
 	if (sigaction(SIGALRM, &action, NULL))
@@ -288,12 +354,23 @@ static int run_parent(void)
 
 	write_full(command_pipe[1], &command, sizeof(command));
 	close(command_pipe[1]);
+	ksft_test_result(read_full(ready_pipe[0], &result, sizeof(result)),
+			 "child reports its post-swapoff state\n");
+	close(ready_pipe[0]);
 	do {
 		child_waited = waitpid(pid, &child_wait_status, 0) == pid;
 	} while (!child_waited && errno == EINTR);
-	ksft_test_result(child_waited && WIFEXITED(child_wait_status) &&
+	ksft_test_result(result.content_preserved && child_waited &&
+			 WIFEXITED(child_wait_status) &&
 			 WEXITSTATUS(child_wait_status) == EXIT_SUCCESS,
 			 "restored child pages preserve their contents\n");
+	ksft_test_result(result.probe_available && result.anon_exclusive,
+			 "swapoff restores PG_anon_exclusive (PFN %llu)\n",
+			 (unsigned long long)result.probe_pfn);
+	ksft_test_result(result.pagemap_available && result.exclusive_reused,
+			 "swapoff restores tuple exclusivity without a COW (PFN %llu -> %llu)\n",
+			 (unsigned long long)result.before_pfn,
+			 (unsigned long long)result.after_pfn);
 	disabled = !swap_device_active(swap_device);
 	ksft_test_result(disabled, "swap device is disabled\n");
 	ksft_test_result(!swapoff_ret && disabled,

@@ -15,6 +15,7 @@ struct iov_iter_ppps_args {
 	__s32 get_pages_result;
 	__s32 extract_pages_result;
 	__s32 bulk_first_len;
+	__s32 npages_result;
 	__u32 flags;
 };
 

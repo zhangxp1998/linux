@@ -67,6 +67,7 @@ static int run_test(const char *file)
 	static const char cgdir[] = "/sys/fs/cgroup/rmap-file-referenced-ppps";
 	static const char lru_gen_path[] = "/sys/kernel/mm/lru_gen/enabled";
 	static const char root_procs[] = "/sys/fs/cgroup/cgroup.procs";
+	static const char subtree[] = "/sys/fs/cgroup/cgroup.subtree_control";
 	char procs[sizeof(cgdir) + sizeof("/cgroup.procs")];
 	char reclaim[sizeof(cgdir) + sizeof("/memory.reclaim")];
 	char lru_gen_value[32];
@@ -96,6 +97,11 @@ static int run_test(const char *file)
 	if (rc)
 		goto out;
 
+	if (write_text(subtree, "+memory\n") && errno != EBUSY) {
+		perror("enable memory controller");
+		result(0, "enter an isolated memory cgroup");
+		goto out;
+	}
 	if (mkdir(cgdir, 0755) && errno != EEXIST) {
 		perror("mkdir cgroup");
 		result(0, "enter an isolated memory cgroup");

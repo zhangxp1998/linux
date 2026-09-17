@@ -102,6 +102,9 @@ static void run_iov_checks(int device_fd, unsigned char *mapping,
 			       length : PROCESS_PAGE_SIZE),
 			 "compat %s bulk extraction stops at one process page (%d)\n",
 			 description, request.bulk_first_len);
+	ksft_test_result(request.npages_result == 0,
+			 "iov_iter_npages counts and caps %s process pages (%d)\n",
+			 description, request.npages_result);
 }
 
 static int run_test(void)
@@ -114,7 +117,7 @@ static int run_test(void)
 	int device_fd;
 
 	ksft_print_header();
-	ksft_set_plan(11);
+	ksft_set_plan(13);
 
 	device_fd = ppps_open_fixture_or_skip("/dev/" IOV_ITER_PPPS_DEVICE_NAME,
 					     O_RDWR);

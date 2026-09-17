@@ -29,7 +29,7 @@ static int __init test_init(void)
 	test_buffer = vzalloc(TEST_BYTES);
 	if (!test_buffer)
 		return -ENOMEM;
-	test_map1 = vzalloc(PAGE_SIZE);
+	test_map1 = (void *)get_zeroed_page(GFP_KERNEL);
 	if (!test_map1) {
 		ret = -ENOMEM;
 		goto free_buffer;
@@ -59,8 +59,8 @@ static int __init test_init(void)
 	test_info.mem[0].memtype = UIO_MEM_VIRTUAL;
 	test_info.mem[1].name = "map1";
 	test_info.mem[1].addr = (uintptr_t)test_map1;
-	test_info.mem[1].size = PAGE_SIZE;
-	test_info.mem[1].memtype = UIO_MEM_VIRTUAL;
+	test_info.mem[1].size = TEST_SLICE_BYTES;
+	test_info.mem[1].memtype = UIO_MEM_LOGICAL;
 	test_info.mem[2].name = "map2";
 	test_info.mem[2].addr = (uintptr_t)test_map2;
 	test_info.mem[2].size = PAGE_SIZE;
@@ -84,7 +84,7 @@ unregister_parent:
 free_map2:
 	vfree(test_map2);
 free_map1:
-	vfree(test_map1);
+	free_page((unsigned long)test_map1);
 free_buffer:
 	vfree(test_buffer);
 	return ret;
@@ -95,7 +95,7 @@ static void __exit test_exit(void)
 	uio_unregister_device(&test_info);
 	root_device_unregister(test_parent);
 	vfree(test_map2);
-	vfree(test_map1);
+	free_page((unsigned long)test_map1);
 	vfree(test_buffer);
 }
 

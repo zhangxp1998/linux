@@ -166,6 +166,35 @@ static ssize_t run_bulk_extract(unsigned long address, size_t length)
 	return ret;
 }
 
+static int run_npages(unsigned long address, size_t length)
+{
+	unsigned int expected = length / PROCESS_PAGE_SIZE;
+	struct iovec iov[2] = {
+		{
+			.iov_base = (void __user *)address,
+			.iov_len = PROCESS_PAGE_SIZE,
+		},
+		{
+			.iov_base = (void __user *)(address + PROCESS_PAGE_SIZE),
+			.iov_len = length - PROCESS_PAGE_SIZE,
+		},
+	};
+	struct iov_iter iter;
+
+	iov_iter_ubuf(&iter, ITER_SOURCE, (void __user *)(address + 1),
+		      length - 1);
+	if (iov_iter_npages(&iter, INT_MAX) != expected ||
+	    iov_iter_npages(&iter, expected - 1) != expected - 1)
+		return -ERANGE;
+
+	iov_iter_init(&iter, ITER_SOURCE, iov, ARRAY_SIZE(iov), length);
+	iov_iter_advance(&iter, PROCESS_PAGE_SIZE / 2);
+	if (iov_iter_npages(&iter, INT_MAX) != expected ||
+	    iov_iter_npages(&iter, expected - 1) != expected - 1)
+		return -ERANGE;
+	return 0;
+}
+
 /* Pure offset/unit contracts, exercised in both native and compat processes. */
 static bool check_public_helpers(unsigned long address)
 {
@@ -350,6 +379,7 @@ static long iov_iter_ppps_ioctl(struct file *file, unsigned int cmd,
 							 expect_packed);
 	request.bulk_first_len = run_bulk_extract(request.address,
 						  request.length);
+	request.npages_result = run_npages(request.address, request.length);
 	if (copy_to_user((void __user *)arg, &request, sizeof(request)))
 		return -EFAULT;
 	return 0;

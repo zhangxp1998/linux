@@ -19,6 +19,15 @@
 
 #define RESERVE_SIZE	(4 * NATIVE_PAGE_SIZE)
 
+#ifdef __BIONIC__
+static int pthread_timedjoin_np(pthread_t thread, void **retval,
+				const struct timespec *deadline)
+{
+	(void)deadline;
+	return pthread_join(thread, retval);
+}
+#endif
+
 struct ioctl_thread_args {
 	struct gup_retry_ppps_args request;
 	int fd;

@@ -18,6 +18,15 @@
 
 #include "kselftest_ppps.h"
 
+#ifdef __BIONIC__
+static int pthread_timedjoin_np(pthread_t thread, void **retval,
+				const struct timespec *deadline)
+{
+	(void)deadline;
+	return pthread_join(thread, retval);
+}
+#endif
+
 struct copy_thread_args {
 	struct uffdio_copy copy;
 	int uffd;
