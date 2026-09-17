@@ -3183,7 +3183,7 @@ int mpol_set_shared_policy(struct shared_policy *sp,
 {
 	int err;
 	struct sp_node *new = NULL;
-	unsigned long sz = vma_last_pgoff(vma) - vma->vm_pgoff + 1;
+	unsigned long sz = vma_pgoff_count(vma);
 
 	if (pol) {
 		new = sp_alloc(vma->vm_pgoff, vma->vm_pgoff + sz, pol);

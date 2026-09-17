@@ -684,7 +684,7 @@ static int uio_find_mem_index(struct vm_area_struct *vma)
 	return index;
 }
 
-static vm_fault_t uio_vma_fault(struct vm_fault *vmf)
+static vm_fault_t uio_vma_fault_locked(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct uio_device *idev = vma->vm_private_data;
@@ -694,16 +694,15 @@ static vm_fault_t uio_vma_fault(struct vm_fault *vmf)
 	vm_fault_t ret = 0;
 	int mi;
 
-	mutex_lock(&idev->info_lock);
 	if (!idev->info) {
 		ret = VM_FAULT_SIGBUS;
-		goto out;
+		return ret;
 	}
 
 	mi = uio_find_mem_index(vmf->vma);
 	if (mi < 0) {
 		ret = VM_FAULT_SIGBUS;
-		goto out;
+		return ret;
 	}
 
 	/*
@@ -711,20 +710,10 @@ static vm_fault_t uio_vma_fault(struct vm_fault *vmf)
 	 * the byte offset within mem[mi].
 	 */
 	if (ppps_mm_is_compat(vma->vm_mm)) {
-		loff_t token_offset = (loff_t)mi << MM_PAGE_SHIFT(vma->vm_mm);
-		loff_t file_offset = vma_file_offset(vma);
-
-		if (file_offset < token_offset) {
-			ret = VM_FAULT_SIGBUS;
-			goto out;
-		}
-		offset = file_offset - token_offset;
-		if (check_add_overflow(offset, vmf->address - vma->vm_start,
-				       &offset) ||
-		    offset >= idev->info->mem[mi].size) {
-			ret = VM_FAULT_SIGBUS;
-			goto out;
-		}
+		/* uio_find_mem_index() consumed the complete selector token. */
+		offset = vmf->address - vma->vm_start;
+		if (offset >= idev->info->mem[mi].size)
+			return VM_FAULT_SIGBUS;
 
 		addr = (void *)(unsigned long)idev->info->mem[mi].addr +
 			(offset & PAGE_MASK);
@@ -734,11 +723,11 @@ static vm_fault_t uio_vma_fault(struct vm_fault *vmf)
 			page = vmalloc_to_page(addr);
 		if (!page) {
 			ret = VM_FAULT_SIGBUS;
-			goto out;
+			return ret;
 		}
 		ret = vmf_insert_page_slice(vma, vmf->address, page,
 					    vma_offset_to_slice(vma, offset));
-		goto out;
+		return ret;
 	}
 
 	offset = (vmf->pgoff - mi) << PAGE_SHIFT;
@@ -751,9 +740,18 @@ static vm_fault_t uio_vma_fault(struct vm_fault *vmf)
 	get_page(page);
 	vmf->page = page;
 
-out:
-	mutex_unlock(&idev->info_lock);
 
+	return ret;
+}
+
+static vm_fault_t uio_vma_fault(struct vm_fault *vmf)
+{
+	struct uio_device *idev = vmf->vma->vm_private_data;
+	vm_fault_t ret;
+
+	mutex_lock(&idev->info_lock);
+	ret = uio_vma_fault_locked(vmf);
+	mutex_unlock(&idev->info_lock);
 	return ret;
 }
 

@@ -106,8 +106,8 @@ static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 
 	/* vmap() cannot compensate for a subpage backing offset. */
 	if (ppps_mm_is_compat(mm) && mm_user_slice_offset(mm, address)) {
-		npgs = -EOPNOTSUPP;
-		goto check_npgs;
+		err = -EOPNOTSUPP;
+		goto out_pgs;
 	}
 
 	mmap_read_lock(mm);
@@ -128,7 +128,6 @@ static int xdp_umem_pin_pages(struct xdp_umem *umem, unsigned long address)
 		}
 	}
 
-check_npgs:
 	if (npgs != umem->npgs) {
 		if (npgs >= 0) {
 			umem->npgs = npgs;

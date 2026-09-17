@@ -2638,7 +2638,7 @@ static int __vm_map_pages(struct vm_area_struct *vma, struct page **pages,
 				unsigned long num, unsigned long offset,
 				unsigned int slice)
 {
-	unsigned long count = vma_native_pages(vma);
+	unsigned long count = vma_pgoff_count(vma);
 	unsigned long uaddr = vma->vm_start;
 
 	if (ppps_mm_is_compat(vma->vm_mm)) {
@@ -2753,10 +2753,7 @@ static vm_fault_t insert_pfn(struct vm_area_struct *vma, unsigned long addr,
 
 	/* Ok, finally just insert the thing.. */
 	entry = pfn_pte(pfn, prot);
-	if (ppps_mm_is_compat(mm))
-		entry = __pte(pte_val(entry) |
-			      ((u64)slice_idx <<
-			       MM_PAGE_SHIFT(mm)));
+	entry = pte_mkslice(entry, slice_idx);
 	entry = pte_mkspecial(entry);
 
 	if (mkwrite) {

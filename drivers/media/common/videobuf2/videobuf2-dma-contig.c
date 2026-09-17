@@ -571,7 +571,6 @@ static void *vb2_dc_get_userptr(struct vb2_buffer *vb, struct device *dev,
 {
 	struct vb2_dc_buf *buf;
 	struct frame_vector *vec;
-	unsigned int offset;
 	int n_pages, i;
 	int ret = 0;
 	struct sg_table *sgt;
@@ -607,7 +606,6 @@ static void *vb2_dc_get_userptr(struct vb2_buffer *vb, struct device *dev,
 		goto fail_buf;
 	}
 	buf->vec = vec;
-	offset = frame_vector_frame_offset(vec, 0);
 	n_pages = frame_vector_count(vec);
 	ret = frame_vector_to_pages(vec);
 	if (ret < 0) {
