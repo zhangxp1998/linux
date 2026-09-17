@@ -90,11 +90,9 @@ void xacct_add_tsk(struct taskstats *stats, struct task_struct *p)
 {
 	struct mm_struct *mm;
 
-	/* convert Mbyte-nsec to Mbyte-usec, see __acct_update_integrals */
-	stats->coremem = p->acct_rss_mem1;
-	do_div(stats->coremem, 1000);
-	stats->virtmem = p->acct_vm_mem1;
-	do_div(stats->virtmem, 1000);
+	/* Convert native-page-nsec/1024 to Mbyte-usec without overflow. */
+	stats->coremem = mul_u64_u32_div(p->acct_rss_mem1, PAGE_SIZE, 1000 * KB);
+	stats->virtmem = mul_u64_u32_div(p->acct_vm_mem1, PAGE_SIZE, 1000 * KB);
 	mm = get_task_mm(p);
 	if (mm) {
 		/* adjust to KB unit */
@@ -136,14 +134,14 @@ static void __acct_update_integrals(struct task_struct *tsk,
 
 	tsk->acct_timexpd = time;
 	/*
-	 * Scale the process page counts to Mbytes here because the page size can
-	 * change across exec. The final conversion from nsecs to usecs is done
-	 * in xacct_add_tsk().
+	 * Keep the native-page-nsec/1024 accumulator unit, including across
+	 * exec into an mm with a different page size. Scale after multiplying
+	 * so fractional native pages are not discarded on each update.
 	 */
 	tsk->acct_rss_mem1 += delta * get_mm_rss(tsk->mm) >>
-		(20 - MM_PAGE_SHIFT(tsk->mm));
+		(10 + PAGE_SHIFT - MM_PAGE_SHIFT(tsk->mm));
 	tsk->acct_vm_mem1 += delta * READ_ONCE(tsk->mm->total_vm) >>
-		(20 - MM_PAGE_SHIFT(tsk->mm));
+		(10 + PAGE_SHIFT - MM_PAGE_SHIFT(tsk->mm));
 }
 
 /**

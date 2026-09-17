@@ -267,7 +267,9 @@ static int ringbuf_map_get_next_key(struct bpf_map *map, void *key,
 
 /*
  * A compat process expects the ring in its own page size, as libbpf lays it
- * out: consumer_pos page, producer_pos page, then the data (mirrored twice).
+ * out: consumer_pos page, producer_pos page, then a contiguous 2N data window.
+ * For sub-native-page rings the second half need not alias the first: a
+ * wrapping sample continues linearly past N in both kernel and user views.
  * Map slice 0 of the two metadata pages and the data slices behind them.
  */
 static int ringbuf_map_mmap_ppps(struct bpf_ringbuf *rb,

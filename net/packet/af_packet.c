@@ -4603,7 +4603,7 @@ static int packet_mmap(struct file *file, struct socket *sock,
 		if (rb->pg_vec) {
 			if (!MM_PAGE_ALIGNED(vma->vm_mm, rb->block_size))
 				goto out;
-			expected_size += rb->pg_vec_len * rb->block_size;
+			expected_size += (unsigned long)rb->pg_vec_len * rb->block_size;
 		}
 	}
 

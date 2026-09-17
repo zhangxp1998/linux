@@ -976,7 +976,7 @@ static inline struct vma_offset vma_offset_at(const struct vm_area_struct *vma,
 {
 	return (struct vma_offset){
 		vma_linear_page_index(vma, address),
-		vma_address_to_slice(vma, address),
+		ppps_vma_has_slices(vma) ? vma_address_to_slice(vma, address) : 0,
 	};
 }
 
@@ -2781,6 +2781,10 @@ long pin_user_pages_with_offsets(struct mm_struct *mm, unsigned long start,
 				 struct page **pages, unsigned int *offsets);
 unsigned long mm_user_slice_offset(struct mm_struct *mm, unsigned long addr);
 
+struct page *get_user_page_vma_remote_with_offset(struct mm_struct *mm,
+		unsigned long addr, unsigned int gup_flags,
+		struct vm_area_struct **vmap, unsigned long *page_offset);
+
 /*
  * Retrieves a single page alongside its VMA. Does not support FOLL_NOWAIT.
  */
@@ -3946,8 +3950,8 @@ static inline unsigned long vma_last_pgoff(const struct vm_area_struct *vma)
 	return vma->vm_pgoff + last;
 }
 
-/* Number of native pages @vma touches (a partial first or last page counts). */
-static inline unsigned long vma_native_pages(const struct vm_area_struct *vma)
+/* Number of vm_pgoff units covered, including partially mapped file pages. */
+static inline unsigned long vma_pgoff_count(const struct vm_area_struct *vma)
 {
 	return vma_last_pgoff(vma) - vma->vm_pgoff + 1;
 }

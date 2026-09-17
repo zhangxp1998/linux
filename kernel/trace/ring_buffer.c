@@ -7371,7 +7371,7 @@ static int __rb_map_vma(struct ring_buffer_per_cpu *cpu_buffer,
 
 	nr_pages -= pgoff;
 
-	nr_vma_pages = vma_last_pgoff(vma) - vma->vm_pgoff + 1;
+	nr_vma_pages = vma_pgoff_count(vma);
 	if (!nr_vma_pages || nr_vma_pages > nr_pages)
 		return -EINVAL;
 
