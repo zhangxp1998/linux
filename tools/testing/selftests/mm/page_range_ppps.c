@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Exact byte-range GUP results, including short success and duplicate pins. */
 #define _GNU_SOURCE
+#include <limits.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
+#include <sys/wait.h>
 #include "kselftest_ppps.h"
 #include "iov_iter_ppps.h"
 #include "page_range_ppps.h"
@@ -33,6 +35,72 @@ static void check_range(int fd, unsigned char *base, size_t page_size,
 		pin ? "pin" : "get", name);
 }
 
+/* Driver-owned RAM has no page-cache rmap: its fallback is conservative. */
+static bool driver_stats(unsigned char *map, size_t page_size,
+			 unsigned long expected_pss, bool exclusive)
+{
+	char *line = NULL;
+	size_t cap = 0;
+	unsigned long lo, hi, pss = ULONG_MAX;
+	bool selected = false, ok = true;
+	FILE *file = fopen("/proc/self/smaps", "re");
+	uint64_t entry = 0;
+	int fd, i;
+
+	if (!file)
+		return false;
+	while (getline(&line, &cap, file) > 0) {
+		if (sscanf(line, "%lx-%lx", &lo, &hi) == 2)
+			selected = (uintptr_t)map >= lo && (uintptr_t)map < hi;
+		else if (selected && sscanf(line, "Pss: %lu kB", &pss) == 1)
+			break;
+	}
+	free(line);
+	fclose(file);
+	fd = open("/proc/self/pagemap", O_RDONLY);
+	if (fd < 0)
+		return false;
+	for (i = 0; i < 4; i++) {
+		ok &= pread(fd, &entry, sizeof(entry),
+			    ((uintptr_t)map / page_size + i) * 8) == sizeof(entry);
+		ok &= !!(entry & (1ULL << 63)) &&
+		      !!(entry & (1ULL << 56)) == exclusive;
+	}
+	close(fd);
+	return ok && pss == expected_pss;
+}
+
+static void check_driver_stats(unsigned char *map, size_t page_size)
+{
+	bool compat = page_size == PROCESS_PAGE_SIZE;
+	int barrier[2], status;
+	unsigned long pss = compat ? 4 : 4 * page_size / 1024;
+	pid_t pid;
+	char byte;
+
+	ksft_test_result(driver_stats(map, page_size, pss, !compat),
+			 "driver RAM uses per-page mapcount, not false exclusivity\n");
+	if (pipe(barrier))
+		ksft_exit_fail_msg("pipe failed\n");
+	pid = fork();
+	if (!pid) {
+		close(barrier[1]);
+		_exit(read(barrier[0], &byte, 1) != 1);
+	}
+	if (pid < 0)
+		ksft_exit_fail_msg("fork failed\n");
+	close(barrier[0]);
+	/* VM_MIXEDMAP page tables are copied before fork returns. */
+	ksft_test_result(driver_stats(map, page_size, pss / 2, false),
+			 "shared driver RAM is never reported exclusive\n");
+	if (write(barrier[1], "x", 1) != 1 || waitpid(pid, &status, 0) != pid ||
+	    !WIFEXITED(status) || WEXITSTATUS(status))
+		ksft_exit_fail_msg("child synchronization failed\n");
+	close(barrier[1]);
+	ksft_test_result(driver_stats(map, page_size, pss, !compat),
+			 "driver accounting recovers after child exit\n");
+}
+
 static void check_driver_mapping(int fd, size_t page_size)
 {
 	static const unsigned int slices[] = { 3, 1, 0, 2 };
@@ -42,7 +110,7 @@ static void check_driver_mapping(int fd, size_t page_size)
 	struct page_range_ppps_args req = {};
 	struct iovec local, remote;
 	size_t size = 4 * page_size;
-	int i, pin;
+	int i, pin, mem;
 
 	mapping = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	copy = malloc(size);
@@ -77,6 +145,19 @@ static void check_driver_mapping(int fd, size_t page_size)
 	ksft_test_result(process_vm_writev(getpid(), &local, 1, &remote, 1, 0) == size &&
 			 !memcmp(copy, mapping, size),
 			 "process_vm_writev preserves driver slice order\n");
+	mem = open("/proc/self/mem", O_RDWR);
+	if (mem < 0)
+		ksft_exit_fail_msg("open self mem failed\n");
+	ksft_test_result(pread(mem, copy, size, (uintptr_t)mapping) == size &&
+			 !memcmp(copy, mapping, size),
+			 "self mem read preserves driver slice order\n");
+	for (i = 0; i < 4; i++)
+		memset(copy + i * page_size, 0xd0 + i, page_size);
+	ksft_test_result(pwrite(mem, copy, size, (uintptr_t)mapping) == size &&
+			 !memcmp(copy, mapping, size),
+			 "self mem write preserves driver slice order\n");
+	close(mem);
+	check_driver_stats(mapping, page_size);
 	free(copy);
 	munmap(mapping, size);
 }
@@ -89,7 +170,7 @@ static int run_range_test(void)
 	int fd, memfd, pin;
 
 	ksft_print_header();
-	ksft_set_plan(13);
+	ksft_set_plan(18);
 	fd = ppps_open_fixture_or_skip("/dev/" IOV_ITER_PPPS_DEVICE_NAME,
 				       O_RDWR);
 	memfd = memfd_create("page-range", 0);

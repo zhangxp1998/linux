@@ -14,6 +14,11 @@
 #include <sys/wait.h>
 
 #include "kselftest_ppps.h"
+#include "iov_iter_ppps.h"
+
+#define DRIVER_TEST_BASE 0x70000000UL
+
+static int driver_fd = -1;
 
 #define TEST_VMAS	4
 #define TEST_BASE	0x50000000UL
@@ -81,7 +86,7 @@ static void crash_with_test_vmas(void)
 	int fd;
 
 	if (setrlimit(RLIMIT_CORE, &limit) ||
-	    !write_file("/proc/self/coredump_filter", "0x11\n", 5))
+	    !write_file("/proc/self/coredump_filter", "0x19\n", 5))
 		_exit(120);
 	fd = open(FILE_TEST_PATH, O_RDONLY | O_CLOEXEC);
 	if (fd < 0)
@@ -100,6 +105,13 @@ static void crash_with_test_vmas(void)
 		if (mapping != target)
 			_exit(123);
 		memset(mapping, 0x40 + index, PROCESS_PAGE_SIZE);
+	}
+	if (driver_fd >= 0) {
+		mapping = mmap((void *)DRIVER_TEST_BASE, 4 * PROCESS_PAGE_SIZE,
+			       PROT_READ | PROT_WRITE,
+			       MAP_SHARED | MAP_FIXED_NOREPLACE, driver_fd, 0);
+		if (mapping != (void *)DRIVER_TEST_BASE)
+			_exit(125);
 	}
 	raise(SIGSEGV);
 	_exit(124);
@@ -243,6 +255,41 @@ error:
 	return false;
 }
 
+static bool inspect_driver_core(const char *path)
+{
+	static const unsigned char expected[] = { 0xb4, 0x72, 0x31, 0x93 };
+	unsigned char bytes[4 * PROCESS_PAGE_SIZE];
+	Elf64_Ehdr header;
+	Elf64_Phdr phdr;
+	bool ok = false;
+	unsigned int i;
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+
+	if (fd < 0)
+		return false;
+	if (pread(fd, &header, sizeof(header), 0) != sizeof(header))
+		goto out;
+	for (i = 0; i < header.e_phnum; i++) {
+		size_t j;
+
+		if (pread(fd, &phdr, sizeof(phdr),
+			  header.e_phoff + i * sizeof(phdr)) != sizeof(phdr))
+			break;
+		if (phdr.p_type != PT_LOAD || phdr.p_vaddr != DRIVER_TEST_BASE)
+			continue;
+		if (phdr.p_filesz < sizeof(bytes) ||
+		    pread(fd, bytes, sizeof(bytes), phdr.p_offset) != sizeof(bytes))
+			break;
+		ok = true;
+		for (j = 0; j < sizeof(bytes); j++)
+			ok &= bytes[j] == expected[j / PROCESS_PAGE_SIZE];
+		break;
+	}
+out:
+	close(fd);
+	return ok;
+}
+
 static int run_test(void)
 {
 	char core_path[128];
@@ -254,6 +301,7 @@ static int run_test(void)
 	uint64_t offset_dump_size = 0;
 	size_t old_pattern_length = 0;
 	bool inspected = false;
+	bool driver_ok = false;
 	bool nt_file_found = false;
 	bool offset_segment_found = false;
 	bool contents_match = false;
@@ -262,7 +310,7 @@ static int run_test(void)
 	pid_t waited;
 
 	ksft_print_header();
-	ksft_set_plan(7);
+	ksft_set_plan(8);
 	if (!create_offset_file())
 		ksft_exit_fail_msg("create offset test file failed: %s\n",
 				   strerror(errno));
@@ -280,6 +328,7 @@ static int run_test(void)
 	}
 	ksft_test_result(true, "install a temporary core pattern\n");
 
+	driver_fd = open("/dev/" IOV_ITER_PPPS_DEVICE_NAME, O_RDWR | O_CLOEXEC);
 	pid = fork();
 	if (!pid)
 		crash_with_test_vmas();
@@ -324,6 +373,8 @@ static int run_test(void)
 	ksft_test_result(inspected && nt_file_found &&
 			 note_page_size == PROCESS_PAGE_SIZE && note_file_offset == 1,
 			 "encode the 4K file offset in NT_FILE\n");
+	if (driver_fd >= 0)
+		driver_ok = inspected && inspect_driver_core(core_path);
 	ksft_print_msg("VMAs=%u misaligned=%u contents=%u filesz=%llu page=%llu offset=%llu\n",
 		       found, misaligned, contents_match,
 		       (unsigned long long)offset_dump_size,
@@ -336,6 +387,12 @@ remove_core:
 	unlink(FILE_TEST_PATH);
 
 restore_pattern:
+	if (driver_fd >= 0) {
+		ksft_test_result(driver_ok, "dump initialized driver slices in virtual order\n");
+		close(driver_fd);
+	} else {
+		ksft_test_result_skip("driver slice fixture unavailable\n");
+	}
 	unlink(FILE_TEST_PATH);
 	if (!write_file("/proc/sys/kernel/core_pattern", old_pattern,
 			old_pattern_length))
