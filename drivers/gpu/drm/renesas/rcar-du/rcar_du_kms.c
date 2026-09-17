@@ -379,6 +379,10 @@ struct drm_gem_object *rcar_du_gem_prime_import_sg_table(struct drm_device *dev,
 	if (!rcar_du_has(rcdu, RCAR_DU_FEATURE_VSP1_SOURCE))
 		return drm_gem_dma_prime_import_sg_table(dev, attach, sgt);
 
+	/* The private GEM initializer requires native-page-aligned backing. */
+	if (!PAGE_ALIGNED(attach->dmabuf->size))
+		return ERR_PTR(-EINVAL);
+
 	/* Create a DMA GEM buffer. */
 	dma_obj = kzalloc(sizeof(*dma_obj), GFP_KERNEL);
 	if (!dma_obj)
