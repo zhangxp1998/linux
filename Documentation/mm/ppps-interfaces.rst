@@ -72,6 +72,28 @@ The older pin_user_pages_with_offsets() and get_vaddr_frames() count-based
 interfaces remain compatibility wrappers. New call sites should use the
 byte-range interfaces rather than reconstructing byte spans themselves.
 
+Module interfaces and backing alignment
+=======================================
+
+An EXPORT_SYMBOL declaration is not a vendor KMI guarantee. In this branch,
+vm_insert_page_native() is exported for in-tree consumers such as Rust Binder,
+but is not in the Pixel GKI symbol list. In-tree module dependencies can keep
+it through symbol trimming without making it available as a supported vendor
+interface. Vendor modules must use helpers included in their target kernel's
+KMI list; adding a new dependency requires a separate KMI update.
+
+vm_insert_page_native() inserts a whole native page, whereas
+vm_insert_page_slice() identifies one physical slice explicitly. Neither is
+a substitute for the other without reviewing the mapping's byte geometry.
+
+udmabuf can export 4K-aligned subranges for compat processes. Importers with
+a native-page-sized backing contract must validate that contract before
+initializing their own objects. In particular, a custom GEM importer which
+bypasses drm_gem_dma_prime_import_sg_table() must check the dma-buf size
+before drm_gem_private_object_init(). The common helper's validation does
+not cover private importer callbacks. Rejecting an unsupported import does
+not require disabling 4K udmabuf exports globally.
+
 RSS readers
 ===========
 
