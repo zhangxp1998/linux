@@ -345,6 +345,7 @@ CATEGORY="mmap" run_test ./shmem_mmap_offset_ppps
 CATEGORY="mmap" run_test ./memfd_eof_ppps secretmem
 CATEGORY="mmap" run_test ./memfd_eof_ppps shmem
 CATEGORY="mmap" run_test ./mincore_ppps
+CATEGORY="mmap" run_test ./mincore_ppps --native
 CATEGORY="mmap" run_ppps_module_test gup_retry ./mmap_action_cleanup_ppps
 CATEGORY="mmap" run_test ./selinux_status_mmap_ppps.sh
 CATEGORY="mmap" run_ppps_module_test vm_iomap_memory ./vm_iomap_memory_ppps
@@ -465,8 +466,11 @@ CATEGORY="mempolicy" run_test ./mbind_ppps
 CATEGORY="mlock" run_test ./mlock-random-test
 
 CATEGORY="mlock" run_test ./mlock2-tests
+CATEGORY="mlock" run_test ./mlock_onfault_ppps
+CATEGORY="mlock" run_test ./mlock_onfault_ppps --native
 
 CATEGORY="mlock" run_test ./mlock_large_file_ppps
+CATEGORY="mlock" run_test ./mlock_partial_file_ppps
 
 CATEGORY="mlock" run_test ./mlock_reclaim_ppps
 

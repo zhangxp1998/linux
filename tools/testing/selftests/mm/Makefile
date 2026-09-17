@@ -59,7 +59,8 @@ PPPS_TESTS := \
 	madv_cold_large_file_ppps madvise_free_ppps madvise_guard_ppps \
 	madvise_remove_ppps madvise_willneed_ppps mbind_ppps memfd_eof_ppps \
 	mglru_folded_ppps mglru_ppps mincore_ppps mixed_context_switch_ppps \
-	mixed_mm_access_ppps mlock_large_file_ppps mlock_reclaim_ppps \
+	mixed_mm_access_ppps mlock_large_file_ppps mlock_onfault_ppps \
+	mlock_partial_file_ppps mlock_reclaim_ppps \
 	mmap_action_cleanup_ppps mmap_hint_ppps mmap_page_zero_ppps \
 	mmu_notifier_ppps mremap_commit_ppps mremap_hint_ppps \
 	mremap_pgoff_ppps mremap_rlimit_ppps msync_offset_ppps munmap_ppps \
@@ -253,6 +254,8 @@ $(eval $(call ppps_test_hdrs,page_range_ppps,iov_iter_ppps.h page_range_ppps.h))
 $(eval $(call ppps_test_hdrs,mmu_notifier_ppps,mmu_notifier_ppps.h))
 $(eval $(call ppps_test_hdrs,pagewalk_ppps,pagewalk_ppps.h))
 $(eval $(call ppps_test_hdrs,vm_map_pages_ppps,vm_map_pages_ppps.h))
+$(foreach t,mincore_ppps mlock_onfault_ppps, \
+	$(eval $(call ppps_test_hdrs,$(t),../kselftest_ppps.h)))
 $(foreach t,file_cow_ppps hole_anon_ppps mte_anon_ppps packed_anon_ppps \
 	    packed_swap_ppps uffd_copy_tuple_ppps, \
 	$(eval $(call ppps_test_hdrs,$(t),ppps_tuple_test.h)))
