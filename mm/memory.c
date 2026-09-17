@@ -1024,6 +1024,8 @@ copy_present_ptes(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 			rss[MM_ANONPAGES] += nr;
 			VM_WARN_ON_FOLIO(PageAnonExclusive(page), folio);
 		} else {
+			if (ppps_mm_is_compat(dst_vma->vm_mm))
+				ppps_file_pte_refs_add(page, nr);
 			folio_dup_file_rmap_ptes(folio, page, nr);
 			rss[mm_counter_file(folio)] += nr;
 		}
@@ -1052,6 +1054,8 @@ copy_present_ptes(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 		rss[MM_ANONPAGES]++;
 		VM_WARN_ON_FOLIO(PageAnonExclusive(page), folio);
 	} else {
+		if (ppps_mm_is_compat(dst_vma->vm_mm))
+			ppps_file_pte_refs_add(page, 1);
 		folio_dup_file_rmap_pte(folio, page);
 		rss[mm_counter_file(folio)]++;
 	}

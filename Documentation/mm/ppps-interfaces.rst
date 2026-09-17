@@ -114,6 +114,32 @@ not atomic snapshots and do not change the synchronization or rounding
 guarantees of the underlying counters. Storage units and proc/trace ABIs
 are unchanged.
 
+File PSS fast path
+==================
+
+A page_ext counter records the number of compat file PTEs referencing each
+native page. It is not a process count, and is never divided by the number
+of slices to approximate PSS. A native reader may use the existing native
+mapcount only when this counter is zero; mixed pages retain the per-slice
+reverse-map walk and the existing PSS and pagemap exclusivity semantics.
+One process mapping all four slices and four processes mapping one slice
+can have equal counters but different sharing distributions.
+
+Additions (including fork's file-rmap duplication) increment the counter
+before the ordinary rmap update. Removal decrements it after the rmap update.
+Moving a PTE in the same mm does not change the count; migration removes the
+old page's mappings and adds the new page's mappings. Folio splitting keeps
+the counters associated with the same native pages. Missing metadata and
+saturated counters retain the slow path. Like native mapcounts and the
+existing reverse-map walk, these statistics are not atomic snapshots of
+all processes; the counter is not an ownership or memory-safety primitive.
+
+The counter has a 32-bit payload in an 8-byte-aligned page_ext slot on arm64
+(about 4 MiB for 8 GiB of 16K pages, in addition to other page_ext clients).
+No struct page layout, public rmap function signature or proc unit changes.
+The selftest smaps_native_fallback_ppps checks mixed sharing, partial unmap,
+mremap and fork/exit transitions using normal userspace interfaces.
+
 Pagemap entries
 ===============
 

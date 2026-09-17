@@ -8,6 +8,7 @@
 #include <linux/dcache.h>
 #include <linux/fs.h>
 #include <linux/ppps.h>
+#include <linux/page_ext.h>
 #include <linux/string.h>
 #include <asm/memory.h>
 
@@ -41,6 +42,79 @@ unsigned long mm_default_map_window64(void)
 EXPORT_SYMBOL(mm_default_map_window64);
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * Number of compat file PTEs referencing each native page, not a process
+ * count or a PSS divisor.  A zero value lets a native /proc walker use the
+ * normal mapcount without reverse-mapping every slice.  Anonymous tuples
+ * have their own accounting and do not use this counter.
+ *
+ * page_ext is zeroed before userspace can create compat mappings.  Normal
+ * unmap (including reclaim/migration) balances every addition before the
+ * page can be reused; splitting a folio leaves its per-page counters in
+ * place.  Missing metadata never qualifies for the fast path.
+ */
+static bool __init ppps_file_page_ext_needed(void)
+{
+	return true;
+}
+
+struct page_ext_operations ppps_file_page_ext_ops = {
+	/* Keep the page_ext stride aligned for the other clients too. */
+	.size = ALIGN(sizeof(atomic_t), sizeof(unsigned long)),
+	.need = ppps_file_page_ext_needed,
+};
+
+static void ppps_file_pte_refs_update(struct page *page, int nr_pages, int delta)
+{
+	for (; nr_pages; nr_pages--, page++) {
+		struct page_ext *ext = page_ext_get(page);
+		atomic_t *refs;
+		int old, next;
+
+		if (!ext)
+			continue;
+		refs = page_ext_data(ext, &ppps_file_page_ext_ops);
+		old = atomic_read(refs);
+		do {
+			/* Overflow/invalid accounting must never manufacture zero. */
+			if (old == INT_MAX)
+				break;
+			if (WARN_ON_ONCE(old < 0 || (!old && delta < 0)))
+				next = INT_MAX;
+			else
+				next = old + delta;
+		} while (!atomic_try_cmpxchg(refs, &old, next));
+		page_ext_put(ext);
+	}
+}
+
+void ppps_file_pte_refs_add(struct page *page, int nr_pages)
+{
+	/* Full ordering: publish a nonzero count before adding the rmap. */
+	ppps_file_pte_refs_update(page, nr_pages, 1);
+}
+
+void ppps_file_pte_refs_sub(struct page *page, int nr_pages)
+{
+	/* Full ordering: remove the rmap before allowing the count to reach zero. */
+	ppps_file_pte_refs_update(page, nr_pages, -1);
+}
+
+/* Caller holds a PTE lock or a reference keeping @page alive. */
+bool ppps_file_page_has_compat_ptes(struct page *page)
+{
+	struct page_ext *ext = page_ext_get(page);
+	atomic_t *refs;
+	bool present;
+
+	if (!ext)
+		return true;
+	refs = page_ext_data(ext, &ppps_file_page_ext_ops);
+	present = atomic_read_acquire(refs) != 0;
+	page_ext_put(ext);
+	return present;
+}
+
 /*
  * The PPPS file fault path installs one process-sized PTE at a time, so the
  * rmap addition above cannot tell when the final slice of a large folio has
