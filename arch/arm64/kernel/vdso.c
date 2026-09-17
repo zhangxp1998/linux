@@ -66,6 +66,18 @@ static struct vdso_abi_info vdso_info[] __ro_after_init = {
 static union vdso_data_store vdso_data_store __page_aligned_data;
 struct vdso_data *vdso_data = vdso_data_store.data;
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * Select immutable geometry per mm, independently of the shared clock/RNG
+ * data and time namespaces. Pad each backing page so no adjacent kernel data
+ * can be exposed through the special mapping.
+ */
+static const unsigned long vdso_native_page_shift[PAGE_SIZE / sizeof(long)]
+	__aligned(PAGE_SIZE) = { PAGE_SHIFT };
+static const unsigned long vdso_compat_page_shift[PAGE_SIZE / sizeof(long)]
+	__aligned(PAGE_SIZE) = { PAGE_SHIFT_COMPAT };
+#endif
+
 static int vdso_mremap(const struct vm_special_mapping *sm,
 		struct vm_area_struct *new_vma)
 {
@@ -169,6 +181,14 @@ static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
 		pfn = sym_to_pfn(vdso_data);
 		break;
 #endif /* CONFIG_TIME_NS */
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	case VVAR_PAGE_SHIFT_OFFSET:
+		pfn = ppps_mm_is_compat(vma->vm_mm) ?
+			sym_to_pfn(vdso_compat_page_shift) :
+			sym_to_pfn(vdso_native_page_shift);
+		break;
+#endif
 	default:
 		return VM_FAULT_SIGBUS;
 	}

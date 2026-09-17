@@ -90,13 +90,8 @@ __cvdso_getrandom_data(const struct vdso_rng_data *rng_info, void *buffer, size_
 	}
 
 	/* The state must not straddle a page, since pages can be zeroed at any time. */
-	if (unlikely(((unsigned long)opaque_state & ~PAGE_MASK) + sizeof(*state) > PAGE_SIZE)) {
-#ifdef VGETRANDOM_FALLBACK_ON_CROSS_PAGE
-		return getrandom_syscall(buffer, len, flags);
-#else
+	if (unlikely(((unsigned long)opaque_state & ~PAGE_MASK) + sizeof(*state) > PAGE_SIZE))
 		return -EFAULT;
-#endif
-	}
 
 	/* Handle unexpected flags by falling back to the kernel. */
 	if (unlikely(flags & ~(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE)))

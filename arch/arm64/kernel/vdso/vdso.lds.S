@@ -22,6 +22,9 @@ SECTIONS
 {
 	PROVIDE(_vdso_data = . - __VVAR_PAGES * PAGE_SIZE);
 	PROVIDE(_vdso_rng_data = _vdso_data + __VDSO_RND_DATA_OFFSET);
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	PROVIDE_HIDDEN(_vdso_page_shift = _vdso_data + __VVAR_PAGE_SHIFT_OFFSET * PAGE_SIZE);
+#endif
 #ifdef CONFIG_TIME_NS
 	PROVIDE(_timens_data = _vdso_data + PAGE_SIZE);
 #endif
