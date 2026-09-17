@@ -493,6 +493,58 @@ static void fault_input_test(struct kunit *test)
 	ppps_swap_entry_reset(entry);
 }
 
+#if IS_ENABLED(CONFIG_USERFAULTFD)
+static void uffd_copy_input_test(struct kunit *test)
+{
+	struct tuple_test *ctx = test->priv;
+	struct vm_area_struct vma;
+	unsigned long address = PAGE_SIZE;
+	uffd_flags_t copy = uffd_flags_set_mode(0, MFILL_ATOMIC_COPY);
+	struct ppps_uffd_copy_state state = {};
+	struct folio *folio = NULL;
+	struct folio *pending;
+	unsigned long size;
+	pmd_t pmd = __pmd(0);
+	long copied;
+
+	tuple_test_full_vma(ctx, &vma);
+	pending = folio_alloc(GFP_KERNEL, 0);
+	KUNIT_ASSERT_NOT_NULL(test, pending);
+	mmap_write_lock(ctx->mm);
+	ctx->mm->page_shift = PAGE_SHIFT;
+	copied = ppps_uffd_copy(&pmd, &vma, address, 0, PAGE_SIZE, copy,
+				&folio, &state);
+	KUNIT_EXPECT_EQ(test, copied, 0L);
+	ctx->mm->page_shift = PAGE_SHIFT_COMPAT;
+
+	copied = ppps_uffd_copy(&pmd, &vma, address, 0, PAGE_SIZE,
+				copy | MFILL_ATOMIC_WP, &folio, &state);
+	KUNIT_EXPECT_EQ(test, copied, 0L);
+	vm_flags_set(&vma, VM_LOCKED);
+	copied = ppps_uffd_copy(&pmd, &vma, address, 0, PAGE_SIZE, copy,
+				&folio, &state);
+	KUNIT_EXPECT_EQ(test, copied, 0L);
+	vm_flags_clear(&vma, VM_LOCKED);
+	copied = ppps_uffd_copy(&pmd, &vma, vma.vm_start - PAGE_SIZE, 0,
+				PAGE_SIZE, copy, &folio, &state);
+	KUNIT_EXPECT_EQ(test, copied, 0L);
+
+	folio = pending;
+	state.offset = 0;
+	state.tuple = false;
+	copied = ppps_uffd_copy(&pmd, &vma, address + PAGE_SIZE_COMPAT, 0,
+				PAGE_SIZE, copy, &folio, &state);
+	KUNIT_EXPECT_EQ(test, copied, 0L);
+	KUNIT_EXPECT_PTR_EQ(test, folio, NULL);
+
+	state.tuple = true;
+	size = PAGE_SIZE_COMPAT;
+	KUNIT_EXPECT_EQ(test, ppps_uffd_copy_retry(&state, &vma, address, &size),
+			0UL);
+	KUNIT_EXPECT_EQ(test, size, PAGE_SIZE);
+	mmap_write_unlock(ctx->mm);
+}
+#endif
 
 #if IS_ENABLED(CONFIG_PAGE_TABLE_CHECK)
 static void page_table_check_nonleaf_input_test(struct kunit *test)
@@ -538,6 +590,9 @@ static struct kunit_case ppps_test_cases[] = {
 	KUNIT_CASE(vm_insert_pages_input_test),
 	KUNIT_CASE(vma_merge_slice_offset_test),
 	KUNIT_CASE(fault_input_test),
+#if IS_ENABLED(CONFIG_USERFAULTFD)
+	KUNIT_CASE(uffd_copy_input_test),
+#endif
 #if IS_ENABLED(CONFIG_PAGE_TABLE_CHECK)
 	KUNIT_CASE(page_table_check_nonleaf_input_test),
 #endif
