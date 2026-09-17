@@ -1264,19 +1264,18 @@ static int copy_vma_and_data(struct vma_remap_struct *vrm,
 		err = PTR_ERR(ppps_folios);
 		ppps_folios = NULL;
 		moved_len = 0;
-		goto revert;
+	} else {
+		moved_len = move_page_tables(&pmc);
+		if (moved_len < vrm->old_len)
+			err = -ENOMEM;
+		if (!err && vma->vm_ops && vma->vm_ops->mremap)
+			err = vma->vm_ops->mremap(new_vma);
+		/* No fallible operation may follow a committed slice rearrangement. */
+		if (!err && ppps_vma_shares_tuple(new_vma))
+			err = ppps_anon_reslice_range(vma->vm_mm, vrm->addr,
+						      vrm->new_addr, vrm->old_len);
 	}
-	moved_len = move_page_tables(&pmc);
-	if (moved_len < vrm->old_len)
-		err = -ENOMEM;
-	if (!err && vma->vm_ops && vma->vm_ops->mremap)
-		err = vma->vm_ops->mremap(new_vma);
-	/* No fallible operation may follow a committed slice rearrangement. */
-	if (!err && ppps_vma_shares_tuple(new_vma))
-		err = ppps_anon_reslice_range(vma->vm_mm, vrm->addr,
-					      vrm->new_addr, vrm->old_len);
 
-revert:
 	if (unlikely(err)) {
 		PAGETABLE_MOVE(pmc_revert, new_vma, vma, vrm->new_addr,
 			       vrm->addr, moved_len);
