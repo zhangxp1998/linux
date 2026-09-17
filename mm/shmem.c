@@ -3201,12 +3201,15 @@ static inline int shmem_ppps_mfill_existing_slice(struct inode *inode, pgoff_t p
 }
 #endif
 
-int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
-			   struct vm_area_struct *dst_vma,
-			   unsigned long dst_addr,
-			   unsigned long src_addr,
-			   uffd_flags_t flags,
-			   struct folio **foliop)
+/*
+ * Install a new cache folio using the caller's reserved inode block. On
+ * failure, leave block accounting to the caller. Only a cache insertion
+ * collision requests a retry; an occupied destination PTE is terminal.
+ */
+static int shmem_mfill_atomic_pte_new(pmd_t *dst_pmd,
+				      struct vm_area_struct *dst_vma, unsigned long dst_addr,
+				      unsigned long src_addr, uffd_flags_t flags,
+				      struct folio **foliop, bool *retry)
 {
 	struct inode *inode = file_inode(dst_vma->vm_file);
 	struct shmem_inode_info *info = SHMEM_I(inode);
@@ -3218,127 +3221,84 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 	int ret;
 	pgoff_t max_off;
 	bool ppps_compat = ppps_mm_is_compat(dst_vma->vm_mm);
-	unsigned int nofs_flags = 0;
 
-	if (shmem_inode_acct_blocks(inode, 1)) {
-		/*
-		 * We may have got a page, returned -ENOENT triggering a retry,
-		 * and now we find ourselves with -ENOMEM. Release the page, to
-		 * avoid a BUG_ON in our caller.
-		 */
-		if (unlikely(*foliop)) {
-			folio_put(*foliop);
-			*foliop = NULL;
-		}
-		return -ENOMEM;
-	}
+	*retry = false;
+	if (!*foliop) {
+		unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
+		unsigned long offset = vma_page_slice_offset(dst_vma, dst_addr);
 
-	/*
-	 * Keep the page-cache folio, slice mask, contents, and PTE installation
-	 * in one transaction.  Otherwise concurrent UFFDIO_COPY operations for
-	 * sibling slices can race initial folio insertion and strand a locked
-	 * winner while another operation retries it.
-	 */
-	if (ppps_compat) {
-		nofs_flags = memalloc_nofs_save();
-		shmem_ppps_uffd_lock(info);
-	}
-	for (;;) {
-		if (ppps_compat) {
-			struct folio *existing;
+		ret = -ENOMEM;
+		folio = shmem_alloc_folio(gfp, 0, info, pgoff);
+		if (!folio)
+			return ret;
 
-			ret = shmem_ppps_mfill_existing_slice(inode, pgoff, dst_pmd,
-							      dst_vma, dst_addr, src_addr,
-							      flags, gfp, foliop,
-							      &existing);
-			if (existing || ret)
-				goto out_unacct_blocks;
-		}
+		/* Only one slice is filled below; the rest must not leak. */
+		if (ppps_compat)
+			folio_zero_range(folio, 0, folio_size(folio));
 
-		if (!*foliop) {
-			unsigned long pgsize = MM_PAGE_SIZE(dst_vma->vm_mm);
-			unsigned long offset = vma_page_slice_offset(dst_vma, dst_addr);
+		if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
+			page_kaddr = kmap_local_folio(folio, 0);
+			/*
+			 * The read mmap_lock is held here.  Despite the
+			 * mmap_lock being read recursive a deadlock is still
+			 * possible if a writer has taken a lock.  For example:
+			 *
+			 * process A thread 1 takes read lock on own mmap_lock
+			 * process A thread 2 calls mmap, blocks taking write lock
+			 * process B thread 1 takes page fault, read lock on own mmap lock
+			 * process B thread 2 calls mmap, blocks taking write lock
+			 * process A thread 1 blocks taking read lock on process B
+			 * process B thread 1 blocks taking read lock on process A
+			 *
+			 * Disable page faults to prevent potential deadlock
+			 * and retry the copy outside the mmap_lock.
+			 */
+			pagefault_disable();
+			ret = copy_from_user(page_kaddr + offset,
+					     (const void __user *)src_addr,
+					     pgsize);
+			pagefault_enable();
+			kunmap_local(page_kaddr);
 
-			ret = -ENOMEM;
-			folio = shmem_alloc_folio(gfp, 0, info, pgoff);
-			if (!folio)
-				goto out_unacct_blocks;
-
-			/* Only one slice is filled below; the rest must not leak. */
-			if (ppps_compat)
-				folio_zero_range(folio, 0, folio_size(folio));
-
-			if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY)) {
-				page_kaddr = kmap_local_folio(folio, 0);
-				/*
-				 * The read mmap_lock is held here.  Despite the
-				 * mmap_lock being read recursive a deadlock is still
-				 * possible if a writer has taken a lock.  For example:
-				 *
-				 * process A thread 1 takes read lock on own mmap_lock
-				 * process A thread 2 calls mmap, blocks taking write lock
-				 * process B thread 1 takes page fault, read lock on own mmap lock
-				 * process B thread 2 calls mmap, blocks taking write lock
-				 * process A thread 1 blocks taking read lock on process B
-				 * process B thread 1 blocks taking read lock on process A
-				 *
-				 * Disable page faults to prevent potential deadlock
-				 * and retry the copy outside the mmap_lock.
-				 */
-				pagefault_disable();
-				ret = copy_from_user(page_kaddr + offset,
-						     (const void __user *)src_addr,
-						     pgsize);
-				pagefault_enable();
-				kunmap_local(page_kaddr);
-
-				/* fallback to copy_from_user outside mmap_lock */
-				if (unlikely(ret)) {
-					*foliop = folio;
-					ret = -ENOENT;
-					/* don't free the page */
-					goto out_unacct_blocks;
-				}
-
-				flush_dcache_folio(folio);
-			} else {		/* ZEROPAGE */
-				page_kaddr = kmap_local_folio(folio, 0);
-				memset(page_kaddr + offset, 0, pgsize);
-				kunmap_local(page_kaddr);
+			/* fallback to copy_from_user outside mmap_lock */
+			if (unlikely(ret)) {
+				*foliop = folio;
+				ret = -ENOENT;
+				/* don't free the page */
+				return ret;
 			}
-		} else {
-			folio = *foliop;
-			VM_BUG_ON_FOLIO(folio_test_large(folio), folio);
-			*foliop = NULL;
+
+			flush_dcache_folio(folio);
+		} else {		/* ZEROPAGE */
+			page_kaddr = kmap_local_folio(folio, 0);
+			memset(page_kaddr + offset, 0, pgsize);
+			kunmap_local(page_kaddr);
 		}
-
-		VM_BUG_ON(folio_test_locked(folio));
-		VM_BUG_ON(folio_test_swapbacked(folio));
-		__folio_set_locked(folio);
-		__folio_set_swapbacked(folio);
-		__folio_mark_uptodate(folio);
-
-		ret = -EFAULT;
-		max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
-		if (unlikely(pgoff >= max_off))
-			goto out_release;
-
-		ret = mem_cgroup_charge(folio, dst_vma->vm_mm, gfp);
-		if (ret)
-			goto out_release;
-		ret = shmem_add_to_page_cache(folio, mapping, pgoff, NULL, gfp);
-		if (ret) {
-			if (ret == -EEXIST && ppps_compat) {
-				folio_unlock(folio);
-				folio_put(folio);
-				continue;
-			}
-			goto out_release;
-		}
-
-		break;
+	} else {
+		folio = *foliop;
+		VM_BUG_ON_FOLIO(folio_test_large(folio), folio);
+		*foliop = NULL;
 	}
 
+	VM_BUG_ON(folio_test_locked(folio));
+	VM_BUG_ON(folio_test_swapbacked(folio));
+	__folio_set_locked(folio);
+	__folio_set_swapbacked(folio);
+	__folio_mark_uptodate(folio);
+
+	ret = -EFAULT;
+	max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
+	if (unlikely(pgoff >= max_off))
+		goto out_release;
+
+	ret = mem_cgroup_charge(folio, dst_vma->vm_mm, gfp);
+	if (ret)
+		goto out_release;
+	ret = shmem_add_to_page_cache(folio, mapping, pgoff, NULL, gfp);
+	if (ret) {
+		*retry = ret == -EEXIST && ppps_compat;
+		goto out_release;
+	}
 	if (ppps_compat) {
 		ret = shmem_ppps_uffd_set_slices(info, pgoff,
 				BIT(vma_address_to_slice(dst_vma, dst_addr)),
@@ -3374,18 +3334,93 @@ int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
 
 	shmem_recalc_inode(inode, 1, 0);
 	folio_unlock(folio);
-	if (ppps_compat) {
-		shmem_ppps_uffd_unlock(info);
-		memalloc_nofs_restore(nofs_flags);
-	}
 	return 0;
 out_delete_from_cache:
 	filemap_remove_folio(folio);
 out_release:
 	folio_unlock(folio);
 	folio_put(folio);
+	return ret;
+}
+
+int shmem_mfill_atomic_pte(pmd_t *dst_pmd,
+			   struct vm_area_struct *dst_vma,
+			   unsigned long dst_addr,
+			   unsigned long src_addr,
+			   uffd_flags_t flags,
+			   struct folio **foliop)
+{
+	struct inode *inode = file_inode(dst_vma->vm_file);
+	struct shmem_inode_info *info = SHMEM_I(inode);
+	struct address_space *mapping = inode->i_mapping;
+	gfp_t gfp = mapping_gfp_mask(mapping);
+	pgoff_t pgoff = linear_page_index(dst_vma, dst_addr);
+	unsigned int nofs_flags = 0;
+	bool ppps_compat = ppps_mm_is_compat(dst_vma->vm_mm);
+	bool blocks_reserved = false;
+	bool retry;
+	int ret;
+
+	/*
+	 * Keep the page-cache folio, slice mask, contents, and PTE installation
+	 * in one transaction.  Otherwise concurrent UFFDIO_COPY operations for
+	 * sibling slices can race initial folio insertion and strand a locked
+	 * winner while another operation retries it.
+	 */
+	if (ppps_compat) {
+		nofs_flags = memalloc_nofs_save();
+		shmem_ppps_uffd_lock(info);
+	}
+	for (;;) {
+		if (ppps_compat) {
+			struct folio *existing;
+
+			ret = shmem_ppps_mfill_existing_slice(inode, pgoff, dst_pmd,
+							      dst_vma, dst_addr, src_addr,
+							      flags, gfp, foliop,
+							      &existing);
+			if (existing || ret)
+				goto out_unacct_blocks;
+		}
+
+		/* Existing PPPS folios need no new cache-block reservation. */
+		if (!blocks_reserved) {
+			if (shmem_inode_acct_blocks(inode, 1)) {
+				/* Drop a copy page retained for the lockless retry. */
+				if (unlikely(*foliop)) {
+					folio_put(*foliop);
+					*foliop = NULL;
+				}
+				ret = -ENOMEM;
+				break;
+			}
+			blocks_reserved = true;
+		}
+
+		ret = shmem_mfill_atomic_pte_new(dst_pmd, dst_vma, dst_addr,
+						 src_addr, flags, foliop, &retry);
+		if (!retry)
+			break;
+
+		/* Re-check the cache winner without retaining the losing folio. */
+		cond_resched();
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
+			break;
+		}
+	}
+	if (ret)
+		goto out_unacct_blocks;
+
+	if (ppps_compat) {
+		shmem_ppps_uffd_unlock(info);
+		memalloc_nofs_restore(nofs_flags);
+	}
+	return 0;
+
 out_unacct_blocks:
-	shmem_inode_unacct_blocks(inode, 1);
+	if (blocks_reserved)
+		shmem_inode_unacct_blocks(inode, 1);
 	if (ppps_compat) {
 		shmem_ppps_uffd_unlock(info);
 		memalloc_nofs_restore(nofs_flags);
