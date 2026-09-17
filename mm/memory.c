@@ -1126,7 +1126,7 @@ copy_present_ptes(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 
 	if (unlikely(folio_test_ppps_compat_anon(folio)))
 		return ppps_anon_copy_present_ptes(dst_vma, src_vma, dst_pte,
-						   src_pte, addr, rss, folio,
+						   src_pte, addr, max_nr, rss, folio,
 						   prealloc);
 
 	/*
@@ -1151,6 +1151,8 @@ copy_present_ptes(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 			rss[MM_ANONPAGES] += nr;
 			VM_WARN_ON_FOLIO(PageAnonExclusive(page), folio);
 		} else {
+			if (ppps_mm_is_compat(dst_vma->vm_mm))
+				ppps_file_pte_refs_add(page, nr);
 			folio_dup_file_rmap_ptes(folio, page, nr, dst_vma);
 			rss[mm_counter_file(folio)] += nr;
 		}
@@ -1177,6 +1179,8 @@ copy_present_ptes(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 		rss[MM_ANONPAGES]++;
 		VM_WARN_ON_FOLIO(PageAnonExclusive(page), folio);
 	} else {
+		if (ppps_mm_is_compat(dst_vma->vm_mm))
+			ppps_file_pte_refs_add(page, 1);
 		folio_dup_file_rmap_pte(folio, page, dst_vma);
 		rss[mm_counter_file(folio)]++;
 	}
@@ -1568,22 +1572,9 @@ static inline bool should_zap_cows(struct zap_details *details)
 }
 
 /* Decides whether we should zap this folio with the folio pointer specified */
-static inline bool should_zap_folio(struct vm_area_struct *vma,
-				    struct zap_details *details,
+static inline bool should_zap_folio(struct zap_details *details,
 				    struct folio *folio)
 {
-	/*
-	 * File invalidation must remove page-cache slices, but a private COW
-	 * slice is anonymous data and remains valid independently of the file.
-	 * This mirrors an ordinary private COW mapping while allowing P and F
-	 * slices to coexist in one native-page range.
-	 */
-	if (details &&
-	    (details->zap_flags & ZAP_FLAG_PRESERVE_PPPS_COW) &&
-	    !vma_is_anonymous(vma) && folio_test_anon(folio) &&
-	    folio_test_ppps_compat_anon(folio))
-		return false;
-
 	/* If we can make a decision without *folio.. */
 	if (should_zap_cows(details))
 		return true;
@@ -1738,7 +1729,7 @@ static inline int zap_present_ptes(struct mmu_gather *tlb,
 	}
 
 	folio = page_folio(page);
-	if (unlikely(!should_zap_folio(vma, details, folio))) {
+	if (unlikely(!should_zap_folio(details, folio))) {
 		*any_skipped = true;
 		return 1;
 	}
@@ -1781,7 +1772,7 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
 		struct page *page = pfn_swap_entry_to_page(entry);
 		struct folio *folio = page_folio(page);
 
-		if (unlikely(!should_zap_folio(vma, details, folio)))
+		if (unlikely(!should_zap_folio(details, folio)))
 			return 1;
 		/*
 		 * Both device private/exclusive mappings should only
@@ -1806,7 +1797,7 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
 	} else if (is_migration_entry(entry)) {
 		struct folio *folio = pfn_swap_entry_folio(entry);
 
-		if (!should_zap_folio(vma, details, folio))
+		if (!should_zap_folio(details, folio))
 			return 1;
 		/* Drop a packed tuple's preserved RSS charge on its last entry. */
 		if (!folio_test_ppps_compat_anon(folio) ||
@@ -4562,8 +4553,6 @@ void unmap_mapping_pages(struct address_space *mapping, pgoff_t start,
 	pgoff_t	last_index = start + nr - 1;
 
 	details.even_cows = even_cows;
-	if (!even_cows)
-		details.zap_flags |= ZAP_FLAG_PRESERVE_PPPS_COW;
 	if (last_index < first_index)
 		last_index = ULONG_MAX;
 
@@ -5983,20 +5972,18 @@ fallback:
 		goto fallback;
 	}
 
-	if (ppps_anon_fault_file_cow(vmf, &folio, &ret))
-		goto unlock;
-
-	folio_ref_add(folio, nr_pages - 1);
-	set_pte_range(vmf, folio, page, nr_pages, addr);
-	type = is_cow ? MM_ANONPAGES : mm_counter_file(folio);
-	add_mm_counter(vma->vm_mm, type, nr_pages);
-	ret = 0;
+	if (!ppps_anon_fault_file_cow(vmf, &folio, &ret)) {
+		folio_ref_add(folio, nr_pages - 1);
+		set_pte_range(vmf, folio, page, nr_pages, addr);
+		type = is_cow ? MM_ANONPAGES : mm_counter_file(folio);
+		add_mm_counter(vma->vm_mm, type, nr_pages);
+		ret = 0;
+	}
 
 unlock:
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
-	if (!ret && vma->vm_file && ppps_mm_is_compat(vma->vm_mm) &&
-	    folio_test_large(folio) && !folio_test_anon(folio))
-		mlock_vma_folio_if_fully_mapped(folio, vma);
+	if (!ret)
+		ppps_file_fault_mlock(vma, folio);
 	return ret;
 }
 

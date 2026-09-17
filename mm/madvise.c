@@ -265,8 +265,9 @@ static void shmem_swapin_range(struct vm_area_struct *vma,
 		if (non_swap_entry(entry))
 			continue;
 
-		addr = vma->vm_start +
-			((xas.xa_index - vma->vm_pgoff) << PAGE_SHIFT);
+		/* The first native page may begin before a sliced file VMA. */
+		addr = max(vma->vm_start,
+			   vma_pgoff_to_address(vma, xas.xa_index));
 		xas_pause(&xas);
 		rcu_read_unlock();
 

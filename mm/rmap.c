@@ -867,7 +867,7 @@ static bool folio_referenced_one(struct folio *folio,
 			pra->mapcount--;
 
 			/* Only mlock fully mapped pages */
-			if (pvmw.pte && ptes != pvmw.nr_pages)
+			if (pvmw.pte && folio_test_large(folio) && ptes != nr_ptes)
 				continue;
 
 			/*
@@ -1461,7 +1461,8 @@ static void __page_check_anon_rmap(const struct folio *folio,
 			VM_WARN_ON_ONCE(address_index != folio_index);
 	} else {
 		VM_WARN_ON_ONCE(folio_index != address_index);
-	}}
+	}
+}
 
 static __always_inline void __folio_add_anon_rmap(struct folio *folio,
 		struct page *page, int nr_pages, struct vm_area_struct *vma,
@@ -1599,9 +1600,13 @@ void folio_add_new_anon_rmap(struct folio *folio, struct vm_area_struct *vma,
 	VM_WARN_ON_FOLIO(folio_test_hugetlb(folio), folio);
 	VM_WARN_ON_FOLIO(!exclusive && !folio_test_locked(folio), folio);
 	/* A compat PTE maps one process page, whatever the folio size. */
-	VM_WARN_ON_ONCE(address < vma->vm_start ||
-			address + (nr << MM_PAGE_SHIFT(vma->vm_mm)) >
-			vma->vm_end);
+	if (ppps_mm_is_compat(vma->vm_mm))
+		VM_WARN_ON_ONCE(address < vma->vm_start ||
+				address + (nr << MM_PAGE_SHIFT(vma->vm_mm)) >
+				vma->vm_end);
+	else
+		VM_WARN_ON_ONCE(address < vma->vm_start ||
+				address + (nr << PAGE_SHIFT) > vma->vm_end);
 
 	/*
 	 * VM_DROPPABLE mappings don't swap; instead they're just dropped when
@@ -1669,47 +1674,6 @@ static __always_inline void __folio_add_file_rmap(struct folio *folio,
 		mlock_vma_folio(folio, vma);
 }
 
-/*
- * The PPPS file fault path installs one process-sized PTE at a time, so the
- * rmap addition above cannot tell when the final slice of a large folio has
- * been mapped.  The caller has installed the PTE and dropped its page table
- * lock, but still holds the folio lock and mmap_lock.  This makes it safe to
- * walk across page table boundaries before mlocking the fully mapped folio.
- */
-void mlock_vma_folio_if_fully_mapped(struct folio *folio,
-				     struct vm_area_struct *vma)
-{
-	unsigned long nr_ptes = folio_nr_ptes(folio, vma);
-	unsigned long address;
-	unsigned long ptes = 0;
-
-	if ((vma->vm_flags & (VM_LOCKED | VM_SPECIAL)) != VM_LOCKED ||
-	    !folio_within_vma(folio, vma))
-		return;
-	/* Avoid a page-table walk until this VMA could be a full mapping. */
-	if (folio_mapcount(folio) < nr_ptes)
-		return;
-
-	address = vma_address(vma, folio_pgoff(folio), folio_nr_pages(folio));
-	if (address == -EFAULT)
-		return;
-
-	{
-		DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, PVMW_SYNC);
-
-		while (page_vma_mapped_walk(&pvmw)) {
-			if (!pvmw.pte)
-				goto done;
-			if (++ptes == nr_ptes) {
-				mlock_vma_folio(folio, vma);
-				goto done;
-			}
-		}
-		return;
-done:
-		page_vma_mapped_walk_done(&pvmw);
-	}
-}
 
 /**
  * folio_add_file_rmap_ptes - add PTE mappings to a page range of a folio
@@ -1725,6 +1689,8 @@ done:
 void folio_add_file_rmap_ptes(struct folio *folio, struct page *page,
 		int nr_pages, struct vm_area_struct *vma)
 {
+	if (ppps_mm_is_compat(vma->vm_mm))
+		ppps_file_pte_refs_add(page, nr_pages);
 	__folio_add_file_rmap(folio, page, nr_pages, vma, PGTABLE_LEVEL_PTE);
 }
 
@@ -1891,6 +1857,8 @@ void folio_remove_rmap_ptes(struct folio *folio, struct page *page,
 		int nr_pages, struct vm_area_struct *vma)
 {
 	__folio_remove_rmap(folio, page, nr_pages, vma, PGTABLE_LEVEL_PTE);
+	if (ppps_mm_is_compat(vma->vm_mm) && !folio_test_anon(folio))
+		ppps_file_pte_refs_sub(page, nr_pages);
 
 	trace_android_vh_folio_remove_rmap_ptes(folio);
 }
@@ -2041,7 +2009,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			ret = false;
 
 			/* Only mlock fully mapped pages */
-			if (pvmw.pte && ptes != nr_ptes)
+			if (pvmw.pte && folio_test_large(folio) && ptes != nr_ptes)
 				continue;
 
 			/*
@@ -2341,13 +2309,9 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			dec_mm_counter(mm, mm_counter_file(folio));
 		}
 discard:
-		/* Drop the tuple reference only after its last slice. */
-		if (!ppps_anon_unmap_last(&ppps)) {
-			munlock_vma_folio(folio, vma);
-			if (vma->vm_flags & VM_LOCKED)
-				mlock_drain_local();
+		/* A packed tuple keeps one rmap/reference until its last slice. */
+		if (!ppps_anon_unmap_last(&ppps))
 			continue;
-		}
 		if (unlikely(folio_test_hugetlb(folio))) {
 			hugetlb_remove_rmap(folio);
 		} else {
@@ -2718,12 +2682,8 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 		}
 
 		/* A packed tuple keeps one rmap/reference until its last slice. */
-		if (!ppps_anon_unmap_last(&ppps)) {
-			munlock_vma_folio(folio, vma);
-			if (vma->vm_flags & VM_LOCKED)
-				mlock_drain_local();
+		if (!ppps_anon_unmap_last(&ppps))
 			continue;
-		}
 		if (unlikely(folio_test_hugetlb(folio)))
 			hugetlb_remove_rmap(folio);
 		else
@@ -3009,8 +2969,14 @@ static void rmap_walk_anon(struct folio *folio,
 	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,
 			pgoff_start, pgoff_end) {
 		struct vm_area_struct *vma = avc->vma;
-		unsigned long address = vma_address(vma, pgoff_start,
-				nr_pages);
+		unsigned long address;
+
+		/* File COW tuple indices are native, not process-page indices. */
+		if (folio_test_ppps_compat_anon(folio) &&
+		    ppps_vma_has_slices(vma) && pgoff_start < vma->vm_pgoff)
+			continue;
+		/* vma_address() converts a native-page count to the VMA's unit. */
+		address = vma_address(vma, pgoff_start, folio_nr_pages(folio));
 
 		VM_BUG_ON_VMA(address == -EFAULT, vma);
 		cond_resched();

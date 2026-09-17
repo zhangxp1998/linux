@@ -1068,8 +1068,6 @@ folio_within_vma(struct folio *folio, struct vm_area_struct *vma)
  * folio_add_lru_vma() calling mlock_new_folio().
  */
 void mlock_folio(struct folio *folio);
-void mlock_vma_folio_if_fully_mapped(struct folio *folio,
-				     struct vm_area_struct *vma);
 static inline void mlock_vma_folio(struct folio *folio,
 				struct vm_area_struct *vma)
 {
@@ -1112,8 +1110,8 @@ extern pmd_t maybe_pmd_mkwrite(pmd_t pmd, struct vm_area_struct *vma);
 /**
  * vma_address - Find the virtual address a page range is mapped at
  * @vma: The vma which maps this object.
- * @pgoff: The page offset within its object.
- * @nr_pages: The number of pages to consider.
+ * @pgoff: Object index, in vma_pgoff_shift(@vma) units.
+ * @nr_pages: The number of native PAGE_SIZE pages to consider.
  *
  * If any page in this range is mapped by this VMA, return the first address
  * where any of these pages appear.  Otherwise, return -EFAULT.
@@ -1148,6 +1146,7 @@ static inline unsigned long vma_address(const struct vm_area_struct *vma,
 /*
  * Then at what user virtual address will none of the range be found in vma?
  * Assumes that vma_address() already returned a good starting address.
+ * pvmw->nr_pages counts native pages; pgoff uses the VMA's object-index unit.
  */
 static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
 {

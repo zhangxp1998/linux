@@ -2246,40 +2246,38 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 		new_pte = pte_mksoft_dirty(new_pte);
 	if (pte_swp_uffd_wp(old_pte))
 		new_pte = pte_mkuffd_wp(new_pte);
-	/* Another slice already holds this (mm, tuple)'s rmap and reference. */
-	if (!ppps_first_slice)
-		goto setpte;
+	if (ppps_first_slice) {
+		inc_mm_counter(vma->vm_mm, MM_ANONPAGES);
+		folio_get(folio);
+		if (folio == swapcache) {
+			rmap_t rmap_flags = RMAP_NONE;
 
-	inc_mm_counter(vma->vm_mm, MM_ANONPAGES);
-	folio_get(folio);
-	if (folio == swapcache) {
-		rmap_t rmap_flags = RMAP_NONE;
-
-		/*
-		 * See do_swap_page(): writeback would be problematic.
-		 * However, we do a folio_wait_writeback() just before this
-		 * call and have the folio locked.
-		 */
-		VM_BUG_ON_FOLIO(folio_test_writeback(folio), folio);
-		/* A sibling may still fault this same swapcache folio in. */
-		if (pte_swp_exclusive(old_pte) &&
-		    (!ppps_compat || __swap_count(entry) == 1))
-			rmap_flags |= RMAP_EXCLUSIVE;
-		/*
-		 * We currently only expect small !anon folios, which are either
-		 * fully exclusive or fully shared. If we ever get large folios
-		 * here, we have to be careful.
-		 */
-		if (!folio_test_anon(folio)) {
-			VM_WARN_ON_ONCE(folio_test_large(folio));
-			VM_WARN_ON_FOLIO(!folio_test_locked(folio), folio);
-			folio_add_new_anon_rmap(folio, vma, addr, rmap_flags);
-		} else {
-			folio_add_anon_rmap_pte(folio, page, vma, addr, rmap_flags);
+			/*
+			 * See do_swap_page(): writeback would be problematic.
+			 * However, we do a folio_wait_writeback() just before this
+			 * call and have the folio locked.
+			 */
+			VM_BUG_ON_FOLIO(folio_test_writeback(folio), folio);
+			/* A sibling may still fault this same swapcache folio in. */
+			if (pte_swp_exclusive(old_pte) &&
+			    (!ppps_compat || ppps_swap_mapcount(entry) == 1))
+				rmap_flags |= RMAP_EXCLUSIVE;
+			/*
+			 * We currently only expect small !anon folios, which are either
+			 * fully exclusive or fully shared. If we ever get large folios
+			 * here, we have to be careful.
+			 */
+			if (!folio_test_anon(folio)) {
+				VM_WARN_ON_ONCE(folio_test_large(folio));
+				VM_WARN_ON_FOLIO(!folio_test_locked(folio), folio);
+				folio_add_new_anon_rmap(folio, vma, addr, rmap_flags);
+			} else {
+				folio_add_anon_rmap_pte(folio, page, vma, addr, rmap_flags);
+			}
+		} else { /* ksm created a completely new copy */
+			folio_add_new_anon_rmap(folio, vma, addr, RMAP_EXCLUSIVE);
+			folio_add_lru_vma(folio, vma);
 		}
-	} else { /* ksm created a completely new copy */
-		folio_add_new_anon_rmap(folio, vma, addr, RMAP_EXCLUSIVE);
-		folio_add_lru_vma(folio, vma);
 	}
 setpte:
 	set_pte_at(vma->vm_mm, addr, pte, new_pte);

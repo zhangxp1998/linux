@@ -394,7 +394,8 @@ static bool remove_migration_pte(struct folio *folio,
 
 		/* A packed tuple keeps one rmap/reference across all slices. */
 		if (folio_test_ppps_compat_anon(folio))
-			ppps_first_slice = ppps_anon_slice_takes_ownership(vma, folio,
+			ppps_first_slice = ppps_anon_restore_migration(vma,
+					rmap_walk_arg->folio, folio,
 					pvmw.pte, pvmw.address);
 		if (ppps_first_slice)
 			folio_get(folio);

@@ -48,6 +48,8 @@
 
 struct mm_struct;
 struct linux_binprm;
+struct page;
+struct page_ext_operations;
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 #define PAGE_SHIFT_COMPAT	12
@@ -59,10 +61,11 @@ struct linux_binprm;
 #define ppps_mm_is_compat(mm)						\
 	(((struct mm_struct *)(mm)) && ((struct mm_struct *)(mm))->page_shift == PAGE_SHIFT_COMPAT)
 
-unsigned long mm_default_map_window64(void);
-unsigned long mm_default_map_window64_of(struct mm_struct *mm);
-
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
+extern struct page_ext_operations ppps_file_page_ext_ops;
+void ppps_file_pte_refs_add(struct page *page, int nr_pages);
+void ppps_file_pte_refs_sub(struct page *page, int nr_pages);
+int ppps_file_pte_refs(struct page *page);
 /* fork() must preserve the geometry of the page tables it copies. */
 #define mm_inherit_pagesize(mm, oldmm) \
 	((mm)->page_shift = (oldmm) ? (oldmm)->page_shift : PAGE_SHIFT_KERNEL)
@@ -84,19 +87,24 @@ void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm);
 #endif
 #define ppps_mm_is_compat(mm)		((void)(mm), false)
 
-#define mm_default_map_window64()	(1UL << VA_BITS_MIN)
-#define mm_default_map_window64_of(mm)	((void)(mm), (1UL << VA_BITS_MIN))
-
 static inline void mm_init_pagesize(struct mm_struct *mm,
 				    const struct linux_binprm *bprm) {}
+static inline void ppps_file_pte_refs_add(struct page *page, int nr_pages) {}
+static inline void ppps_file_pte_refs_sub(struct page *page, int nr_pages) {}
+static inline int ppps_file_pte_refs(struct page *page)
+{
+	return 0;
+}
 #define mm_inherit_pagesize(mm, oldmm)	((void)(mm), (void)(oldmm))
 #define vma_set_slice_off(vma, val)	((void)(vma), (void)(val))
 #define vma_slice_off(vma)		((void)(vma), 0)
 #endif
 
-/* Out of line in both configurations: both are on the GKI symbol list. */
+/* Out of line on arm64, with or without PPPS: these are GKI symbols. */
 unsigned long mm_task_size64(void);
 unsigned long mm_task_size64_of(struct mm_struct *mm);
+unsigned long mm_default_map_window64(void);
+unsigned long mm_default_map_window64_of(struct mm_struct *mm);
 
 #define PPPS_SLICE_SHIFT	(PAGE_SHIFT_KERNEL - PAGE_SHIFT_COMPAT)
 #define PPPS_SLICES_PER_PAGE	(1UL << PPPS_SLICE_SHIFT)
