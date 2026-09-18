@@ -387,11 +387,13 @@ impl AshmemGuard {
     pub(crate) fn free_lru(&mut self, stop_after: usize) -> usize {
         let mut freed = 0;
         while let Some(range) = self.lru_list.pop_back() {
+            let range_size = range.size(self);
             let start = range.pgstart(self) * crate::ASHMEM_RANGE_PAGE_SIZE;
             let end = (range.pgend(self) + 1) * crate::ASHMEM_RANGE_PAGE_SIZE;
+            let lru_count = LRU_COUNT.load(Ordering::Relaxed);
+            LRU_COUNT.store(lru_count - range_size, Ordering::Relaxed);
             range.set_purged(self);
-            self.remove_lru(&range);
-            freed += range.size(self);
+            freed += range_size;
 
             // C ashmem releases the mutex and uses a different mechanism to ensure mutual
             // exclusion with `pin_unpin` operations, but we only hold `ASHMEM_MUTEX` here and in
