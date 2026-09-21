@@ -785,6 +785,12 @@ static inline void vma_set_slice_off(struct vm_area_struct *vma,
 {
 }
 
+static inline unsigned int vma_slice_offset(const struct vm_area_struct *vma,
+					    unsigned long addr)
+{
+	return 0;
+}
+
 static inline void vma_set_split_offset(struct vm_area_struct *target,
 					const struct vm_area_struct *src,
 					unsigned long addr)
