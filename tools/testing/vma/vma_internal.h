@@ -769,6 +769,16 @@ static inline unsigned long vma_pages(struct vm_area_struct *vma)
 }
 
 /* Native equivalents of the kernel's per-VMA page/slice helpers. */
+static inline unsigned short vma_slice_off(const struct vm_area_struct *vma)
+{
+	return 0;
+}
+
+static inline void vma_set_slice_off(struct vm_area_struct *vma,
+				     unsigned short slice_off)
+{
+}
+
 static inline unsigned long mm_stack_guard_gap(const struct mm_struct *mm)
 {
 	return stack_guard_gap;
