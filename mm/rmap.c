@@ -1992,6 +1992,9 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 		address = pvmw.address;
 		anon_exclusive = folio_test_anon(folio) &&
 				 PageAnonExclusive(subpage);
+		if (anon_exclusive && !(flags & TTU_HWPOISON) &&
+		    !p3s_folio_slices_in_window(vma, folio, address, pvmw.pte))
+			goto walk_abort;
 
 		if (folio_test_hugetlb(folio)) {
 			bool anon = folio_test_anon(folio);
@@ -2192,7 +2195,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
 			dec_mm_counter(mm, MM_ANONPAGES);
 			inc_mm_counter(mm, MM_SWAPENTS);
 			swp_pte = swp_entry_to_pte(entry);
-			if (anon_exclusive)
+			if (anon_exclusive && !p3s_folio_mapped_by_slices(vma, folio))
 				swp_pte = pte_swp_mkexclusive(swp_pte);
 			if (likely(pte_present(pteval))) {
 				if (pte_soft_dirty(pteval))
@@ -2389,6 +2392,12 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 		address = pvmw.address;
 		anon_exclusive = folio_test_anon(folio) &&
 				 PageAnonExclusive(subpage);
+		if (anon_exclusive &&
+		    !p3s_folio_slices_in_window(vma, folio, address, pvmw.pte)) {
+			ret = false;
+			page_vma_mapped_walk_done(&pvmw);
+			break;
+		}
 
 		if (folio_test_hugetlb(folio)) {
 			bool anon = folio_test_anon(folio);
@@ -2469,7 +2478,7 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 		}
 
 		VM_WARN_ON_FOLIO(writable && folio_test_anon(folio) &&
-				!anon_exclusive, folio);
+				!anon_exclusive && !vma_is_p3s_4k(vma), folio);
 
 		/* Update high watermark before we lower rss */
 		update_hiwater_rss(mm);
