@@ -768,6 +768,12 @@ static inline unsigned long vma_pages(struct vm_area_struct *vma)
 	return (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
 }
 
+/* Native equivalents of the kernel's per-VMA page/slice helpers. */
+static inline unsigned long mm_stack_guard_gap(const struct mm_struct *mm)
+{
+	return stack_guard_gap;
+}
+
 static inline void fput(struct file *file)
 {
 }
