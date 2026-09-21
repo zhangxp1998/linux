@@ -78,7 +78,7 @@ static inline bool is_mergable_pad_vma(struct vm_area_struct *vma,
 
 static inline unsigned long vma_data_pages(struct vm_area_struct *vma)
 {
-	return vma_pages(vma);
+	return vma_pgoff_pages(vma);
 }
 #endif /* PAGE_SIZE == SZ_4K && defined(CONFIG_64BIT) */
 

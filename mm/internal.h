@@ -21,6 +21,7 @@
 
 /* Internal core VMA manipulation functions. */
 #include "vma.h"
+#include "p3s/filemap.h"
 
 struct folio_batch;
 
@@ -1074,8 +1075,7 @@ static inline unsigned long vma_address(const struct vm_area_struct *vma,
 	unsigned long address;
 
 	if (pgoff >= vma->vm_pgoff) {
-		address = vma->vm_start +
-			((pgoff - vma->vm_pgoff) << PAGE_SHIFT);
+		address = vma_pgoff_to_address(vma, pgoff);
 		/* Check for address beyond vma (or wrapped through 0?) */
 		if (address < vma->vm_start || address >= vma->vm_end)
 			address = -EFAULT;
@@ -1103,7 +1103,7 @@ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
 		return pvmw->address + PAGE_SIZE;
 
 	pgoff = pvmw->pgoff + pvmw->nr_pages;
-	address = vma->vm_start + ((pgoff - vma->vm_pgoff) << PAGE_SHIFT);
+	address = vma_pgoff_to_address(vma, pgoff);
 	/* Check for address beyond vma (or wrapped through 0?) */
 	if (address < vma->vm_start || address > vma->vm_end)
 		address = vma->vm_end;
