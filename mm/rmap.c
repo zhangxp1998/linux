@@ -2855,12 +2855,15 @@ static void rmap_walk_anon(struct folio *folio,
 
 	pgoff_start = folio_pgoff(folio);
 	pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
+	p3s_anon_rmap_range(folio, &pgoff_start, &pgoff_end);
 	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,
 			pgoff_start, pgoff_end) {
 		struct vm_area_struct *vma = avc->vma;
-		unsigned long address = vma_address(vma, pgoff_start,
+		unsigned long address = vma_address(vma, folio_pgoff(folio),
 				folio_nr_pages(folio));
 
+		if (p3s_anon_rmap_skip(vma, folio, &address))
+			continue;
 		VM_BUG_ON_VMA(address == -EFAULT, vma);
 		cond_resched();
 

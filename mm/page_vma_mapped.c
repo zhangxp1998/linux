@@ -355,6 +355,8 @@ unsigned long page_mapped_in_vma(const struct page *page,
 	};
 
 	pvmw.address = vma_address(vma, page_pgoff(folio, page), 1);
+	if (folio_test_anon(folio))
+		p3s_anon_rmap_skip(vma, folio, &pvmw.address);
 	if (pvmw.address == -EFAULT)
 		goto out;
 	if (!page_vma_mapped_walk(&pvmw))
