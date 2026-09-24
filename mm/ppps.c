@@ -5,11 +5,11 @@
 #include <linux/export.h>
 #include <linux/mm.h>
 #include <linux/binfmts.h>
-#include <linux/dcache.h>
 #include <linux/fs.h>
 #include <linux/ppps.h>
 #include <linux/page_ext.h>
-#include <linux/string.h>
+#include <linux/init.h>
+#include <linux/kstrtox.h>
 #include <asm/memory.h>
 
 #include "internal.h"
@@ -171,30 +171,45 @@ void ppps_file_fault_mlock(struct vm_area_struct *vma, struct folio *folio)
 }
 
 
-/* Testing only: select Android app runtimes, not init or its other services. */
-static bool ppps_test_app_runtime(const struct linux_binprm *bprm)
-{
-	struct name_snapshot snapshot;
-	bool match;
+/* Boot-time default selection, adapted from Kalesh Singh's P3S design. */
+enum p3s_mode {
+	P3S_MODE_OFF,
+	P3S_MODE_ON,
+	P3S_MODE_ALTERNATE,
+};
 
-	take_dentry_name_snapshot(&snapshot, bprm->file->f_path.dentry);
-	match = !strcmp(snapshot.name.name, "app_process") ||
-		!strcmp(snapshot.name.name, "app_process32") ||
-		!strcmp(snapshot.name.name, "app_process64") ||
-		!strcmp(snapshot.name.name, "zygote") ||
-		!strcmp(snapshot.name.name, "zygote32") ||
-		!strcmp(snapshot.name.name, "zygote64");
-	release_dentry_name_snapshot(&snapshot);
-	return match;
+static enum p3s_mode p3s_mode __ro_after_init = P3S_MODE_OFF;
+
+static int __init parse_p3s(char *str)
+{
+	unsigned int val;
+	bool enabled;
+
+	if (!str) {
+		p3s_mode = P3S_MODE_ON;
+		return 0;
+	}
+	if (!kstrtouint(str, 0, &val)) {
+		if (val > P3S_MODE_ALTERNATE)
+			return -EINVAL;
+		p3s_mode = val;
+		return 0;
+	}
+	if (kstrtobool(str, &enabled))
+		return -EINVAL;
+	p3s_mode = enabled ? P3S_MODE_ON : P3S_MODE_OFF;
+	return 0;
 }
+early_param("p3s", parse_p3s);
 
 void mm_init_pagesize(struct mm_struct *mm, const struct linux_binprm *bprm)
 {
-	if ((current->personality & ADDR_4KB_COMPAT_PAGE_SIZE) ||
-	    ppps_test_app_runtime(bprm))
-		mm->page_shift = PAGE_SHIFT_COMPAT;
-	else
-		mm->page_shift = PAGE_SHIFT;
+	bool compat = (current->personality & ADDR_4KB_COMPAT_PAGE_SIZE) ||
+		      p3s_mode == P3S_MODE_ON ||
+		      (p3s_mode == P3S_MODE_ALTERNATE && (current->pid & 1));
+
+	/* fork retains its source MM geometry; this selector is for a new exec. */
+	mm->page_shift = compat ? PAGE_SHIFT_COMPAT : PAGE_SHIFT_KERNEL;
 }
 
 /*

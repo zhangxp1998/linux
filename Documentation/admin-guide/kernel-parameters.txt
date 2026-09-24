@@ -4702,6 +4702,13 @@
 			/sys/module/page_alloc/parameters/shuffle.
 			This parameter is only available if CONFIG_SHUFFLE_PAGE_ALLOCATOR=y.
 
+	p3s=		[ARM64,EARLY] Default page size for a new exec, with
+			CONFIG_ARM64_PER_PROCESS_PAGE_SIZE enabled.
+			0: native (default); 1: 4KB; 2: odd PIDs use 4KB.
+			Bare p3s enables mode 1. Boolean values are accepted.
+			The 4KB personality request still overrides mode 0/2.
+			Fork preserves its source MM geometry in every mode.
+
 	page_owner=	[KNL,EARLY] Boot-time page_owner enabling option.
 			Storage of the information about who allocated
 			each page is disabled in default. With this switch,
