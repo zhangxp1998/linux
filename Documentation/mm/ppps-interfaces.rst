@@ -42,6 +42,52 @@ The latter explicitly distinguishes sliced file offsets from anonymous page
 indices. Hold the locks required to modify the VMA, or operate on an
 unpublished VMA. These helpers do not acquire locks themselves.
 
+Scoped page-size macros
+=======================
+
+``linux/p3s.h`` provides the scoped MM selector but does not override page
+macros. A C file opts in explicitly by including ``linux/p3s_user_pages.h``
+after its ordinary headers. Do not include the override header from another
+header. A later generated syscall-table include is not an ordinary header.
+
+In opted-in code, ``PAGE_SHIFT``, ``PAGE_SIZE``, ``PAGE_MASK`` and their
+alignment derivatives select ``current->p3s_remote_mm``, or ``current->mm``
+when no remote selection is active. ``P3S_CONTEXT_REMOTE_MM(mm)`` saves the
+old pointer in an automatic cleanup variable and restores it on scope exit,
+including return and goto out of the scope. It borrows the MM: the caller
+must keep it alive for the scope's entire lifetime. It neither acquires an
+MM reference nor changes the task's actual address space. Fork clears the
+new task's borrowed context; asynchronous workers establish their own.
+
+Keep scopes at narrow, audited ownership boundaries. A current-MM entry
+must explicitly select ``current->mm`` even when called under a remote
+scope. Leave explicit ``MM_PAGE_*`` calls in functions needing independent
+owners or where a scope provides no useful simplification. A NULL argument
+to ``MM_PAGE_*`` still denotes native geometry, whereas a NULL scoped
+selection means fall back to current's MM; these are not interchangeable.
+
+Native allocator, PFN, page-cache and folio units remain ``PAGE_*_KERNEL``.
+Header macros are expanded at their use site, unlike earlier inline
+function bodies: their native dependencies must remain native too. This
+port keeps our explicit MM page-table walkers and address-limit helpers;
+adopting the arithmetic notation does not replace their implementation.
+The byte-range GUP, tuple ownership, COW, swap, mremap and UFFD contracts in
+this document are unchanged.
+
+The ``p3s=`` early boot parameter controls the default for a fresh exec:
+
+* omitted or ``p3s=0``: native, unless personality explicitly requests 4KB;
+* ``p3s=1`` or bare ``p3s``: default to 4KB;
+* ``p3s=2``: default odd initial-namespace PIDs to 4KB, even PIDs to native.
+
+Boolean spellings accepted by ``kstrtobool()`` are also supported. The
+``ADDR_4KB_COMPAT_PAGE_SIZE`` personality bit takes precedence over the
+default. Fork always inherits the source MM geometry; it does not reselect
+the page size based on the child PID. The old executable-name-based
+app_process/zygote test policy is no longer used. This parameter requires
+``CONFIG_ARM64_PER_PROCESS_PAGE_SIZE`` and does not disable explicit PPPS
+opt-in when set to zero.
+
 Pinned byte ranges
 ==================
 

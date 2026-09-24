@@ -327,9 +327,11 @@ config PER_VMA_LOCK_STATS
 	  If in doubt, say N.
 
 config PPPS_KUNIT_TEST
-	bool "KUnit tests for PPPS tuple accounting" if !KUNIT_ALL_TESTS
+	bool "KUnit tests for PPPS tuples and page contexts" if !KUNIT_ALL_TESTS
 	depends on ARM64_PER_PROCESS_PAGE_SIZE && MIGRATION && KUNIT=y
 	default KUNIT_ALL_TESTS
 	help
 	  Test tuple ownership and RSS accounting using private, synthetic PTE
 	  arrays. No test page tables are installed in a process address space.
+	  Also test nested page-size contexts, cleanup on scope exit, native
+	  geometry invariants and independent asynchronous worker contexts.
