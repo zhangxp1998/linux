@@ -12,4 +12,9 @@
 
 #include <vdso/page.h>
 
+/* These constants never follow an opt-in user-page context. */
+#define PAGE_SHIFT_KERNEL	CONFIG_PAGE_SHIFT
+#define PAGE_SIZE_KERNEL		(_AC(1, UL) << PAGE_SHIFT_KERNEL)
+#define PAGE_MASK_KERNEL		(~(PAGE_SIZE_KERNEL - 1))
+
 #endif /* __ASM_PAGE_DEF_H */

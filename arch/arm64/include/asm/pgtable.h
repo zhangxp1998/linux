@@ -24,11 +24,11 @@
 #if VA_BITS == VA_BITS_MIN
 #define VMALLOC_END		(VMEMMAP_START - SZ_8M)
 #else
-#define VMEMMAP_UNUSED_NPAGES	((_PAGE_OFFSET(vabits_actual) - PAGE_OFFSET) >> PAGE_SHIFT)
+#define VMEMMAP_UNUSED_NPAGES	((_PAGE_OFFSET(vabits_actual) - PAGE_OFFSET) >> PAGE_SHIFT_KERNEL)
 #define VMALLOC_END		(VMEMMAP_START + VMEMMAP_UNUSED_NPAGES * sizeof(struct page) - SZ_8M)
 #endif
 
-#define vmemmap			((struct page *)VMEMMAP_START - (memstart_addr >> PAGE_SHIFT))
+#define vmemmap			((struct page *)VMEMMAP_START - (memstart_addr >> PAGE_SHIFT_KERNEL))
 
 #ifndef __ASSEMBLY__
 
@@ -170,9 +170,9 @@ static inline pteval_t __phys_to_pte_val(phys_addr_t phys)
 }
 #endif
 
-#define pte_pfn(pte)		(__pte_to_phys(pte) >> PAGE_SHIFT)
+#define pte_pfn(pte)		(__pte_to_phys(pte) >> PAGE_SHIFT_KERNEL)
 #define pfn_pte(pfn,prot)	\
-	__pte(__phys_to_pte_val((phys_addr_t)(pfn) << PAGE_SHIFT) | pgprot_val(prot))
+	__pte(__phys_to_pte_val((phys_addr_t)(pfn) << PAGE_SHIFT_KERNEL) | pgprot_val(prot))
 
 #define pte_none(pte)		(!pte_val(pte))
 #define pte_page(pte)		(pfn_to_page(pte_pfn(pte)))
@@ -511,7 +511,7 @@ static inline pte_t pte_advance_pfn(pte_t pte, unsigned long nr)
 #define HPAGE_SHIFT		PMD_SHIFT
 #define HPAGE_SIZE		(_AC(1, UL) << HPAGE_SHIFT)
 #define HPAGE_MASK		(~(HPAGE_SIZE - 1))
-#define HUGETLB_PAGE_ORDER	(HPAGE_SHIFT - PAGE_SHIFT)
+#define HUGETLB_PAGE_ORDER	(HPAGE_SHIFT - PAGE_SHIFT_KERNEL)
 
 static inline pte_t pgd_pte(pgd_t pgd)
 {
@@ -664,8 +664,9 @@ static inline pmd_t pmd_mkspecial(pmd_t pmd)
 
 #define __pmd_to_phys(pmd)	__pte_to_phys(pmd_pte(pmd))
 #define __phys_to_pmd_val(phys)	__phys_to_pte_val(phys)
-#define pmd_pfn(pmd)		((__pmd_to_phys(pmd) & PMD_MASK) >> PAGE_SHIFT)
-#define pfn_pmd(pfn,prot)	__pmd(__phys_to_pmd_val((phys_addr_t)(pfn) << PAGE_SHIFT) | pgprot_val(prot))
+#define pmd_pfn(pmd)		((__pmd_to_phys(pmd) & PMD_MASK) >> PAGE_SHIFT_KERNEL)
+#define pfn_pmd(pfn, prot) \
+	__pmd(__phys_to_pmd_val((phys_addr_t)(pfn) << PAGE_SHIFT_KERNEL) | pgprot_val(prot))
 
 #define pud_young(pud)		pte_young(pud_pte(pud))
 #define pud_mkyoung(pud)	pte_pud(pte_mkyoung(pud_pte(pud)))
@@ -688,8 +689,9 @@ static inline pud_t pud_mkhuge(pud_t pud)
 
 #define __pud_to_phys(pud)	__pte_to_phys(pud_pte(pud))
 #define __phys_to_pud_val(phys)	__phys_to_pte_val(phys)
-#define pud_pfn(pud)		((__pud_to_phys(pud) & PUD_MASK) >> PAGE_SHIFT)
-#define pfn_pud(pfn,prot)	__pud(__phys_to_pud_val((phys_addr_t)(pfn) << PAGE_SHIFT) | pgprot_val(prot))
+#define pud_pfn(pud)		((__pud_to_phys(pud) & PUD_MASK) >> PAGE_SHIFT_KERNEL)
+#define pfn_pud(pfn, prot) \
+	__pud(__phys_to_pud_val((phys_addr_t)(pfn) << PAGE_SHIFT_KERNEL) | pgprot_val(prot))
 
 #define pmd_pgprot pmd_pgprot
 static inline pgprot_t pmd_pgprot(pmd_t pmd)
@@ -822,7 +824,7 @@ extern pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
 #define pmd_bad(pmd)		(!pmd_table(pmd))
 
 #define pmd_leaf_size(pmd)	(pmd_cont(pmd) ? CONT_PMD_SIZE : PMD_SIZE)
-#define pte_leaf_size(pte)	(pte_cont(pte) ? CONT_PTE_SIZE : PAGE_SIZE)
+#define pte_leaf_size(pte)	(pte_cont(pte) ? CONT_PTE_SIZE : PAGE_SIZE_KERNEL)
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 static inline int pmd_trans_huge(pmd_t pmd)
@@ -1641,7 +1643,7 @@ static inline void update_mmu_cache_range(struct vm_fault *vmf,
  * entry), and HPA can coalesce it (4 pages into 1 TLB entry) when 16K base
  * pages are in use.
  */
-#define exec_folio_order() ilog2(SZ_64K >> PAGE_SHIFT)
+#define exec_folio_order() ilog2(SZ_64K >> PAGE_SHIFT_KERNEL)
 
 static inline bool pud_sect_supported(void)
 {

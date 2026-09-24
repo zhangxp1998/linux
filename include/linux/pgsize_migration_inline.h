@@ -14,6 +14,7 @@
  */
 
 #include <linux/mm_types.h>
+#include <linux/p3s_const.h>
 #include <linux/sizes.h>
 
 #include <asm/page.h>
@@ -44,7 +45,7 @@
 #define VM_PAD_SHIFT		(BITS_PER_LONG - VM_PAD_WIDTH - 1)
 #define VM_TOTAL_PAD_PAGES	((1ULL << VM_PAD_WIDTH) - 1)
 #define VM_PAD_MASK		(VM_TOTAL_PAD_PAGES << VM_PAD_SHIFT)
-#define VMA_PAD_START(vma)	(vma->vm_end - (vma_pad_pages(vma) << PAGE_SHIFT))
+#define VMA_PAD_START(vma)	(vma->vm_end - (vma_pad_pages(vma) << PAGE_SHIFT_KERNEL))
 
 #if PAGE_SIZE == SZ_4K && defined(CONFIG_64BIT)
 /*

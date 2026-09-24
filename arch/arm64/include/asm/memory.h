@@ -31,7 +31,7 @@
  * of the VMEMMAP where 52-bit support is not available in hardware.
  */
 #define VMEMMAP_RANGE	(_PAGE_END(VA_BITS_MIN) - PAGE_OFFSET)
-#define VMEMMAP_SIZE	((VMEMMAP_RANGE >> PAGE_SHIFT) * sizeof(struct page))
+#define VMEMMAP_SIZE	((VMEMMAP_RANGE >> PAGE_SHIFT_KERNEL) * sizeof(struct page))
 
 /*
  * PAGE_OFFSET - the virtual address of the start of the linear map, at the
@@ -119,13 +119,13 @@
  * stacks are a multiple of page size.
  */
 #if (MIN_THREAD_SHIFT < PAGE_SHIFT)
-#define THREAD_SHIFT		PAGE_SHIFT
+#define THREAD_SHIFT		PAGE_SHIFT_KERNEL
 #else
 #define THREAD_SHIFT		MIN_THREAD_SHIFT
 #endif
 
 #if THREAD_SHIFT >= PAGE_SHIFT
-#define THREAD_SIZE_ORDER	(THREAD_SHIFT - PAGE_SHIFT)
+#define THREAD_SIZE_ORDER	(THREAD_SHIFT - PAGE_SHIFT_KERNEL)
 #endif
 
 #define THREAD_SIZE		(UL(1) << THREAD_SHIFT)
@@ -142,9 +142,9 @@
 #define OVERFLOW_STACK_SIZE	SZ_4K
 
 #if PAGE_SIZE == SZ_4K
-#define NVHE_STACK_SHIFT       (PAGE_SHIFT + 1)
+#define NVHE_STACK_SHIFT       (PAGE_SHIFT_KERNEL + 1)
 #else
-#define NVHE_STACK_SHIFT       PAGE_SHIFT
+#define NVHE_STACK_SHIFT       PAGE_SHIFT_KERNEL
 #endif
 
 #define NVHE_STACK_SIZE        (UL(1) << NVHE_STACK_SHIFT)
@@ -204,13 +204,13 @@
  *  Open-coded (swapper_pg_dir - reserved_pg_dir) as this cannot be calculated
  *  until link time.
  */
-#define RESERVED_SWAPPER_OFFSET	(PAGE_SIZE)
+#define RESERVED_SWAPPER_OFFSET	(PAGE_SIZE_KERNEL)
 
 /*
  *  Open-coded (swapper_pg_dir - tramp_pg_dir) as this cannot be calculated
  *  until link time.
  */
-#define TRAMP_SWAPPER_OFFSET	(2 * PAGE_SIZE)
+#define TRAMP_SWAPPER_OFFSET	(2 * PAGE_SIZE_KERNEL)
 
 #ifndef __ASSEMBLY__
 
@@ -282,7 +282,7 @@ static inline bool kaslr_enabled(void) { return false; }
  * direct-mapped view.  We assume this is the first page
  * of RAM in the mem_map as well.
  */
-#define PHYS_PFN_OFFSET	(PHYS_OFFSET >> PAGE_SHIFT)
+#define PHYS_PFN_OFFSET	(PHYS_OFFSET >> PAGE_SHIFT_KERNEL)
 
 /*
  * When dealing with data aborts, watchpoints, or instruction traps we may end
@@ -395,7 +395,7 @@ static inline unsigned long virt_to_pfn(const void *kaddr)
 #define __pa_symbol(x)		__phys_addr_symbol(RELOC_HIDE((unsigned long)(x), 0))
 #define __pa_nodebug(x)		__virt_to_phys_nodebug((unsigned long)(x))
 #define __va(x)			((void *)__phys_to_virt((phys_addr_t)(x)))
-#define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
+#define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT_KERNEL)
 #define sym_to_pfn(x)		__phys_to_pfn(__pa_symbol(x))
 
 /*
@@ -415,12 +415,12 @@ static inline unsigned long virt_to_pfn(const void *kaddr)
 #define page_to_virt(x)	({						\
 	__typeof__(x) __page = x;					\
 	u64 __idx = ((u64)__page - VMEMMAP_START) / sizeof(struct page);\
-	u64 __addr = PAGE_OFFSET + (__idx * PAGE_SIZE);			\
+	u64 __addr = PAGE_OFFSET + (__idx * PAGE_SIZE_KERNEL);			\
 	(void *)__tag_set((const void *)__addr, page_kasan_tag(__page));\
 })
 
 #define virt_to_page(x)	({						\
-	u64 __idx = (__tag_reset((u64)x) - PAGE_OFFSET) / PAGE_SIZE;	\
+	u64 __idx = (__tag_reset((u64)x) - PAGE_OFFSET) / PAGE_SIZE_KERNEL;	\
 	u64 __addr = VMEMMAP_START + (__idx * sizeof(struct page));	\
 	(struct page *)__addr;						\
 })

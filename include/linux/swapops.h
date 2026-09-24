@@ -5,6 +5,7 @@
 #include <linux/radix-tree.h>
 #include <linux/bug.h>
 #include <linux/mm_types.h>
+#include <linux/p3s_const.h>
 
 #ifdef CONFIG_MMU
 
@@ -33,10 +34,10 @@
  * can use the extra bits to store other information besides PFN.
  */
 #ifdef MAX_PHYSMEM_BITS
-#define SWP_PFN_BITS		(MAX_PHYSMEM_BITS - PAGE_SHIFT)
+#define SWP_PFN_BITS		(MAX_PHYSMEM_BITS - PAGE_SHIFT_KERNEL)
 #else  /* MAX_PHYSMEM_BITS */
 #define SWP_PFN_BITS		min_t(int, \
-				      sizeof(phys_addr_t) * 8 - PAGE_SHIFT, \
+				      sizeof(phys_addr_t) * 8 - PAGE_SHIFT_KERNEL, \
 				      SWP_TYPE_SHIFT)
 #endif	/* MAX_PHYSMEM_BITS */
 #define SWP_PFN_MASK		(BIT(SWP_PFN_BITS) - 1)

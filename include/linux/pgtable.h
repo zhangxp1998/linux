@@ -4,9 +4,10 @@
 
 #include <linux/pfn.h>
 #include <asm/pgtable.h>
+#include <linux/p3s_const.h>
 
-#define PMD_ORDER	(PMD_SHIFT - PAGE_SHIFT)
-#define PUD_ORDER	(PUD_SHIFT - PAGE_SHIFT)
+#define PMD_ORDER	(PMD_SHIFT - PAGE_SHIFT_KERNEL)
+#define PUD_ORDER	(PUD_SHIFT - PAGE_SHIFT_KERNEL)
 
 #ifndef __ASSEMBLY__
 #ifdef CONFIG_MMU

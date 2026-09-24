@@ -10,7 +10,7 @@
 #define PTDESC_ORDER 3
 
 /* Number of VA bits resolved by a single translation table level */
-#define PTDESC_TABLE_SHIFT	(PAGE_SHIFT - PTDESC_ORDER)
+#define PTDESC_TABLE_SHIFT	(PAGE_SHIFT_KERNEL - PTDESC_ORDER)
 
 /*
  * Number of page-table levels required to address 'va_bits' wide
@@ -87,9 +87,9 @@
 /*
  * Contiguous page definitions.
  */
-#define CONT_PTE_SHIFT		(CONFIG_ARM64_CONT_PTE_SHIFT + PAGE_SHIFT)
-#define CONT_PTES		(1 << (CONT_PTE_SHIFT - PAGE_SHIFT))
-#define CONT_PTE_SIZE		(CONT_PTES * PAGE_SIZE)
+#define CONT_PTE_SHIFT		(CONFIG_ARM64_CONT_PTE_SHIFT + PAGE_SHIFT_KERNEL)
+#define CONT_PTES		(1 << (CONT_PTE_SHIFT - PAGE_SHIFT_KERNEL))
+#define CONT_PTE_SIZE		(CONT_PTES * PAGE_SIZE_KERNEL)
 #define CONT_PTE_MASK		(~(CONT_PTE_SIZE - 1))
 
 #define CONT_PMD_SHIFT		(CONFIG_ARM64_CONT_PMD_SHIFT + PMD_SHIFT)
@@ -176,7 +176,7 @@
 #define PTE_UXN			(_AT(pteval_t, 1) << 54)	/* User XN */
 #define PTE_SWBITS_MASK		_AT(pteval_t, (BIT(63) | GENMASK(58, 55)))
 
-#define PTE_ADDR_LOW		(((_AT(pteval_t, 1) << (50 - PAGE_SHIFT)) - 1) << PAGE_SHIFT)
+#define PTE_ADDR_LOW		(((_AT(pteval_t, 1) << (50 - PAGE_SHIFT_KERNEL)) - 1) << PAGE_SHIFT_KERNEL)
 #ifdef CONFIG_ARM64_PA_BITS_52
 #ifdef CONFIG_ARM64_64K_PAGES
 #define PTE_ADDR_HIGH		(_AT(pteval_t, 0xf) << 12)
