@@ -17,6 +17,9 @@
 #include <linux/ppps.h>
 #include "internal.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 /*
  * mseal() disallows an input range which contain unmapped ranges (VMA holes).
  *
@@ -139,6 +142,7 @@ static int mseal_apply(struct mm_struct *mm,
  */
 int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	size_t len;
 	int ret = 0;
 	unsigned long end;
@@ -149,10 +153,10 @@ int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
 		return -EINVAL;
 
 	start = untagged_addr(start);
-	if (!MM_UAPI_PAGE_ALIGNED(mm, start))
+	if (!__PAGE_ALIGNED(start))
 		return -EINVAL;
 
-	len = MM_UAPI_PAGE_ALIGN(mm, len_in);
+	len = __PAGE_ALIGN(len_in);
 	/* Check to see whether len was rounded up from small -ve to zero. */
 	if (len_in && !len)
 		return -EINVAL;

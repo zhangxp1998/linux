@@ -13,6 +13,9 @@
 
 #include "pci.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 #ifdef ARCH_GENERIC_PCI_MMAP_RESOURCE
 
 static const struct vm_operations_struct pci_phys_vm_ops = {
@@ -61,6 +64,7 @@ int pci_mmap_resource_range(struct pci_dev *pdev, int bar,
 int pci_mmap_fits(struct pci_dev *pdev, int resno, struct vm_area_struct *vma,
 		  enum pci_mmap_api mmap_api)
 {
+	P3S_CONTEXT_REMOTE_MM(vma->vm_mm);
 	resource_size_t pci_start = 0, pci_end;
 	resource_size_t start, size;
 	unsigned long nr;
@@ -69,11 +73,11 @@ int pci_mmap_fits(struct pci_dev *pdev, int resno, struct vm_area_struct *vma,
 		return 0;
 	nr = vma->vm_end - vma->vm_start;
 	start = vma_file_offset(vma);
-	size = ALIGN(pci_resource_len(pdev, resno), MM_PAGE_SIZE(vma->vm_mm));
+	size = ALIGN(pci_resource_len(pdev, resno), PAGE_SIZE);
 	if (mmap_api == PCI_MMAP_PROCFS) {
 		pci_resource_to_user(pdev, resno, &pdev->resource[resno],
 				     &pci_start, &pci_end);
-		pci_start &= MM_PAGE_MASK(vma->vm_mm);
+		pci_start &= PAGE_MASK;
 	}
 	if (start < pci_start || start - pci_start > size)
 		return 0;

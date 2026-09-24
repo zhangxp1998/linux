@@ -45,6 +45,9 @@
 #include "ppps.h"
 #include "swap.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 #define __MADV_SET_ANON_VMA_NAME (-1)
 
 /*
@@ -378,6 +381,7 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 				unsigned long addr, unsigned long end,
 				struct mm_walk *walk)
 {
+	P3S_CONTEXT_REMOTE_MM(walk->mm);
 	struct madvise_walk_private *private = walk->private;
 	struct mmu_gather *tlb = private->tlb;
 	bool pageout = private->pageout;
@@ -393,7 +397,7 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 	int folio_nr_ptes;
 	int nr;
 	int ret = 0;
-	unsigned long page_size = MM_PAGE_SIZE(mm);
+	unsigned long page_size = PAGE_SIZE;
 
 	trace_android_vh_madvise_cold_or_pageout_abort(vma, &abort_madvise);
 	if (fatal_signal_pending(current) || abort_madvise)
@@ -486,7 +490,7 @@ restart:
 		return 0;
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
-	for (; addr < end; pte += nr, addr += nr * MM_PAGE_SIZE(mm)) {
+	for (; addr < end; pte += nr, addr += nr * PAGE_SIZE) {
 		nr = 1;
 		ptent = ptep_get(pte);
 
@@ -1862,14 +1866,15 @@ static void madvise_finish_tlb(struct madvise_behavior *madv_behavior)
 static bool is_valid_madvise(struct mm_struct *mm, unsigned long start,
 			     size_t len_in, int behavior)
 {
+	P3S_CONTEXT_REMOTE_MM(mm);
 	size_t len;
 
 	if (!madvise_behavior_valid(behavior))
 		return false;
 
-	if (!MM_UAPI_PAGE_ALIGNED(mm, start))
+	if (!__PAGE_ALIGNED(start))
 		return false;
-	len = MM_UAPI_PAGE_ALIGN(mm, len_in);
+	len = __PAGE_ALIGN(len_in);
 
 	/* Check to see whether len was rounded up from small -ve to zero */
 	if (len_in && !len)
@@ -2230,6 +2235,7 @@ static inline bool is_valid_name_char(char ch)
 static int madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 		unsigned long len_in, struct anon_vma_name *anon_name)
 {
+	P3S_CONTEXT_REMOTE_MM(mm);
 	unsigned long end;
 	unsigned long len;
 	int error;
@@ -2239,9 +2245,9 @@ static int madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 		.anon_name = anon_name,
 	};
 
-	if (!MM_UAPI_PAGE_ALIGNED(mm, start))
+	if (!__PAGE_ALIGNED(start))
 		return -EINVAL;
-	len = MM_UAPI_PAGE_ALIGN(mm, len_in);
+	len = __PAGE_ALIGN(len_in);
 
 	/* Check to see whether len was rounded up from small -ve to zero */
 	if (len_in && !len)

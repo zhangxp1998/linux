@@ -12,6 +12,9 @@
 
 #include "internal.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 /*
  * We want to know the real level where a entry is located ignoring any
  * folding of levels which may be happening. For example if p4d is folded then
@@ -31,6 +34,7 @@ static int real_depth(int depth)
 static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
 				unsigned long end, struct mm_walk *walk)
 {
+	P3S_CONTEXT_REMOTE_MM(walk->mm);
 	const struct mm_walk_ops *ops = walk->ops;
 	int err = 0;
 
@@ -39,7 +43,7 @@ static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
 			pte_t new_pte;
 
 			err = ops->install_pte(addr,
-					       addr + MM_PAGE_SIZE(walk->mm),
+					       addr + PAGE_SIZE,
 					       &new_pte, walk);
 			if (err)
 				break;
@@ -50,14 +54,14 @@ static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
 				update_mmu_cache(walk->vma, addr, pte);
 		} else {
 			err = ops->pte_entry(pte, addr,
-					     addr + MM_PAGE_SIZE(walk->mm),
+					     addr + PAGE_SIZE,
 					     walk);
 			if (err)
 				break;
 		}
-		if (addr >= end - MM_PAGE_SIZE(walk->mm))
+		if (addr >= end - PAGE_SIZE)
 			break;
-		addr += MM_PAGE_SIZE(walk->mm);
+		addr += PAGE_SIZE;
 		pte++;
 	}
 	return err;
@@ -1042,7 +1046,7 @@ not_found:
 found:
 	if (expose_page)
 		/* Note: Offset from the mapped page, not the folio start. */
-		fw->page = page + ((addr & (entry_size - 1)) >> PAGE_SHIFT);
+		fw->page = page + ((addr & (entry_size - 1)) >> PAGE_SHIFT_KERNEL);
 	else
 		fw->page = NULL;
 	fw->ptl = ptl;

@@ -17,6 +17,9 @@
 #include <linux/page_size_compat.h>
 #include <linux/ppps.h>
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 /*
  * MS_SYNC syncs the entire file - including mappings.
  *
@@ -33,6 +36,7 @@
  */
 SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	unsigned long end;
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
@@ -43,12 +47,12 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
 
 	if (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC))
 		goto out;
-	if (mm_uapi_offset_in_page_log(current->mm, start))
+	if (__offset_in_page_log(start))
 		goto out;
 	if ((flags & MS_ASYNC) && (flags & MS_SYNC))
 		goto out;
 	error = -ENOMEM;
-	len = MM_UAPI_PAGE_ALIGN(current->mm, len);
+	len = __PAGE_ALIGN(len);
 	end = start + len;
 	if (end < start)
 		goto out;

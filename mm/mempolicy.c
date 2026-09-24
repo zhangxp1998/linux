@@ -118,6 +118,9 @@
 
 #include "internal.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 /* Internal flags */
 #define MPOL_MF_DISCONTIG_OK (MPOL_MF_INTERNAL << 0)	/* Skip checks for continuous vmas */
 #define MPOL_MF_INVERT       (MPOL_MF_INTERNAL << 1)	/* Invert check for nodemask */
@@ -681,6 +684,7 @@ static void queue_folios_pmd(pmd_t *pmd, struct mm_walk *walk)
 static int queue_folios_pte_range(pmd_t *pmd, unsigned long addr,
 			unsigned long end, struct mm_walk *walk)
 {
+	P3S_CONTEXT_REMOTE_MM(walk->vma->vm_mm);
 	struct vm_area_struct *vma = walk->vma;
 	struct folio *folio;
 	struct queue_pages *qp = walk->private;
@@ -703,8 +707,8 @@ static int queue_folios_pte_range(pmd_t *pmd, unsigned long addr,
 		return 0;
 	}
 	for (; addr != end; pte += nr,
-	     addr += nr * MM_PAGE_SIZE(vma->vm_mm)) {
-		max_nr = (end - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
+	     addr += nr * PAGE_SIZE) {
+		max_nr = (end - addr) >> PAGE_SHIFT;
 		nr = 1;
 		ptent = ptep_get(pte);
 		if (pte_none(ptent))
@@ -1419,6 +1423,7 @@ static long do_mbind(unsigned long start, unsigned long len,
 		     unsigned short mode, unsigned short mode_flags,
 		     nodemask_t *nmask, unsigned long flags)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma, *prev;
 	struct vma_iterator vmi;
@@ -1434,13 +1439,13 @@ static long do_mbind(unsigned long start, unsigned long len,
 	if ((flags & MPOL_MF_MOVE_ALL) && !capable(CAP_SYS_NICE))
 		return -EPERM;
 
-	if (!MM_PAGE_ALIGNED(mm, start))
+	if (!PAGE_ALIGNED(start))
 		return -EINVAL;
 
 	if (mode == MPOL_DEFAULT)
 		flags &= ~MPOL_MF_STRICT;
 
-	len = MM_PAGE_ALIGN(mm, len);
+	len = PAGE_ALIGN(len);
 	end = start + len;
 
 	if (end < start)
@@ -1594,7 +1599,7 @@ static int get_nodes(nodemask_t *nodes, const unsigned long __user *nmask,
 	nodes_clear(*nodes);
 	if (maxnode == 0 || !nmask)
 		return 0;
-	if (maxnode > PAGE_SIZE*BITS_PER_BYTE)
+	if (maxnode > PAGE_SIZE_KERNEL*BITS_PER_BYTE)
 		return -EINVAL;
 
 	/*
@@ -1634,7 +1639,7 @@ static int copy_nodes_to_user(unsigned long __user *mask, unsigned long maxnode,
 		nbytes = BITS_TO_COMPAT_LONGS(nr_node_ids) * sizeof(compat_long_t);
 
 	if (copy > nbytes) {
-		if (copy > PAGE_SIZE)
+		if (copy > PAGE_SIZE_KERNEL)
 			return -EINVAL;
 		if (clear_user((char __user *)mask + nbytes, copy - nbytes))
 			return -EFAULT;
@@ -1692,6 +1697,7 @@ static long kernel_mbind(unsigned long start, unsigned long len,
 SYSCALL_DEFINE4(set_mempolicy_home_node, unsigned long, start, unsigned long, len,
 		unsigned long, home_node, unsigned long, flags)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma, *prev;
 	struct mempolicy *new, *old;
@@ -1700,7 +1706,7 @@ SYSCALL_DEFINE4(set_mempolicy_home_node, unsigned long, start, unsigned long, le
 	VMA_ITERATOR(vmi, mm, start);
 
 	start = untagged_addr(start);
-	if (!MM_PAGE_ALIGNED(mm, start))
+	if (!PAGE_ALIGNED(start))
 		return -EINVAL;
 	/*
 	 * flags is used for future extension if any.
@@ -1715,7 +1721,7 @@ SYSCALL_DEFINE4(set_mempolicy_home_node, unsigned long, start, unsigned long, le
 	if (home_node >= MAX_NUMNODES || !node_online(home_node))
 		return -EINVAL;
 
-	len = MM_PAGE_ALIGN(mm, len);
+	len = PAGE_ALIGN(len);
 	end = start + len;
 
 	if (end < start)
@@ -1982,7 +1988,7 @@ struct mempolicy *get_vma_policy(struct vm_area_struct *vma,
 	if (pol->mode == MPOL_INTERLEAVE ||
 	    pol->mode == MPOL_WEIGHTED_INTERLEAVE) {
 		*ilx += vma->vm_pgoff >> order;
-		*ilx += (addr - vma->vm_start) >> (PAGE_SHIFT + order);
+		*ilx += (addr - vma->vm_start) >> (PAGE_SHIFT_KERNEL + order);
 	}
 	return pol;
 }
@@ -3166,7 +3172,7 @@ void mpol_shared_policy_init(struct shared_policy *sp, struct mempolicy *mpol)
 			goto put_npol;
 
 		/* alloc node covering entire file; adds ref to file's npol */
-		sn = sp_alloc(0, MAX_LFS_FILESIZE >> PAGE_SHIFT, npol);
+		sn = sp_alloc(0, MAX_LFS_FILESIZE >> PAGE_SHIFT_KERNEL, npol);
 		if (sn)
 			sp_insert(sp, sn);
 put_npol:
@@ -3300,7 +3306,7 @@ void __init numa_policy_init(void)
 		}
 
 		/* Interleave this node? */
-		if ((total_pages << PAGE_SHIFT) >= (16 << 20))
+		if ((total_pages << PAGE_SHIFT_KERNEL) >= (16 << 20))
 			node_set(nid, interleave_nodes);
 	}
 

@@ -65,7 +65,7 @@
  *     ...
  */
 #define __PAGE_SIZE_ROUND_UP_ADJ(size) \
-	((size) + (((1 << (__PAGE_SHIFT - PAGE_SHIFT)) - 1) << PAGE_SHIFT))
+	((size) + (((1 << (MM_UAPI_PAGE_SHIFT(NULL) - PAGE_SHIFT_KERNEL)) - 1) << PAGE_SHIFT_KERNEL))
 
 extern int __fixup_swap_header(struct file *swap_file, struct address_space *mapping);
 

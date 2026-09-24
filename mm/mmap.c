@@ -65,6 +65,9 @@
 
 #include "internal.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 EXPORT_TRACEPOINT_SYMBOL_GPL(vm_unmapped_area);
 
 #ifndef arch_mmap_check
@@ -122,6 +125,7 @@ static int check_brk_limits(unsigned long addr, unsigned long len)
 
 SYSCALL_DEFINE1(brk, unsigned long, brk)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	unsigned long newbrk, oldbrk, origbrk;
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *brkvma, *next = NULL;
@@ -158,8 +162,8 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 			      mm->end_data, mm->start_data))
 		goto out;
 
-	newbrk = MM_UAPI_PAGE_ALIGN(mm, brk);
-	oldbrk = MM_UAPI_PAGE_ALIGN(mm, mm->brk);
+	newbrk = __PAGE_ALIGN(brk);
+	oldbrk = __PAGE_ALIGN(mm->brk);
 	if (oldbrk == newbrk) {
 		mm->brk = brk;
 		goto success;
@@ -193,9 +197,9 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	 * expansion area
 	 */
 	vma_iter_init(&vmi, mm, oldbrk);
-	next = vma_find(&vmi, newbrk + MM_UAPI_PAGE_SIZE(mm) +
+	next = vma_find(&vmi, newbrk + __PAGE_SIZE +
 			mm_stack_guard_gap(mm));
-	if (next && newbrk + MM_UAPI_PAGE_SIZE(mm) > vm_start_gap(next))
+	if (next && newbrk + __PAGE_SIZE > vm_start_gap(next))
 		goto out;
 
 	brkvma = vma_prev_limit(&vmi, mm->start_brk);
@@ -227,10 +231,11 @@ out:
  */
 static inline unsigned long round_hint_to_min(unsigned long hint)
 {
-	hint &= MM_UAPI_PAGE_MASK(current->mm);
+	P3S_CONTEXT_REMOTE_MM(current->mm);
+	hint &= __PAGE_MASK;
 	if (((void *)hint != NULL) &&
 	    (hint < mmap_min_addr))
-		return MM_UAPI_PAGE_ALIGN(current->mm, mmap_min_addr);
+		return __PAGE_ALIGN(mmap_min_addr);
 	return hint;
 }
 
@@ -348,6 +353,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 			unsigned long pgoff, unsigned long *populate,
 			struct list_head *uf)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	struct mm_struct *mm = current->mm;
 	int pkey = 0;
 
@@ -376,12 +382,12 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		addr = round_hint_to_min(addr);
 
 	/* Careful about overflows.. */
-	len = MM_UAPI_PAGE_ALIGN(mm, len);
+	len = __PAGE_ALIGN(len);
 	if (!len)
 		return -ENOMEM;
 
 	/* offset overflow? */
-	if ((pgoff + (len >> MM_PAGE_SHIFT(mm))) < pgoff)
+	if ((pgoff + (len >> PAGE_SHIFT)) < pgoff)
 		return -EOVERFLOW;
 
 	/* Too many mappings? */
@@ -546,7 +552,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 			/*
 			 * Set pgoff according to addr for anon_vma.
 			 */
-			pgoff = addr >> MM_PAGE_SHIFT(mm);
+			pgoff = addr >> PAGE_SHIFT;
 			break;
 		default:
 			return -EINVAL;
@@ -641,15 +647,16 @@ struct mmap_arg_struct {
 
 SYSCALL_DEFINE1(old_mmap, struct mmap_arg_struct __user *, arg)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	struct mmap_arg_struct a;
 
 	if (copy_from_user(&a, arg, sizeof(a)))
 		return -EFAULT;
-	if (mm_offset_in_page(current->mm, a.offset))
+	if (offset_in_page(a.offset))
 		return -EINVAL;
 
 	return ksys_mmap_pgoff(a.addr, a.len, a.prot, a.flags, a.fd,
-			       a.offset >> MM_PAGE_SHIFT(current->mm));
+			       a.offset >> PAGE_SHIFT);
 }
 #endif /* __ARCH_WANT_SYS_OLD_MMAP */
 
@@ -698,7 +705,7 @@ ppps_align_unmapped_area(struct mm_struct *mm,
 	 * before this search and retain their 4K-granular ABI.
 	 */
 	if (ppps_mm_is_compat(mm))
-		info->align_mask = PAGE_SIZE - 1;
+		info->align_mask = PAGE_SIZE_KERNEL - 1;
 }
 
 /* Get an address range which is currently unmapped.
@@ -767,6 +774,7 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 				  unsigned long len, unsigned long pgoff,
 				  unsigned long flags, vm_flags_t vm_flags)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	struct vm_area_struct *vma, *prev;
 	struct mm_struct *mm = current->mm;
 	struct vm_unmapped_area_info info = {};
@@ -781,7 +789,7 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 
 	/* requesting a specific address */
 	if (addr) {
-		addr = MM_PAGE_ALIGN(mm, addr);
+		addr = PAGE_ALIGN(addr);
 		vma = find_vma_prev(mm, addr, &prev);
 		if (mmap_end - len >= addr && addr >= mmap_min_addr &&
 				(!vma || addr + len <= vm_start_gap(vma)) &&
@@ -791,7 +799,7 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
-	info.low_limit = PAGE_SIZE;
+	info.low_limit = PAGE_SIZE_KERNEL;
 	info.high_limit = arch_get_mmap_base(addr, mm->mmap_base);
 	info.start_gap = stack_guard_placement(vm_flags);
 	ppps_align_unmapped_area(mm, &info);
@@ -805,7 +813,7 @@ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 	 * can happen with large stack limits and large mmap()
 	 * allocations.
 	 */
-	if (mm_offset_in_page(mm, addr)) {
+	if (offset_in_page(addr)) {
 		VM_BUG_ON(addr != -ENOMEM);
 		info.flags = 0;
 		info.low_limit = TASK_UNMAPPED_BASE;
@@ -973,7 +981,7 @@ find_vma_prev(struct mm_struct *mm, unsigned long addr,
  * native-page bytes for existing architecture users; mm_stack_guard_gap()
  * scales the configured page count for a per-process page size.
  */
-unsigned long stack_guard_gap = 256UL<<PAGE_SHIFT;
+unsigned long stack_guard_gap = 256UL<<PAGE_SHIFT_KERNEL;
 
 static int __init cmdline_parse_stack_guard_gap(char *p)
 {
@@ -982,7 +990,7 @@ static int __init cmdline_parse_stack_guard_gap(char *p)
 
 	val = simple_strtoul(p, &endptr, 10);
 	if (!*endptr)
-		stack_guard_gap = val << PAGE_SHIFT;
+		stack_guard_gap = val << PAGE_SHIFT_KERNEL;
 
 	return 1;
 }
@@ -1111,14 +1119,14 @@ EXPORT_SYMBOL(vm_munmap);
 
 SYSCALL_DEFINE2(munmap, unsigned long, addr, size_t, len)
 {
-	struct mm_struct *mm = current->mm;
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 
 	addr = untagged_addr(addr);
 
-	if (!MM_UAPI_PAGE_ALIGNED(mm, addr))
+	if (!__PAGE_ALIGNED(addr))
 		return -EINVAL;
 
-	len = MM_UAPI_PAGE_ALIGN(mm, len);
+	len = __PAGE_ALIGN(len);
 
 	profile_munmap(addr);
 	return __vm_munmap(addr, len, true);
@@ -1131,6 +1139,7 @@ SYSCALL_DEFINE2(munmap, unsigned long, addr, size_t, len)
 SYSCALL_DEFINE5(remap_file_pages, unsigned long, start, unsigned long, size,
 		unsigned long, prot, unsigned long, pgoff, unsigned long, flags)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
@@ -1144,14 +1153,14 @@ SYSCALL_DEFINE5(remap_file_pages, unsigned long, start, unsigned long, size,
 
 	if (prot)
 		return ret;
-	start = start & MM_PAGE_MASK(mm);
-	size = size & MM_PAGE_MASK(mm);
+	start = start & PAGE_MASK;
+	size = size & PAGE_MASK;
 
 	if (start + size <= start)
 		return ret;
 
 	/* Does pgoff wrap? */
-	if (pgoff + (size >> MM_PAGE_SHIFT(mm)) < pgoff)
+	if (pgoff + (size >> PAGE_SHIFT) < pgoff)
 		return ret;
 
 	if (mmap_read_lock_killable(mm))

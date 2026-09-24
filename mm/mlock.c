@@ -35,6 +35,9 @@
 
 #include "internal.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 struct mlock_fbatch {
 	local_lock_t lock;
 	struct folio_batch fbatch;
@@ -361,6 +364,7 @@ static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
 			   unsigned long end, struct mm_walk *walk)
 
 {
+	P3S_CONTEXT_REMOTE_MM(walk->vma->vm_mm);
 	struct vm_area_struct *vma = walk->vma;
 	spinlock_t *ptl;
 	pte_t *start_pte, *pte;
@@ -391,8 +395,8 @@ static int mlock_pte_range(pmd_t *pmd, unsigned long addr,
 		return 0;
 	}
 
-	unsigned int page_size = MM_PAGE_SIZE(vma->vm_mm);
-	unsigned int page_shift = MM_PAGE_SHIFT(vma->vm_mm);
+	unsigned int page_size = PAGE_SIZE;
+	unsigned int page_shift = PAGE_SHIFT;
 
 	for (pte = start_pte; addr != end; pte++, addr += page_size) {
 		ptent = ptep_get(pte);
@@ -529,12 +533,13 @@ out:
 static int apply_vma_lock_flags(unsigned long start, size_t len,
 				vm_flags_t flags)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	unsigned long nstart, end, tmp;
 	struct vm_area_struct *vma, *prev;
 	VMA_ITERATOR(vmi, current->mm, start);
 
-	VM_BUG_ON(mm_uapi_offset_in_page_log(current->mm, start));
-	VM_BUG_ON(len != MM_UAPI_PAGE_ALIGN(current->mm, len));
+	VM_BUG_ON(__offset_in_page_log(start));
+	VM_BUG_ON(len != __PAGE_ALIGN(len));
 	end = start + len;
 	if (end < start)
 		return -EINVAL;
@@ -626,6 +631,7 @@ static int __mlock_posix_error_return(long retval)
 
 static __must_check int do_mlock(unsigned long start, size_t len, vm_flags_t flags)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	unsigned long locked;
 	unsigned long lock_limit;
 	int error = -ENOMEM;
@@ -635,12 +641,12 @@ static __must_check int do_mlock(unsigned long start, size_t len, vm_flags_t fla
 	if (!can_do_mlock())
 		return -EPERM;
 
-	len = MM_UAPI_PAGE_ALIGN(current->mm, len + mm_uapi_offset_in_page(current->mm, start));
-	start &= MM_UAPI_PAGE_MASK(current->mm);
+	len = __PAGE_ALIGN(len + __offset_in_page(start));
+	start &= __PAGE_MASK;
 
 	lock_limit = rlimit(RLIMIT_MEMLOCK);
-	lock_limit >>= MM_PAGE_SHIFT(current->mm);
-	locked = len >> MM_PAGE_SHIFT(current->mm);
+	lock_limit >>= PAGE_SHIFT;
+	locked = len >> PAGE_SHIFT;
 
 	if (mmap_write_lock_killable(current->mm))
 		return -EINTR;
@@ -691,12 +697,13 @@ SYSCALL_DEFINE3(mlock2, unsigned long, start, size_t, len, int, flags)
 
 SYSCALL_DEFINE2(munlock, unsigned long, start, size_t, len)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	int ret;
 
 	start = untagged_addr(start);
 
-	len = MM_UAPI_PAGE_ALIGN(current->mm, len + mm_uapi_offset_in_page(current->mm, start));
-	start &= MM_UAPI_PAGE_MASK(current->mm);
+	len = __PAGE_ALIGN(len + __offset_in_page(start));
+	start &= __PAGE_MASK;
 
 	if (mmap_write_lock_killable(current->mm))
 		return -EINTR;
@@ -804,7 +811,7 @@ static void ppps_mlock_tuple_step_test(struct kunit *test)
 	struct folio *folio;
 	struct vm_area_struct vma;
 	pte_t ptes[PPPS_SLICES_PER_PAGE];
-	unsigned long address = PAGE_SIZE;
+	unsigned long address = PAGE_SIZE_KERNEL;
 	unsigned int step;
 	unsigned int i;
 
@@ -820,7 +827,7 @@ static void ppps_mlock_tuple_step_test(struct kunit *test)
 	vma_init(&vma, mm);
 	vma.vm_ops = NULL;
 	vma.vm_start = address;
-	vma.vm_end = address + PAGE_SIZE;
+	vma.vm_end = address + PAGE_SIZE_KERNEL;
 	vma.vm_pgoff = address >> PAGE_SHIFT_COMPAT;
 	folio->mapping = (void *)FOLIO_MAPPING_ANON;
 	folio_set_ppps_compat_anon(folio);
@@ -834,7 +841,7 @@ static void ppps_mlock_tuple_step_test(struct kunit *test)
 	folio_clear_ppps_compat_anon(folio);
 	folio->mapping = NULL;
 	folio_put(folio);
-	mm->page_shift = PAGE_SHIFT;
+	mm->page_shift = PAGE_SHIFT_KERNEL;
 	mmput(mm);
 }
 
@@ -863,10 +870,10 @@ int user_shm_lock(size_t size, struct ucounts *ucounts)
 	long memlock;
 	int allowed = 0;
 
-	locked = DIV_ROUND_UP(size, PAGE_SIZE);
+	locked = DIV_ROUND_UP(size, PAGE_SIZE_KERNEL);
 	lock_limit = rlimit(RLIMIT_MEMLOCK);
 	if (lock_limit != RLIM_INFINITY)
-		lock_limit >>= PAGE_SHIFT;
+		lock_limit >>= PAGE_SHIFT_KERNEL;
 	spin_lock(&shmlock_user_lock);
 	memlock = inc_rlimit_ucounts(ucounts, UCOUNT_RLIMIT_MEMLOCK, locked);
 
@@ -889,7 +896,7 @@ void user_shm_unlock(size_t size, struct ucounts *ucounts)
 {
 	spin_lock(&shmlock_user_lock);
 	dec_rlimit_ucounts(ucounts, UCOUNT_RLIMIT_MEMLOCK,
-			   DIV_ROUND_UP(size, PAGE_SIZE));
+			   DIV_ROUND_UP(size, PAGE_SIZE_KERNEL));
 	spin_unlock(&shmlock_user_lock);
 	put_ucounts(ucounts);
 }

@@ -77,6 +77,9 @@
 #include <trace/hooks/vmscan.h>
 #include <trace/hooks/mm.h>
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 EXPORT_TRACEPOINT_SYMBOL_GPL(mm_vmscan_direct_reclaim_begin);
 EXPORT_TRACEPOINT_SYMBOL_GPL(mm_vmscan_direct_reclaim_end);
 EXPORT_TRACEPOINT_SYMBOL_GPL(mm_vmscan_kswapd_wake);
@@ -2448,7 +2451,7 @@ static bool inactive_is_low(struct lruvec *lruvec, enum lru_list inactive_lru)
 	inactive = lruvec_page_state(lruvec, NR_LRU_BASE + inactive_lru);
 	active = lruvec_page_state(lruvec, NR_LRU_BASE + active_lru);
 
-	gb = (inactive + active) >> (30 - PAGE_SHIFT);
+	gb = (inactive + active) >> (30 - PAGE_SHIFT_KERNEL);
 	if (gb)
 		inactive_ratio = int_sqrt(10 * gb);
 	else
@@ -3667,6 +3670,7 @@ static void walk_update_folio(struct lru_gen_mm_walk *walk, struct folio *folio,
 static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
 			   struct mm_walk *args)
 {
+	P3S_CONTEXT_REMOTE_MM(args->mm);
 	int i;
 	bool dirty;
 	pte_t *pte;
@@ -3701,7 +3705,7 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
 	arch_enter_lazy_mmu_mode();
 restart:
 	for (i = pte_index_mm(mm, start), addr = start; addr != end;
-	     i++, addr += MM_PAGE_SIZE(mm)) {
+	     i++, addr += PAGE_SIZE) {
 		unsigned long pfn;
 		struct folio *folio;
 		pte_t ptent = ptep_get(pte + i);
@@ -3738,7 +3742,7 @@ restart:
 	last = NULL;
 
 	if (i < MM_PTRS_PER_PTE(mm) &&
-	    get_next_vma(MM_PMD_MASK(mm), MM_PAGE_SIZE(mm),
+	    get_next_vma(MM_PMD_MASK(mm), PAGE_SIZE,
 			 args, &start, &end))
 		goto restart;
 
@@ -4386,6 +4390,7 @@ static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
  */
 bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
 {
+	P3S_CONTEXT_REMOTE_MM(pvmw->vma->vm_mm);
 	int i;
 	bool dirty;
 	unsigned long start;
@@ -4404,8 +4409,8 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
 	DEFINE_MAX_SEQ(lruvec);
 	int gen = lru_gen_from_seq(max_seq);
 	struct mm_struct *mm = vma->vm_mm;
-	unsigned long page_size = MM_PAGE_SIZE(mm);
-	unsigned int page_shift = MM_PAGE_SHIFT(mm);
+	unsigned long page_size = PAGE_SIZE;
+	unsigned int page_shift = PAGE_SHIFT;
 
 	lockdep_assert_held(pvmw->ptl);
 	VM_WARN_ON_ONCE_FOLIO(folio_test_lru(folio), folio);
@@ -8035,7 +8040,7 @@ int user_proactive_reclaim(char *buf,
 	buf = strstrip(buf);
 
 	old_buf = buf;
-	nr_to_reclaim = memparse(buf, &buf) / PAGE_SIZE;
+	nr_to_reclaim = memparse(buf, &buf) / PAGE_SIZE_KERNEL;
 	if (buf == old_buf)
 		return -EINVAL;
 

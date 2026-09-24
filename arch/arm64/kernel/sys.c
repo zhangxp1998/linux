@@ -19,15 +19,19 @@
 #include <asm/cpufeature.h>
 #include <asm/syscall.h>
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
 		unsigned long, prot, unsigned long, flags,
 		unsigned long, fd, unsigned long, off)
 {
-	if (mm_offset_in_page(current->mm, off))
+	P3S_CONTEXT_REMOTE_MM(current->mm);
+	if (offset_in_page(off))
 		return -EINVAL;
 
 	return ksys_mmap_pgoff(addr, len, prot, flags, fd,
-			       off >> MM_PAGE_SHIFT(current->mm));
+			       off >> PAGE_SHIFT);
 }
 
 SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)

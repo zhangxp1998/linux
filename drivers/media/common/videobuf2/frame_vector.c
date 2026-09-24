@@ -10,6 +10,9 @@
 
 #include <media/frame_vector.h>
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 /**
  * get_vaddr_frames_range() - pin a byte range into a frame vector
  * @start: first user byte
@@ -45,7 +48,7 @@ EXPORT_SYMBOL(get_vaddr_frames_range);
 int get_vaddr_frames(unsigned long start, unsigned int nr_frames, bool write,
 		     struct frame_vector *vec)
 {
-	struct mm_struct *mm = current->mm;
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	size_t length;
 	int ret;
 
@@ -55,10 +58,10 @@ int get_vaddr_frames(unsigned long start, unsigned int nr_frames, bool write,
 		nr_frames = vec->nr_allocated;
 	if (!nr_frames)
 		return -EFAULT;
-	if (nr_frames > (ULONG_MAX >> MM_PAGE_SHIFT(mm)))
+	if (nr_frames > (ULONG_MAX >> PAGE_SHIFT))
 		return -EOVERFLOW;
-	length = ((size_t)nr_frames << MM_PAGE_SHIFT(mm)) -
-		 mm_offset_in_page(mm, start);
+	length = ((size_t)nr_frames << PAGE_SHIFT) -
+		 offset_in_page(start);
 	ret = get_vaddr_frames_range(start, length, write, vec);
 	return ret ? ret : -EFAULT;
 }
@@ -182,7 +185,7 @@ struct frame_vector *frame_vector_create(unsigned int nr_frames)
 		return NULL;
 	vec->nr_allocated = nr_frames;
 	vec->nr_frames = 0;
-	frame_vector_set_frame_size(vec, PAGE_SIZE);
+	frame_vector_set_frame_size(vec, PAGE_SIZE_KERNEL);
 	return vec;
 }
 EXPORT_SYMBOL(frame_vector_create);

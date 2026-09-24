@@ -25,6 +25,9 @@
 #include "swap.h"
 #include "internal.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 static int mincore_hugetlb(pte_t *pte, unsigned long hmask, unsigned long addr,
 			unsigned long end, struct mm_walk *walk)
 {
@@ -127,8 +130,9 @@ static unsigned char mincore_page(struct address_space *mapping, pgoff_t index)
 static int __mincore_unmapped_range(unsigned long addr, unsigned long end,
 				struct vm_area_struct *vma, unsigned char *vec)
 {
-	unsigned long page_size = MM_PAGE_SIZE(vma->vm_mm);
-	unsigned long nr = (end - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
+	P3S_CONTEXT_REMOTE_MM(vma->vm_mm);
+	unsigned long page_size = PAGE_SIZE;
+	unsigned long nr = (end - addr) >> PAGE_SHIFT;
 	int i;
 
 	if (vma->vm_file) {
@@ -157,8 +161,9 @@ static int mincore_unmapped_range(unsigned long addr, unsigned long end,
 static int mincore_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 			struct mm_walk *walk)
 {
-	unsigned long page_size = MM_PAGE_SIZE(walk->mm);
-	unsigned int page_shift = MM_PAGE_SHIFT(walk->mm);
+	P3S_CONTEXT_REMOTE_MM(walk->mm);
+	unsigned long page_size = PAGE_SIZE;
+	unsigned int page_shift = PAGE_SHIFT;
 	spinlock_t *ptl;
 	struct vm_area_struct *vma = walk->vma;
 	pte_t *ptep;
@@ -240,9 +245,9 @@ static const struct mm_walk_ops mincore_walk_ops = {
  */
 static long do_mincore(unsigned long addr, unsigned long pages, unsigned char *vec)
 {
-	struct mm_struct *mm = current->mm;
-	unsigned long page_size = MM_PAGE_SIZE(mm);
-	unsigned int page_shift = MM_PAGE_SHIFT(mm);
+	P3S_CONTEXT_REMOTE_MM(current->mm);
+	unsigned long page_size = PAGE_SIZE;
+	unsigned int page_shift = PAGE_SHIFT;
 	struct vm_area_struct *vma;
 	unsigned long end;
 	int err;
@@ -303,18 +308,18 @@ static inline void __collapse_mincore_result(unsigned char *src_vec,
 SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 		unsigned char __user *, vec)
 {
-	struct mm_struct *mm = current->mm;
-	unsigned int page_shift = MM_PAGE_SHIFT(mm);
+	P3S_CONTEXT_REMOTE_MM(current->mm);
+	unsigned int page_shift = PAGE_SHIFT;
 	long retval;
 	unsigned long pages;
 	unsigned char *tmp;
 	unsigned char *res;
-	unsigned long nr_subpages = __PAGE_SIZE / PAGE_SIZE;
+	unsigned long nr_subpages = MM_UAPI_PAGE_SIZE(NULL) / PAGE_SIZE_KERNEL;
 
 	start = untagged_addr(start);
 
 	/* Check the start address: needs to be page-aligned.. */
-	if (unlikely(start & ~MM_UAPI_PAGE_MASK(mm)))
+	if (unlikely(start & ~__PAGE_MASK))
 		return -EINVAL;
 
 	/* ..and we need to be passed a valid user-space range */
@@ -323,7 +328,7 @@ SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 
 	/* This also avoids any overflows while rounding len up. */
 	pages = len >> page_shift;
-	pages += mm_offset_in_page(mm, len) != 0;
+	pages += offset_in_page(len) != 0;
 
 	if (!access_ok(vec, pages / nr_subpages))
 		return -EFAULT;
@@ -348,7 +353,7 @@ SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 		 * buffer is one native kernel page and each entry is one byte.
 		 */
 		mmap_read_lock(current->mm);
-		retval = do_mincore(start, min(pages, PAGE_SIZE), tmp);
+		retval = do_mincore(start, min(pages, PAGE_SIZE_KERNEL), tmp);
 		mmap_read_unlock(current->mm);
 
 		if (retval <= 0)

@@ -43,6 +43,9 @@
 
 #include "internal.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 static bool maybe_change_pte_writable(struct vm_area_struct *vma, pte_t pte)
 {
 	if (WARN_ON_ONCE(!(vma->vm_flags & VM_WRITE)))
@@ -182,11 +185,12 @@ static void prot_commit_flush_ptes(struct vm_area_struct *vma, unsigned long add
 		pte_t *ptep, pte_t oldpte, pte_t ptent, int nr_ptes,
 		int idx, bool set_write, struct mmu_gather *tlb)
 {
+	P3S_CONTEXT_REMOTE_MM(vma->vm_mm);
 	/*
 	 * Advance the position in the batch by idx; note that if idx > 0,
 	 * then the nr_ptes passed here is <= batch size - idx.
 	 */
-	addr += idx * MM_PAGE_SIZE(vma->vm_mm);
+	addr += idx * PAGE_SIZE;
 	ptep += idx;
 	oldpte = pte_advance_pfn(oldpte, idx);
 	ptent = pte_advance_pfn(ptent, idx);
@@ -197,7 +201,7 @@ static void prot_commit_flush_ptes(struct vm_area_struct *vma, unsigned long add
 	modify_prot_commit_ptes(vma, addr, ptep, oldpte, ptent, nr_ptes);
 	if (pte_needs_flush(oldpte, ptent))
 		tlb_flush_pte_range(tlb, addr,
-				    nr_ptes * MM_PAGE_SIZE(vma->vm_mm));
+				    nr_ptes * PAGE_SIZE);
 }
 
 /*
@@ -277,6 +281,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 		struct vm_area_struct *vma, pmd_t *pmd, unsigned long addr,
 		unsigned long end, pgprot_t newprot, unsigned long cp_flags)
 {
+	P3S_CONTEXT_REMOTE_MM(vma->vm_mm);
 	pte_t *pte, oldpte;
 	spinlock_t *ptl;
 	long pages = 0;
@@ -286,7 +291,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 	bool uffd_wp_resolve = cp_flags & MM_CP_UFFD_WP_RESOLVE;
 	int nr_ptes;
 
-	tlb_change_page_size(tlb, MM_PAGE_SIZE(vma->vm_mm));
+	tlb_change_page_size(tlb, PAGE_SIZE);
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (!pte)
 		return -EAGAIN;
@@ -303,7 +308,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 		oldpte = ptep_get(pte);
 		if (pte_present(oldpte)) {
 			const fpb_t flags = FPB_RESPECT_SOFT_DIRTY | FPB_RESPECT_WRITE;
-			int max_nr_ptes = (end - addr) >> MM_PAGE_SHIFT(vma->vm_mm);
+			int max_nr_ptes = (end - addr) >> PAGE_SHIFT;
 			struct folio *folio = NULL;
 			struct page *page;
 			pte_t ptent;
@@ -443,7 +448,7 @@ static long change_pte_range(struct mmu_gather *tlb,
 			}
 		}
 	} while (pte += nr_ptes,
-		 addr += nr_ptes * MM_PAGE_SIZE(vma->vm_mm), addr != end);
+		 addr += nr_ptes * PAGE_SIZE, addr != end);
 	arch_leave_lazy_mmu_mode();
 	pte_unmap_unlock(pte - 1, ptl);
 
@@ -866,6 +871,7 @@ fail:
 static int do_mprotect_pkey(unsigned long start, size_t len,
 		unsigned long prot, int pkey)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	unsigned long nstart, end, tmp, reqprot;
 	struct vm_area_struct *vma, *prev;
 	int error;
@@ -881,11 +887,11 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 	if (grows == (PROT_GROWSDOWN|PROT_GROWSUP)) /* can't be both */
 		return -EINVAL;
 
-	if (!MM_UAPI_PAGE_ALIGNED(current->mm, start))
+	if (!__PAGE_ALIGNED(start))
 		return -EINVAL;
 	if (!len)
 		return 0;
-	len = MM_UAPI_PAGE_ALIGN(current->mm, len);
+	len = __PAGE_ALIGN(len);
 	end = start + len;
 	if (end <= start)
 		return -ENOMEM;

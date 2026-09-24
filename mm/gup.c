@@ -29,6 +29,9 @@
 #include "internal.h"
 #include "swap.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 struct follow_page_context {
 	unsigned long page_mask;
 	unsigned int page_offset;
@@ -703,7 +706,7 @@ static struct page *follow_huge_pud(struct vm_area_struct *vma,
 	    !can_follow_write_pud(pud, pfn_to_page(pfn), vma, flags))
 		return NULL;
 
-	pfn += (addr & ~PUD_MASK) >> PAGE_SHIFT;
+	pfn += (addr & ~PUD_MASK) >> PAGE_SHIFT_KERNEL;
 	page = pfn_to_page(pfn);
 
 	if (!pud_write(pud) && gup_must_unshare(vma, flags, page))
@@ -775,7 +778,7 @@ static struct page *follow_huge_pmd(struct vm_area_struct *vma,
 		touch_pmd(vma, addr, pmd, flags & FOLL_WRITE);
 #endif	/* CONFIG_TRANSPARENT_HUGEPAGE */
 
-	page += (addr & ~HPAGE_PMD_MASK) >> PAGE_SHIFT;
+	page += (addr & ~HPAGE_PMD_MASK) >> PAGE_SHIFT_KERNEL;
 	*page_mask = HPAGE_PMD_NR - 1;
 
 	return page;
@@ -1397,6 +1400,7 @@ static long __get_user_pages(struct mm_struct *mm,
 		unsigned int gup_flags, struct page **pages,
 		int *locked, struct gup_page_offsets *offsets)
 {
+	P3S_CONTEXT_REMOTE_MM(mm);
 	long ret = 0, i = 0;
 	struct vm_area_struct *vma = NULL;
 	struct follow_page_context ctx = {};
@@ -1436,7 +1440,7 @@ static long __get_user_pages(struct mm_struct *mm,
 			}
 			vma = gup_vma_lookup(mm, start);
 			if (!vma && in_gate_area(mm, start)) {
-				ret = get_gate_page(mm, start & MM_PAGE_MASK(mm),
+				ret = get_gate_page(mm, start & PAGE_MASK,
 						gup_flags, &vma,
 						pages ? &page : NULL);
 				if (ret)
@@ -1498,7 +1502,7 @@ retry:
 			goto out;
 		}
 next_page:
-		page_increm = 1 + (~(start >> PAGE_SHIFT) & ctx.page_mask);
+		page_increm = 1 + (~(start >> PAGE_SHIFT_KERNEL) & ctx.page_mask);
 		if (page_increm > nr_pages)
 			page_increm = nr_pages;
 
@@ -1539,13 +1543,13 @@ next_page:
 				subpage = page + j;
 				pages[i + j] = subpage;
 				gup_record_page_offset(offsets, ctx.page_offset);
-				flush_anon_page(vma, subpage, start + j * MM_PAGE_SIZE(mm));
+				flush_anon_page(vma, subpage, start + j * PAGE_SIZE);
 				flush_dcache_page(subpage);
 			}
 		}
 
 		i += page_increm;
-		start += page_increm * MM_PAGE_SIZE(mm);
+		start += page_increm * PAGE_SIZE;
 		nr_pages -= page_increm;
 	} while (nr_pages);
 out:
@@ -1697,6 +1701,7 @@ static __always_inline long __get_user_pages_locked(struct mm_struct *mm,
 						unsigned int flags,
 						struct gup_page_offsets *offsets)
 {
+	P3S_CONTEXT_REMOTE_MM(mm);
 	long ret, pages_done;
 	bool must_unlock = false;
 
@@ -1765,7 +1770,7 @@ static __always_inline long __get_user_pages_locked(struct mm_struct *mm,
 		 */
 		if (likely(pages))
 			pages += ret;
-		start += ret << MM_PAGE_SHIFT(mm);
+		start += ret << PAGE_SHIFT;
 
 		/* The lock was temporarily dropped, so we must unlock later */
 		must_unlock = true;
@@ -1812,7 +1817,7 @@ retry:
 			break;
 		if (likely(pages))
 			pages++;
-		start += MM_PAGE_SIZE(mm);
+		start += PAGE_SIZE;
 	}
 	if (must_unlock && *locked) {
 		/*
@@ -1857,14 +1862,15 @@ retry:
 long populate_vma_page_range(struct vm_area_struct *vma,
 		unsigned long start, unsigned long end, int *locked)
 {
+	P3S_CONTEXT_REMOTE_MM(vma->vm_mm);
 	struct mm_struct *mm = vma->vm_mm;
 	unsigned long nr_pages = MM_PHYS_PFN(mm, end - start);
 	int local_locked = 1;
 	int gup_flags;
 	long ret;
 
-	VM_WARN_ON_ONCE(!MM_PAGE_ALIGNED(mm, start));
-	VM_WARN_ON_ONCE(!MM_PAGE_ALIGNED(mm, end));
+	VM_WARN_ON_ONCE(!PAGE_ALIGNED(start));
+	VM_WARN_ON_ONCE(!PAGE_ALIGNED(end));
 	VM_WARN_ON_ONCE_VMA(start < vma->vm_start, vma);
 	VM_WARN_ON_ONCE_VMA(end   > vma->vm_end, vma);
 	mmap_assert_locked(mm);
@@ -1931,12 +1937,13 @@ long populate_vma_page_range(struct vm_area_struct *vma,
 long faultin_page_range(struct mm_struct *mm, unsigned long start,
 			unsigned long end, bool write, int *locked)
 {
+	P3S_CONTEXT_REMOTE_MM(mm);
 	unsigned long nr_pages = MM_PHYS_PFN(mm, end - start);
 	int gup_flags;
 	long ret;
 
-	VM_WARN_ON_ONCE(!MM_PAGE_ALIGNED(mm, start));
-	VM_WARN_ON_ONCE(!MM_PAGE_ALIGNED(mm, end));
+	VM_WARN_ON_ONCE(!PAGE_ALIGNED(start));
+	VM_WARN_ON_ONCE(!PAGE_ALIGNED(end));
 	mmap_assert_locked(mm);
 
 	/*
@@ -2068,7 +2075,7 @@ static long __get_user_pages_locked(struct mm_struct *mm, unsigned long start,
 			gup_record_page_offset(offsets, 0);
 		}
 
-		start = (start + PAGE_SIZE) & PAGE_MASK;
+		start = (start + PAGE_SIZE_KERNEL) & PAGE_MASK_KERNEL;
 	}
 
 	if (must_unlock && *locked) {
@@ -3048,8 +3055,8 @@ static int gup_fast_pmd_leaf(pmd_t orig, pmd_t *pmdp, unsigned long addr,
 	if (pmd_special(orig))
 		return 0;
 
-	refs = (end - addr) >> PAGE_SHIFT;
-	page = pmd_page(orig) + ((addr & ~PMD_MASK) >> PAGE_SHIFT);
+	refs = (end - addr) >> PAGE_SHIFT_KERNEL;
+	page = pmd_page(orig) + ((addr & ~PMD_MASK) >> PAGE_SHIFT_KERNEL);
 
 	folio = try_grab_folio_fast(page, refs, flags);
 	if (!folio)
@@ -3090,8 +3097,8 @@ static int gup_fast_pud_leaf(pud_t orig, pud_t *pudp, unsigned long addr,
 	if (pud_special(orig))
 		return 0;
 
-	refs = (end - addr) >> PAGE_SHIFT;
-	page = pud_page(orig) + ((addr & ~PUD_MASK) >> PAGE_SHIFT);
+	refs = (end - addr) >> PAGE_SHIFT_KERNEL;
+	page = pud_page(orig) + ((addr & ~PUD_MASK) >> PAGE_SHIFT_KERNEL);
 
 	folio = try_grab_folio_fast(page, refs, flags);
 	if (!folio)
@@ -3289,6 +3296,7 @@ static unsigned long gup_fast(unsigned long start, unsigned long end,
 static int gup_fast_fallback(unsigned long start, unsigned long nr_pages,
 		unsigned int gup_flags, struct page **pages)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	unsigned long len, end;
 	unsigned long nr_pinned;
 	int locked = 0;
@@ -3306,8 +3314,8 @@ static int gup_fast_fallback(unsigned long start, unsigned long nr_pages,
 	if (!(gup_flags & FOLL_FAST_ONLY))
 		might_lock_read(&current->mm->mmap_lock);
 
-	start = untagged_addr(start) & MM_PAGE_MASK(current->mm);
-	len = (unsigned long)nr_pages << MM_PAGE_SHIFT(current->mm);
+	start = untagged_addr(start) & PAGE_MASK;
+	len = (unsigned long)nr_pages << PAGE_SHIFT;
 	if (check_add_overflow(start, len, &end))
 		return -EOVERFLOW;
 	if (end > TASK_SIZE_MAX)
@@ -3318,7 +3326,7 @@ static int gup_fast_fallback(unsigned long start, unsigned long nr_pages,
 		return nr_pinned;
 
 	/* Slow path: try to get the remaining pages with get_user_pages */
-	start += (unsigned long)nr_pinned << MM_PAGE_SHIFT(current->mm);
+	start += (unsigned long)nr_pinned << PAGE_SHIFT;
 	pages += nr_pinned;
 	ret = __gup_longterm_locked(current->mm, start, nr_pages - nr_pinned,
 				    pages, &locked,
@@ -3491,8 +3499,9 @@ static long gup_user_range(struct mm_struct *mm, unsigned long start,
 			   struct page_span *spans, unsigned int *offsets,
 			   bool pin)
 {
+	P3S_CONTEXT_REMOTE_MM(mm);
 	unsigned long nr_pages = mm_user_range_pages(mm, start, length);
-	unsigned long addr, end, page_size = MM_PAGE_SIZE(mm);
+	unsigned long addr, end, page_size = PAGE_SIZE;
 	struct gup_page_offsets capture = { .spans = spans, .legacy = offsets };
 	int locked = 0;
 	size_t remaining = length;
@@ -3537,7 +3546,7 @@ static long gup_user_range(struct mm_struct *mm, unsigned long start,
 	addr = start;
 	for (i = 0; i < ret; i++) {
 		unsigned int offset = 0;
-		unsigned int in_page = mm_offset_in_page(mm, addr);
+		unsigned int in_page = offset_in_page(addr);
 		unsigned int bytes =
 			min_t(size_t, remaining, page_size - in_page);
 
@@ -3617,10 +3626,11 @@ long pin_user_pages_with_offsets(struct mm_struct *mm, unsigned long start,
 				 unsigned long nr_pages, unsigned int gup_flags,
 				 struct page **pages, unsigned int *offsets)
 {
-	if (nr_pages > (ULONG_MAX >> MM_PAGE_SHIFT(mm)))
+	P3S_CONTEXT_REMOTE_MM(mm);
+	if (nr_pages > (ULONG_MAX >> PAGE_SHIFT))
 		return -EOVERFLOW;
-	return gup_user_range(mm, start & MM_PAGE_MASK(mm),
-			      nr_pages << MM_PAGE_SHIFT(mm), nr_pages,
+	return gup_user_range(mm, start & PAGE_MASK,
+			      nr_pages << PAGE_SHIFT, nr_pages,
 			      gup_flags, pages, NULL, offsets, true);
 }
 EXPORT_SYMBOL_GPL(pin_user_pages_with_offsets);
@@ -3806,7 +3816,7 @@ long memfd_pin_folios(struct file *memfd, loff_t start, loff_t end,
 		      pgoff_t *offset)
 {
 	unsigned int flags, nr_folios, nr_found;
-	unsigned int i, pgshift = PAGE_SHIFT;
+	unsigned int i, pgshift = PAGE_SHIFT_KERNEL;
 	pgoff_t start_idx, end_idx;
 	struct folio *folio = NULL;
 	struct folio_batch fbatch;

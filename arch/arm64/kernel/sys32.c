@@ -12,6 +12,9 @@
 #include <asm/syscall.h>
 #include <asm/unistd_compat_32.h>
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 asmlinkage long compat_sys_sigreturn(void);
 asmlinkage long compat_sys_rt_sigreturn(void);
 
@@ -51,10 +54,11 @@ COMPAT_SYSCALL_DEFINE6(aarch32_mmap2, unsigned long, addr, unsigned long, len,
 		       unsigned long, prot, unsigned long, flags,
 		       unsigned long, fd, unsigned long, off_4k)
 {
-	if (off_4k & (~MM_PAGE_MASK(current->mm) >> 12))
+	P3S_CONTEXT_REMOTE_MM(current->mm);
+	if (off_4k & (~PAGE_MASK >> 12))
 		return -EINVAL;
 
-	off_4k >>= (MM_PAGE_SHIFT(current->mm) - 12);
+	off_4k >>= (PAGE_SHIFT - 12);
 
 	return ksys_mmap_pgoff(addr, len, prot, flags, fd, off_4k);
 }

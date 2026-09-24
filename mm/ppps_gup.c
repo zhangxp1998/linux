@@ -6,10 +6,14 @@
 
 #include "ppps.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 int ppps_process_vm_rw(struct mm_struct *mm, unsigned long addr,
 		unsigned long len, struct iov_iter *iter, struct page **pages,
 		unsigned long capacity, bool write)
 {
+	P3S_CONTEXT_REMOTE_MM(mm);
 	struct page_span *spans;
 	unsigned long max_pages = min(capacity, mm_user_range_pages(mm, addr, len));
 	unsigned int flags = write ? FOLL_WRITE : 0;
@@ -22,7 +26,7 @@ int ppps_process_vm_rw(struct mm_struct *mm, unsigned long addr,
 		return -ENOMEM;
 	while (len && iov_iter_count(iter)) {
 		size_t bytes = min_t(unsigned long, len,
-			max_pages * MM_PAGE_SIZE(mm) - mm_offset_in_page(mm, addr));
+			max_pages * PAGE_SIZE - offset_in_page(addr));
 		long nr, i;
 
 		nr = pin_user_pages_range(mm, addr, bytes, max_pages, flags,

@@ -16,6 +16,9 @@
 #undef CREATE_TRACE_POINTS
 #include <trace/hooks/mm.h>
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 struct mmap_state {
 	struct mm_struct *mm;
 	struct vma_iterator *vmi;
@@ -1632,13 +1635,14 @@ int do_vmi_munmap(struct vma_iterator *vmi, struct mm_struct *mm,
 		  unsigned long start, size_t len, struct list_head *uf,
 		  bool unlock)
 {
+	P3S_CONTEXT_REMOTE_MM(mm);
 	unsigned long end;
 	struct vm_area_struct *vma;
 
-	if (mm_offset_in_page(mm, start) || start > TASK_SIZE || len > TASK_SIZE-start)
+	if (offset_in_page(start) || start > TASK_SIZE || len > TASK_SIZE-start)
 		return -EINVAL;
 
-	end = start + MM_PAGE_ALIGN(mm, len);
+	end = start + PAGE_ALIGN(len);
 	if (end == start)
 		return -EINVAL;
 
@@ -2856,6 +2860,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		 unsigned long addr, unsigned long len, vm_flags_t vm_flags)
 {
+	P3S_CONTEXT_REMOTE_MM(current->mm);
 	struct mm_struct *mm = current->mm;
 
 	/*
@@ -2864,13 +2869,13 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	 */
 	vm_flags |= VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;
 	vm_flags = ksm_vma_flags(mm, NULL, vm_flags);
-	if (!may_expand_vm(mm, vm_flags, len >> MM_PAGE_SHIFT(mm)))
+	if (!may_expand_vm(mm, vm_flags, len >> PAGE_SHIFT))
 		return -ENOMEM;
 
 	if (mm->map_count > sysctl_max_map_count)
 		return -ENOMEM;
 
-	if (security_vm_enough_memory_mm(mm, len >> MM_PAGE_SHIFT(mm)))
+	if (security_vm_enough_memory_mm(mm, len >> PAGE_SHIFT))
 		return -ENOMEM;
 
 	/*
@@ -2899,7 +2904,7 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 		goto unacct_fail;
 
 	vma_set_anonymous(vma);
-	vma_set_range(vma, addr, addr + len, addr >> MM_PAGE_SHIFT(mm));
+	vma_set_range(vma, addr, addr + len, addr >> PAGE_SHIFT);
 	vma_set_slice_off(vma, 0);
 	vm_flags_init(vma, vm_flags);
 	vma->vm_page_prot = vm_get_page_prot(vm_flags);
@@ -2911,17 +2916,17 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
 	validate_mm(mm);
 out:
 	perf_event_mmap(vma);
-	mm->total_vm += len >> MM_PAGE_SHIFT(mm);
-	mm->data_vm += len >> MM_PAGE_SHIFT(mm);
+	mm->total_vm += len >> PAGE_SHIFT;
+	mm->data_vm += len >> PAGE_SHIFT;
 	if (vm_flags & VM_LOCKED)
-		mm->locked_vm += len >> MM_PAGE_SHIFT(mm);
+		mm->locked_vm += len >> PAGE_SHIFT;
 	vm_flags_set(vma, VM_SOFTDIRTY);
 	return 0;
 
 mas_store_fail:
 	vm_area_free(vma);
 unacct_fail:
-	vm_unacct_memory_mm(mm, len >> MM_PAGE_SHIFT(mm));
+	vm_unacct_memory_mm(mm, len >> PAGE_SHIFT);
 	return -ENOMEM;
 }
 
@@ -3095,6 +3100,7 @@ static int acct_stack_growth(struct vm_area_struct *vma,
  */
 int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 {
+	P3S_CONTEXT_REMOTE_MM(vma->vm_mm);
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_area_struct *next;
 	unsigned long gap_addr;
@@ -3107,10 +3113,10 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 	mmap_assert_write_locked(mm);
 
 	/* Guard against exceeding limits of the address space. */
-	address &= MM_UAPI_PAGE_MASK(mm);
-	if (address >= (TASK_SIZE & MM_PAGE_MASK(mm)))
+	address &= __PAGE_MASK;
+	if (address >= (TASK_SIZE & PAGE_MASK))
 		return -ENOMEM;
-	address += MM_PAGE_SIZE(mm);
+	address += PAGE_SIZE;
 
 	/* Enforce stack_guard_gap */
 	gap_addr = address + mm_stack_guard_gap(mm);
@@ -3149,10 +3155,10 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 		unsigned long size, grow;
 
 		size = address - vma->vm_start;
-		grow = (address - vma->vm_end) >> MM_PAGE_SHIFT(mm);
+		grow = (address - vma->vm_end) >> PAGE_SHIFT;
 
 		error = -ENOMEM;
-		if (vma->vm_pgoff + (size >> MM_PAGE_SHIFT(mm)) >=
+		if (vma->vm_pgoff + (size >> PAGE_SHIFT) >=
 		    vma->vm_pgoff) {
 			error = acct_stack_growth(vma, size, grow);
 			if (!error) {
@@ -3182,6 +3188,7 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
  */
 int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 {
+	P3S_CONTEXT_REMOTE_MM(vma->vm_mm);
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_area_struct *prev;
 	int error = 0;
@@ -3192,7 +3199,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 
 	mmap_assert_write_locked(mm);
 
-	address &= MM_UAPI_PAGE_MASK(mm);
+	address &= __PAGE_MASK;
 	if (address < mmap_min_addr || address < FIRST_USER_ADDRESS)
 		return -EPERM;
 
@@ -3229,7 +3236,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
 		unsigned long size, grow;
 
 		size = vma->vm_end - address;
-		grow = (vma->vm_start - address) >> MM_PAGE_SHIFT(mm);
+		grow = (vma->vm_start - address) >> PAGE_SHIFT;
 
 		error = -ENOMEM;
 		if (grow <= vma->vm_pgoff) {

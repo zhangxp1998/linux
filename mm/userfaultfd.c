@@ -22,6 +22,9 @@
 #include "ppps.h"
 #include "swap.h"
 
+/* Explicit opt-in: PAGE_* below uses the scoped target MM. */
+#include <linux/p3s_user_pages.h>
+
 static __always_inline
 bool validate_dst_vma(struct vm_area_struct *dst_vma, unsigned long dst_end)
 {
@@ -308,7 +311,7 @@ static int mfill_atomic_pte_copy(pmd_t *dst_pmd,
 		kaddr = kmap_local_folio(folio, 0);
 		/* Only one slice is copied below; the rest must not leak. */
 		if (ppps_mm_is_compat(dst_mm))
-			memset(kaddr, 0, PAGE_SIZE);
+			memset(kaddr, 0, PAGE_SIZE_KERNEL);
 
 		/*
 		 * The read mmap_lock is held here.  Despite the
@@ -762,6 +765,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
 					    unsigned long len,
 					    uffd_flags_t flags)
 {
+	P3S_CONTEXT_REMOTE_MM(ctx->mm);
 	struct mm_struct *dst_mm = ctx->mm;
 	struct vm_area_struct *dst_vma;
 	ssize_t err;
@@ -770,13 +774,13 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
 	long copied;
 	struct folio *folio;
 	struct ppps_uffd_copy_state copy_state = {};
-	unsigned long page_size = MM_PAGE_SIZE(ctx->mm);
+	unsigned long page_size = PAGE_SIZE;
 
 	/*
 	 * Sanitize the command parameters:
 	 */
-	VM_WARN_ON_ONCE(dst_start & ~MM_PAGE_MASK(ctx->mm));
-	VM_WARN_ON_ONCE(len & ~MM_PAGE_MASK(ctx->mm));
+	VM_WARN_ON_ONCE(dst_start & ~PAGE_MASK);
+	VM_WARN_ON_ONCE(len & ~PAGE_MASK);
 
 	/* Does the address range wrap, or is the span zero-sized? */
 	VM_WARN_ON_ONCE(src_start + len <= src_start);
@@ -1005,6 +1009,7 @@ long uffd_wp_range(struct vm_area_struct *dst_vma,
 int mwriteprotect_range(struct userfaultfd_ctx *ctx, unsigned long start,
 			unsigned long len, bool enable_wp)
 {
+	P3S_CONTEXT_REMOTE_MM(ctx->mm);
 	struct mm_struct *dst_mm = ctx->mm;
 	unsigned long end = start + len;
 	unsigned long _start, _end;
@@ -1016,8 +1021,8 @@ int mwriteprotect_range(struct userfaultfd_ctx *ctx, unsigned long start,
 	/*
 	 * Sanitize the command parameters:
 	 */
-	VM_WARN_ON_ONCE(start & ~MM_PAGE_MASK(dst_mm));
-	VM_WARN_ON_ONCE(len & ~MM_PAGE_MASK(dst_mm));
+	VM_WARN_ON_ONCE(start & ~PAGE_MASK);
+	VM_WARN_ON_ONCE(len & ~PAGE_MASK);
 
 	/* Does the address range wrap, or is the span zero-sized? */
 	VM_WARN_ON_ONCE(start + len <= start);
@@ -1139,6 +1144,7 @@ static long move_present_ptes(struct mm_struct *mm,
 			      spinlock_t *dst_ptl, spinlock_t *src_ptl,
 			      struct folio **first_src_folio, unsigned long len)
 {
+	P3S_CONTEXT_REMOTE_MM(mm);
 	int err = 0;
 	struct folio *src_folio = *first_src_folio;
 	unsigned long src_start = src_addr;
@@ -1187,10 +1193,10 @@ static long move_present_ptes(struct mm_struct *mm,
 		orig_dst_pte = pte_mkwrite(orig_dst_pte, dst_vma);
 		set_pte_at(mm, dst_addr, dst_pte, orig_dst_pte);
 
-		src_addr += MM_PAGE_SIZE(mm);
+		src_addr += PAGE_SIZE;
 		if (src_addr == src_end)
 			break;
-		dst_addr += MM_PAGE_SIZE(mm);
+		dst_addr += PAGE_SIZE;
 		dst_pte++;
 		src_pte++;
 
@@ -2025,13 +2031,14 @@ out:
 ssize_t move_pages(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 		   unsigned long src_start, unsigned long len, __u64 mode)
 {
+	P3S_CONTEXT_REMOTE_MM(ctx->mm);
 	struct mm_struct *mm = ctx->mm;
 	bool ppps_fallback;
 
 	/* Sanitize the command parameters. */
-	if (WARN_ON_ONCE(src_start & ~MM_PAGE_MASK(mm)) ||
-	    WARN_ON_ONCE(dst_start & ~MM_PAGE_MASK(mm)) ||
-	    WARN_ON_ONCE(len & ~MM_PAGE_MASK(mm)))
+	if (WARN_ON_ONCE(src_start & ~PAGE_MASK) ||
+	    WARN_ON_ONCE(dst_start & ~PAGE_MASK) ||
+	    WARN_ON_ONCE(len & ~PAGE_MASK))
 		return -EINVAL;
 
 	/* Does the address range wrap, or is the span zero-sized? */
