@@ -168,7 +168,8 @@ static inline unsigned int vma_slice_offset(const struct vm_area_struct *vma,
 	if (!vma_is_compat(vma))
 		return 0;
 
-	if (!vma->vm_ops)
+	/* /dev/zero can retain vm_file while leaving vm_ops unset. */
+	if (!vma->vm_file && !vma->vm_ops)
 		return (addr >> PAGE_SHIFT_4KB) & P3S_SLICE_MASK;
 
 	return (vma_slice_off(vma) + ((addr - vma->vm_start) >> PAGE_SHIFT_4KB)) &
@@ -288,11 +289,11 @@ static inline loff_t vma_file_offset_at(const struct vm_area_struct *vma,
 static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 					    unsigned long addr)
 {
-	if (!vma_is_compat(vma) || (vma->vm_ops && !vma->vm_file))
+	if (!vma_is_compat(vma))
 		return vma->vm_pgoff +
 		       ((addr - vma->vm_start) >> PAGE_SHIFT_KERNEL);
 
-	if (!vma->vm_ops)
+	if (!vma->vm_file && !vma->vm_ops)
 		return vma->vm_pgoff +
 		       ((addr - vma->vm_start) >> PAGE_SHIFT_4KB);
 
@@ -334,7 +335,7 @@ static inline pgoff_t vma_native_pages(const struct vm_area_struct *vma)
 {
 	unsigned long nr_slices = vma_size(vma) >> mm_pte_shift(vma->vm_mm);
 
-	if (!vma_is_compat(vma) || !vma->vm_ops)
+	if (!vma_is_compat(vma) || (!vma->vm_file && !vma->vm_ops))
 		return nr_slices;
 
 	return DIV_ROUND_UP(vma_slice_off(vma) + nr_slices,
