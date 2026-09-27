@@ -38,7 +38,13 @@ static inline void mm_set_pte_shift(struct mm_struct *mm, unsigned int shift)
 static inline void mm_init_pte_shift(struct mm_struct *mm,
 				     const struct task_struct *p)
 {
-	bool use_4kb = system_state >= SYSTEM_RUNNING &&
+	bool use_4kb;
+
+	/* dup_mm() copies the parent's geometry before init_new_context(). */
+	if (mm->pte_shift)
+		return;
+
+	use_4kb = system_state >= SYSTEM_RUNNING &&
 		       (personality_4kb_pages(current->personality) ||
 			(p && personality_4kb_pages(p->personality)) ||
 			p3s_mode == P3S_MODE_ON ||
