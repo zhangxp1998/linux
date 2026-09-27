@@ -1,0 +1,2 @@
+# Keep Android's AArch32 compatibility configuration alongside P3S.
+CONFIG_ARM64_PER_PROCESS_PAGE_SIZE=y
