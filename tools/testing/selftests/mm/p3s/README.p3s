@@ -1,0 +1,52 @@
+P3S selftests
+=============
+
+Run on AArch64 4KB or 16KB kernels, with or without
+CONFIG_ARM64_PER_PROCESS_PAGE_SIZE. page_size_contract_p3s exercises the
+getpagesize() contract in native mode on every kernel and in 4KB compat mode
+when available. Mixed-geometry tests first check native 16KB backing and
+probe a 4KB child; unavailable P3S-specific coverage reports SKIP, not FAIL.
+Generate matching UAPI headers with `make headers` in the kernel tree before
+building. Build all P3S targets with the normal selftest Makefile, or select
+the `*/p3s` targets for a smaller build. For example:
+
+  make -C tools/testing/selftests TARGETS="mm/p3s filesystems/binderfs/p3s exec/p3s dma/p3s"
+
+On a Linux host, run `./run_p3stests.sh` from this directory (or from the
+installed `mm/p3s/` directory). On Android, which has `/system/bin/sh` but no
+`/bin/sh`, run `sh ./run_p3stests.sh` instead. `--list` prints the command matrix
+without executing it. The manual runner executes the full P3S matrix across
+the owning selftest directories and reports PASS, SKIP and FAIL separately.
+Standard kselftest runs each binary or mode/fixture wrapper from its owning
+subsystem, with an independent timeout. The mm-only fixture and multi-mode
+invocations use generated `run_p3s_case_N` entries; `run_p3stests.sh --case N`
+runs one entry of the manual matrix. Non-mm entries are not registered there
+again, so a top-level `make run_tests` does not repeat them.
+Binder mapping-policy and partial-tail tests run separately under
+filesystems/binderfs/p3s. A missing
+binary is a FAIL, not a SKIP.
+
+For a separate header output directory, set KHDR_INCLUDES to its usr/include
+path using `-isystem`. Build the fixture modules against the tested kernel
+with KDIR (and P3S_KERNEL_SOURCE for a separate O= directory); missing
+config/exports are reported separately from compiler errors. Installation
+preserves each subsystem's p3s_modules/ path. A missing fixture is not a
+passed assertion.
+
+Tests also cover fixes already present in the baseline; they are not claims
+that this test commit adds corresponding production behavior:
+
+  uffd_sigbus_anon_p3s: SIGBUS-mode anonymous refault (Gerrit 4312528).
+  exec_env_p3s: copy_strings across 4KB pages (Gerrit 4368095).
+  dontneed_refault_p3s: zeroing and sibling reuse (Gerrit 4312529/4367603).
+
+shmem_quota_p3s was removed: its tmpfs UFFD population is unsupported for P3S.
+Tests for unmerged behavior and non-P3S functionality are held out of this
+matrix. The remaining memory-failure test requires explicit
+P3S_HWPOISON_TEST_FORCE=1 because HWPOISON persists beyond the process.
+userfaultfd_shmem_p3s retains the supported registration-rejection checks.
+Anonymous ownership probes compare actual page PFNs rather than a removed
+downstream folio flag. Hidden PFNs and unavailable fixtures are explicit SKIPs.
+folio_within_range_p3s checks the native helper's query bounds; its separate
+vma_address_end check covers a nonzero slice offset. It does not require the
+native helper to account for vm_slice_off.

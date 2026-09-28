@@ -110,6 +110,11 @@ TEST_GEN_FILES += mmu_notifier_p3s
 # Check mincore residency in process pages
 TEST_GEN_PROGS += mincore_p3s
 
+# One kselftest entry/timeout per remaining MM fixture or mode command.
+# Non-MM commands run from their owning subsystem directories.
+P3S_SPECIAL_CASES := $(shell sh ./run_p3stests.sh --list | awk 'index($$0, "../../") == 0 && (NF != 1 || /\.sh$$/) { print NR }')
+P3S_SPECIAL_PROGS := $(addprefix run_p3s_case_,$(P3S_SPECIAL_CASES))
+TEST_GEN_PROGS += $(P3S_SPECIAL_PROGS)
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
