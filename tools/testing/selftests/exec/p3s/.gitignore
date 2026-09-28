@@ -1,2 +1,5 @@
 /*_p3s
 /elf_4k_align_probe
+/brk_aslr_p3s_sample
+/exec_aslr_p3s_helper
+/exec_aslr_p3s_interp
