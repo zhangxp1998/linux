@@ -91,6 +91,14 @@ TEST_GEN_PROGS += \
 	userfaultfd_remap_p3s userfaultfd_remote_p3s userfaultfd_shmem_p3s \
 	userfaultfd_unregister_remote_p3s userfaultfd_wp_remote_p3s
 
+# Verify pagemap, pagewalk and smaps accounting
+TEST_GEN_PROGS += \
+	pagemap_exclusive_p3s pagemap_ioctl_p3s pagemap_scan_p3s proc_pagewalk_p3s \
+	smaps_native_fallback_p3s smaps_page_size_p3s smaps_pss_p3s \
+	statm_cross_geometry_p3s
+TEST_GEN_FILES += pagewalk_p3s
+TEST_GEN_FILES += pagemap_ioctl
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
@@ -106,6 +114,8 @@ P3S_MM_TESTS := $(TEST_GEN_PROGS) $(TEST_GEN_FILES)
 include ../../lib.mk
 P3S_MM_TARGETS := $(addprefix $(OUTPUT)/,$(P3S_MM_TESTS))
 $(P3S_MM_TARGETS): ../vm_util.c ../thp_settings.c
+$(OUTPUT)/pagemap_ioctl: ../pagemap_ioctl.c ../vm_util.c ../thp_settings.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 $(OUTPUT)/anon_vma_name_p3s $(OUTPUT)/iov_iter_p3s \
 $(OUTPUT)/mremap_pgoff_p3s: LDFLAGS += -pie
 # Add header dependencies only when their test first lands.
@@ -121,6 +131,7 @@ $(eval $(call p3s_test_hdrs,iov_range_retry_p3s,iov_range_retry_p3s.h))
 $(eval $(call p3s_test_hdrs,page_range_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,file_cow_refs_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,cow_notifier_p3s,mmu_notifier_p3s.h))
+$(eval $(call p3s_test_hdrs,pagewalk_p3s,pagewalk_p3s.h))
 $(eval $(call p3s_test_hdrs,dontneed_refault_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,file_cow_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,hole_anon_p3s,p3s_tuple_test.h))

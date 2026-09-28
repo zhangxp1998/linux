@@ -19,6 +19,10 @@ $(eval $(call p3s_export_fixture,fault_in_p3s_module,fault_in_readable fault_in_
 obj-m += folio_within_range_p3s_module.o
 obj-m += iov_range_retry_p3s_module.o
 
+ifneq ($(CONFIG_MAPPING_DIRTY_HELPERS),)
+obj-m += pagewalk_p3s_module.o
+endif
+
 else # userspace selftest build
 
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
