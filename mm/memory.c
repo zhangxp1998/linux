@@ -3196,6 +3196,14 @@ unlock:
 	return err;
 }
 EXPORT_SYMBOL(remap_pfn_range_slice);
+#else
+int remap_pfn_range_slice(struct vm_area_struct *vma, unsigned long addr,
+			  unsigned long pfn, unsigned int slice,
+			  unsigned long size, pgprot_t prot)
+{
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(remap_pfn_range_slice);
 #endif
 
 /**
