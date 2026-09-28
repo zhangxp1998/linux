@@ -14,6 +14,7 @@
 #include <linux/debug_locks.h>
 #include <linux/compiler.h>
 #include <linux/mm_types.h>
+#include <linux/p3s/mm.h>
 #include <linux/mmap_lock.h>
 #include <linux/range.h>
 #include <linux/pfn.h>
@@ -2603,13 +2604,15 @@ long get_user_pages_remote(struct mm_struct *mm,
 static inline unsigned long
 mm_user_range_pages(struct mm_struct *mm, unsigned long start, size_t length)
 {
+	unsigned long page_size = mm_pte_size(mm);
 	unsigned long tail;
 
 	if (!length)
 		return 0;
-	tail = offset_in_page(start) + offset_in_page(length);
-	return (length >> PAGE_SHIFT) +
-	       DIV_ROUND_UP(tail, PAGE_SIZE);
+	tail = mm_offset_in_page(mm, start) +
+	       mm_offset_in_page(mm, length);
+	return (length >> mm_pte_shift(mm)) +
+	       DIV_ROUND_UP(tail, page_size);
 }
 
 long pin_user_pages_range(struct mm_struct *mm, unsigned long start,
