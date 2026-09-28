@@ -43,6 +43,7 @@
 #include <linux/unicode.h>
 #include <linux/mm_inline.h>
 #include <linux/page_size_compat.h>
+#include <linux/p3s/shmem.h>
 #include "swap.h"
 
 #undef CREATE_TRACE_POINTS
@@ -984,7 +985,7 @@ static long shmem_free_swap(struct address_space *mapping,
 
 /*
  * Determine (in bytes) how many of the shmem object's pages mapped by the
- * given offsets are swapped out.
+ * given page range are swapped out.
  *
  * This is safe to call without i_rwsem or the i_pages lock thanks to RCU,
  * as long as the inode doesn't go away and racy results are not a problem.
@@ -1039,6 +1040,9 @@ unsigned long shmem_swap_usage(struct vm_area_struct *vma)
 	 */
 	if (!swapped)
 		return 0;
+
+	if (vma_is_p3s_4k(vma))
+		return vma_shmem_swap_usage(vma, vma->vm_start, vma->vm_end);
 
 	if (!vma->vm_pgoff && vma->vm_end - vma->vm_start >= inode->i_size)
 		return swapped << PAGE_SHIFT;
