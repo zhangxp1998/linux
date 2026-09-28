@@ -115,6 +115,10 @@ extern int mfill_atomic_install_pte(pmd_t *dst_pmd,
 				    struct vm_area_struct *dst_vma,
 				    unsigned long dst_addr, struct page *page,
 				    bool newly_allocated, uffd_flags_t flags);
+extern int mfill_atomic_install_pte_from(pmd_t *dst_pmd,
+					struct vm_area_struct *dst_vma,
+					unsigned long dst_addr, struct page *page,
+					uffd_flags_t flags, struct page *src_page);
 
 extern ssize_t mfill_atomic_copy(struct userfaultfd_ctx *ctx, unsigned long dst_start,
 				 unsigned long src_start, unsigned long len,
@@ -225,9 +229,10 @@ static inline bool vma_can_userfault(struct vm_area_struct *vma,
 	 * In 4KB compat mode on 16KB host kernels, pagecache (shmem) and hugetlb
 	 * folios operate at 16KB+ host page size and hold folio_lock. Subpage
 	 * slicing on pagecache folios can cause lock contention / deadlocks.
-	 * Only anonymous memory userfaultfd is supported for 4KB compat tasks.
+	 * Shmem uses its own per-slice cache population protocol. Hugetlb and
+	 * other file mappings have no such protocol and remain unsupported.
 	 */
-	if (vma_is_compat(vma) && !vma_is_anonymous(vma))
+	if (vma_is_compat(vma) && !vma_is_anonymous(vma) && !vma_is_shmem(vma))
 		return false;
 
 	/*
