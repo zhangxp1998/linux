@@ -26,6 +26,7 @@
 #include <linux/userfaultfd_k.h>
 #include <linux/mempolicy.h>
 #include <linux/page_size_compat.h>
+#include <linux/p3s/mremap.h>
 
 #include <asm/cacheflush.h>
 #include <asm/tlb.h>
@@ -1190,7 +1191,8 @@ static int copy_vma_and_data(struct vma_remap_struct *vrm,
 	int err = 0;
 	PAGETABLE_MOVE(pmc, NULL, NULL, vrm->addr, vrm->new_addr, vrm->old_len);
 
-	new_vma = copy_vma(&vma, vrm->new_addr, vrm->new_len, new_pgoff,
+	new_vma = copy_vma(&vma, vrm->addr, vrm->new_addr, vrm->new_len,
+			   new_pgoff,
 			   &pmc.need_rmap_locks);
 	if (!new_vma) {
 		vrm_uncharge(vrm);
@@ -1658,6 +1660,10 @@ static int check_prep_vma(struct vma_remap_struct *vrm)
 	if (!vma)
 		return -EFAULT;
 
+	if ((vrm->flags & MREMAP_FIXED) &&
+	    !mm_mremap_fixed_keeps_slice(vma, addr, vrm->new_addr))
+		return -EINVAL;
+
 	/* If mseal()'d, mremap() is prohibited. */
 	if (vma_is_sealed(vma))
 		return -EPERM;
@@ -1785,10 +1791,6 @@ static unsigned long check_mremap_params(struct vma_remap_struct *vrm)
 
 	/* The new address must be page-aligned. */
 	if (__offset_in_page(vrm->new_addr))
-		return -EINVAL;
-
-	if ((flags & MREMAP_FIXED) &&
-	    !mm_mremap_fixed_keeps_slice(addr, vrm->new_addr))
 		return -EINVAL;
 
 	/* A fixed address implies a move. */
