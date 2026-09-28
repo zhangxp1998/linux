@@ -41,6 +41,12 @@ TEST_GEN_PROGS += \
 	mremap_slice_cow_p3s mremap_split_p3s remap_file_pages_p3s swap_slice_mremap_p3s
 TEST_GEN_FILES += mremap_pgoff_p3s
 
+# Check anonymous COW, fork and reverse mappings
+TEST_GEN_PROGS += \
+	anon_rmap_split_window_p3s dontneed_refault_p3s fork_dontfork_slice_p3s \
+	fork_page_size_p3s hole_anon_p3s packed_anon_p3s zero_sibling_mlock_p3s
+TEST_GEN_FILES += cow_notifier_p3s rmap_file_referenced_p3s
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh
@@ -58,3 +64,13 @@ P3S_MM_TARGETS := $(addprefix $(OUTPUT)/,$(P3S_MM_TESTS))
 $(P3S_MM_TARGETS): ../vm_util.c ../thp_settings.c
 $(OUTPUT)/anon_vma_name_p3s $(OUTPUT)/iov_iter_p3s \
 $(OUTPUT)/mremap_pgoff_p3s: LDFLAGS += -pie
+# Add header dependencies only when their test first lands.
+define p3s_test_hdrs
+$(OUTPUT)/$(1): LOCAL_HDRS += $(2)
+$(OUTPUT)/$(1): $(2)
+endef
+$(eval $(call p3s_test_hdrs,cow_notifier_p3s,mmu_notifier_p3s.h))
+$(eval $(call p3s_test_hdrs,dontneed_refault_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,hole_anon_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,packed_anon_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,anon_rmap_split_window_p3s,p3s_tuple_test.h))

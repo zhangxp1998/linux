@@ -10,6 +10,8 @@ ccflags-y += -I$(srctree)/mm
 
 obj-m += mremap_pgoff_p3s_module.o
 
+obj-m += anon_exclusive_probe_p3s_module.o
+
 else # userspace selftest build
 
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
