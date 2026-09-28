@@ -65,6 +65,10 @@ TEST_PROGS += mglru_p3s.sh
 # Check userfaultfd copy, move and remote operations
 TEST_GEN_PROGS += uffd_copy_tuple_p3s uffd_move_packed_p3s uffd_move_policy_p3s uffd_move_swap_window_p3s uffd_sigbus_anon_p3s userfaultfd_mixed_p3s userfaultfd_poison_remote_p3s userfaultfd_remap_p3s userfaultfd_remote_p3s userfaultfd_shmem_p3s userfaultfd_unregister_remote_p3s userfaultfd_wp_remote_p3s
 
+# Verify pagemap, pagewalk and smaps accounting
+TEST_GEN_PROGS += pagemap_exclusive_p3s pagemap_ioctl_p3s pagemap_scan_p3s proc_pagewalk_p3s smaps_native_fallback_p3s smaps_page_size_p3s smaps_pss_p3s statm_cross_geometry_p3s
+TEST_GEN_FILES += pagemap_ioctl
+
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
 P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
@@ -76,6 +80,9 @@ endif
 P3S_USE_MM_UTIL := 1
 
 include ../../p3s_build.mk
+
+$(OUTPUT)/pagemap_ioctl: ../pagemap_ioctl.c ../thp_settings.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 # Shared headers used by userspace tests and their fixture modules.
 define p3s_test_hdrs
