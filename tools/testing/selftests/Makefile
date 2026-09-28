@@ -28,6 +28,7 @@ TARGETS += drivers/platform/x86/intel/ifs
 TARGETS += dt
 TARGETS += efivarfs
 TARGETS += exec
+TARGETS += exec/p3s
 TARGETS += fchmodat2
 TARGETS += filesystems
 TARGETS += filesystems/binderfs

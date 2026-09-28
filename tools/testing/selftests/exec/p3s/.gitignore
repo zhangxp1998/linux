@@ -1,0 +1,12 @@
+/brk_aslr_p3s
+/brk_aslr_p3s_sample
+/elf_4k_align_p3s
+/elf_4k_align_probe
+/exec_aslr_p3s
+/exec_aslr_p3s_helper
+/exec_aslr_p3s_interp
+/exec_env_p3s
+/exec_stack_random_p3s
+/exec_user_args_p3s
+/mmap_aslr_p3s
+/stack_aslr_p3s
