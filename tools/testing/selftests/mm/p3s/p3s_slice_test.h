@@ -3,7 +3,10 @@
 #ifndef P3S_SLICE_TEST_H
 #define P3S_SLICE_TEST_H
 
+#include <linux/userfaultfd.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 
 #include "p3s_test.h"
 
@@ -182,6 +185,49 @@ static inline bool all_bytes_are(const unsigned char *p, unsigned long len,
 		if (p[i] != want)
 			return false;
 	return true;
+}
+
+/* userfaultfd */
+
+/* A MISSING-registered userfaultfd for [@start, @start + @len), or -1. */
+static inline int uffd_open_register(void *start, unsigned long len)
+{
+	struct uffdio_register reg = {};
+	struct uffdio_api api = {};
+	int uffd;
+
+	uffd = syscall(__NR_userfaultfd, O_CLOEXEC | UFFD_USER_MODE_ONLY);
+	if (uffd < 0)
+		return -1;
+	api.api = UFFD_API;
+	reg.range.start = (uintptr_t)start;
+	reg.range.len = len;
+	reg.mode = UFFDIO_REGISTER_MODE_MISSING;
+	if (ioctl(uffd, UFFDIO_API, &api) ||
+	    ioctl(uffd, UFFDIO_REGISTER, &reg)) {
+		close(uffd);
+		return -1;
+	}
+	return uffd;
+}
+
+/*
+ * UFFDIO_COPY @len bytes.  Returns the bytes installed: a partial fill
+ * returns -1/EAGAIN from the ioctl but still reports .copy, which is what
+ * the tests care about.  Returns -errno when nothing was copied.
+ */
+static inline long uffd_copy(int uffd, void *dst, void *src, unsigned long len)
+{
+	struct uffdio_copy copy = {};
+	int ret;
+
+	copy.dst = (uintptr_t)dst;
+	copy.src = (uintptr_t)src;
+	copy.len = len;
+	ret = ioctl(uffd, UFFDIO_COPY, &copy);
+	if (copy.copy > 0)
+		return (long)copy.copy;
+	return ret ? -errno : 0;
 }
 
 #endif /* P3S_SLICE_TEST_H */

@@ -62,6 +62,9 @@ TEST_GEN_PROGS += anon_pageout_p3s packed_swap_p3s partial_anon_reclaim_p3s swap
 TEST_GEN_FILES += memory_failure_anon_p3s mglru_p3s
 TEST_PROGS += mglru_p3s.sh
 
+# Check userfaultfd copy, move and remote operations
+TEST_GEN_PROGS += uffd_copy_tuple_p3s uffd_move_packed_p3s uffd_move_policy_p3s uffd_move_swap_window_p3s uffd_sigbus_anon_p3s userfaultfd_mixed_p3s userfaultfd_poison_remote_p3s userfaultfd_remap_p3s userfaultfd_remote_p3s userfaultfd_shmem_p3s userfaultfd_unregister_remote_p3s userfaultfd_wp_remote_p3s
+
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
 P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
@@ -86,4 +89,4 @@ $(eval $(call p3s_test_hdrs,iov_iter_p3s,iov_iter_p3s.h))
 $(eval $(call p3s_test_hdrs,iov_range_retry_p3s,iov_range_retry_p3s.h))
 $(eval $(call p3s_test_hdrs,page_range_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,file_cow_refs_p3s,iov_iter_p3s.h page_range_p3s.h))
-$(foreach t,mremap_anon_holes_p3s process_vm_packed_p3s madvise_free_holes_p3s dontneed_refault_p3s file_cow_p3s hole_anon_p3s packed_anon_p3s packed_swap_p3s remote_write_dontneed_p3s anon_rmap_split_window_p3s anon_pageout_p3s partial_anon_reclaim_p3s swap_pss_p3s swap_vma_readahead_p3s swapoff_shared_slice_p3s,   $(eval $(call p3s_test_hdrs,$(t),p3s_slice_test.h)))
+$(foreach t,mremap_anon_holes_p3s process_vm_packed_p3s madvise_free_holes_p3s uffd_move_packed_p3s dontneed_refault_p3s file_cow_p3s hole_anon_p3s packed_anon_p3s packed_swap_p3s uffd_copy_tuple_p3s uffd_move_swap_window_p3s remote_write_dontneed_p3s anon_rmap_split_window_p3s uffd_move_policy_p3s anon_pageout_p3s partial_anon_reclaim_p3s swap_pss_p3s swap_vma_readahead_p3s swapoff_shared_slice_p3s,   $(eval $(call p3s_test_hdrs,$(t),p3s_slice_test.h)))
