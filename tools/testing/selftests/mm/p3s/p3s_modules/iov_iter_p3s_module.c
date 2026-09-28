@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include <linux/fs.h>
+#include <linux/file.h>
 #include <linux/highmem.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/pagemap.h>
+#include <linux/shmem_fs.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/uio.h>
@@ -279,6 +281,37 @@ out:
 		-EFAULT : 0;
 }
 
+/* Observe only the test's small shmem backing, with no persistent reference. */
+static long file_refs_ioctl(unsigned long arg)
+{
+	struct file_refs_p3s_args request;
+	struct folio *folio;
+	struct file *file;
+	long ret = 0;
+
+	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
+		return -EFAULT;
+	file = fget(request.fd);
+	if (!file)
+		return -EBADF;
+	if (!shmem_file(file) || i_size_read(file_inode(file)) != PAGE_SIZE) {
+		ret = -EINVAL;
+		goto out_file;
+	}
+	folio = filemap_get_folio(file->f_mapping, 0);
+	if (IS_ERR(folio)) {
+		ret = PTR_ERR(folio);
+		goto out_file;
+	}
+	request.refs = folio_ref_count(folio);
+	folio_put(folio);
+	if (copy_to_user((void __user *)arg, &request, sizeof(request)))
+		ret = -EFAULT;
+out_file:
+	fput(file);
+	return ret;
+}
+
 static long iov_iter_p3s_ioctl(struct file *file, unsigned int cmd,
 			       unsigned long arg)
 {
@@ -287,6 +320,8 @@ static long iov_iter_p3s_ioctl(struct file *file, unsigned int cmd,
 
 	if (cmd == PAGE_RANGE_P3S_IOCTL)
 		return page_range_ioctl(arg);
+	if (cmd == FILE_REFS_P3S_IOCTL)
+		return file_refs_ioctl(arg);
 	if (cmd != IOV_ITER_P3S_IOCTL)
 		return -EINVAL;
 	if (copy_from_user(&request, (void __user *)arg, sizeof(request)))

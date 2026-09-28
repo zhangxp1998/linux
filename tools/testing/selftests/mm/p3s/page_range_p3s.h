@@ -23,6 +23,12 @@ struct page_range_p3s_args {
 
 #define PAGE_RANGE_P3S_IOCTL _IOWR('i', 0x72, struct page_range_p3s_args)
 
+struct file_refs_p3s_args {
+	__s32 fd;
+	__s32 refs;
+};
+
+#define FILE_REFS_P3S_IOCTL _IOWR('i', 0x73, struct file_refs_p3s_args)
 #ifndef __KERNEL__
 #include <sys/mman.h>
 #include <unistd.h>

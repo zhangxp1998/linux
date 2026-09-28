@@ -98,9 +98,9 @@ static inline void p3s_harness_require_native_4kb(void)
 /* One entry for normal tests, native controls, and child-only roles. */
 static inline int p3s_harness_entry(int argc, char **argv,
 				    int (*role)(int, char **),
+				    int (*launch)(int, char **),
 				    void (*setup)(int *, char ***),
-				    bool native_default,
-				    bool native_control)
+				    bool native_default, bool native_control)
 {
 	p3s_argv0 = argv[0];
 	if (p3s_harness_listing(argc, argv)) {
@@ -110,6 +110,7 @@ static inline int p3s_harness_entry(int argc, char **argv,
 	}
 #ifndef __aarch64__
 	(void)role;
+	(void)launch;
 	(void)setup;
 	(void)native_default;
 	(void)native_control;
@@ -138,6 +139,11 @@ static inline int p3s_harness_entry(int argc, char **argv,
 	    !native_default && !native_control) {
 		ksft_print_header();
 		ksft_exit_skip("this test requires a 4KB process\n");
+	}
+	if (launch) {
+		result = launch(argc, argv);
+		if (result >= 0)
+			return result;
 	}
 	native_requested = p3s_harness_has_flag(argc, argv, "--native");
 	native = native_default || native_requested;
@@ -207,6 +213,11 @@ static inline int p3s_harness_entry(int argc, char **argv,
 #define P3S_HARNESS_NATIVE_CONTROL 0
 #endif
 
+/* Runs before and after the 4KB/native re-exec; return -1 to continue. */
+#ifndef P3S_HARNESS_LAUNCH
+#define P3S_HARNESS_LAUNCH NULL
+#endif
+
 #ifndef P3S_HARNESS_SETUP
 #define P3S_HARNESS_SETUP NULL
 #endif
@@ -214,12 +225,9 @@ static inline int p3s_harness_entry(int argc, char **argv,
 #define P3S_HARNESS_4KB_MAIN			\
 int main(int argc, char **argv)			\
 {						\
-	return p3s_harness_entry(argc, \
-				 argv, \
-				 P3S_HARNESS_ROLE, \
-				 P3S_HARNESS_SETUP, \
-				 P3S_HARNESS_DEFAULT_NATIVE, \
-				 P3S_HARNESS_NATIVE_CONTROL); \
+	return p3s_harness_entry(argc, argv, P3S_HARNESS_ROLE, \
+				 P3S_HARNESS_LAUNCH, P3S_HARNESS_SETUP, \
+				 P3S_HARNESS_DEFAULT_NATIVE, P3S_HARNESS_NATIVE_CONTROL); \
 }
 
 #endif /* __P3S_HARNESS_H */
