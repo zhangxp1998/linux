@@ -81,13 +81,7 @@ TEST_PROGS += cow_notifier_p3s.sh mmu_notifier_p3s.sh
 TEST_GEN_PROGS += mincore_p3s
 
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
-KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
-P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
-ifneq (,$(wildcard $(KDIR)/Module.symvers))
-ifneq (,$(wildcard $(P3S_KERNEL_SOURCE)/include/linux/p3s.h))
-TEST_GEN_MODS_DIR := p3s_modules
-endif
-endif
+P3S_FIXTURE_MODULES := 1
 P3S_USE_MM_UTIL := 1
 
 include ../../p3s_build.mk

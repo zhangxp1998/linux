@@ -14,6 +14,19 @@ LDLIBS += -lrt -lpthread -lm
 LOCAL_HDRS += $(P3S_SELFTESTS_DIR)/kselftest_p3s.h \
 	$(P3S_SELFTESTS_DIR)/p3s_harness.h
 
+ifneq ($(P3S_FIXTURE_MODULES),)
+ifeq ($(filter %/mm/p3s,$(CURDIR)),)
+TEST_INCLUDES += $(P3S_SELFTESTS_DIR)/mm/p3s/p3s_run_module.sh
+endif
+KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
+P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
+ifneq (,$(wildcard $(KDIR)/Module.symvers))
+ifneq (,$(wildcard $(P3S_KERNEL_SOURCE)/include/linux/p3s.h))
+TEST_GEN_MODS_DIR := p3s_modules
+endif
+endif
+endif
+
 include $(P3S_SELFTESTS_DIR)/lib.mk
 
 CFLAGS += -I$(top_srcdir) -I$(P3S_SELFTESTS_DIR) \
