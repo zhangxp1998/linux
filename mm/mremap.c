@@ -30,6 +30,9 @@
 #include <asm/cacheflush.h>
 #include <asm/tlb.h>
 #include <asm/pgalloc.h>
+#ifdef CONFIG_ARM64_MTE
+#include <asm/mte.h>
+#endif
 
 #include "internal.h"
 #include <linux/memcontrol.h>
@@ -362,9 +365,6 @@ struct p3s_mremap_ctx *p3s_mremap_prepare(
 	if (!vma_is_compat(src_vma) || !vma_is_anonymous(src_vma) || !len ||
 	    !((old_addr ^ new_addr) & (PAGE_SIZE_KERNEL - 1)))
 		return NULL;
-	if (src_vma->vm_flags & VM_MTE)
-		return ERR_PTR(-EOPNOTSUPP);
-
 	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return ERR_PTR(-ENOMEM);
@@ -467,10 +467,14 @@ static void p3s_mremap_copy_slice(struct folio *dst, unsigned int dst_slice,
 {
 	void *from = kmap_local_page(&src->page);
 	void *to = kmap_local_page(&dst->page);
+	void *from_slice = from + ((unsigned long)src_slice << PAGE_SHIFT_4KB);
+	void *to_slice = to + ((unsigned long)dst_slice << PAGE_SHIFT_4KB);
 
-	memcpy(to + ((unsigned long)dst_slice << PAGE_SHIFT_4KB),
-	       from + ((unsigned long)src_slice << PAGE_SHIFT_4KB),
-	       PAGE_SIZE_4KB);
+	memcpy(to_slice, from_slice, PAGE_SIZE_4KB);
+#ifdef CONFIG_ARM64_MTE
+	if (page_mte_tagged(&dst->page) && page_mte_tagged(&src->page))
+		mte_copy_tags_range(to_slice, from_slice, PAGE_SIZE_4KB);
+#endif
 	kunmap_local(to);
 	kunmap_local(from);
 	flush_dcache_page(&dst->page);
