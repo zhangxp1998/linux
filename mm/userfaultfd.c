@@ -149,15 +149,14 @@ static bool mfill_file_over_size(struct vm_area_struct *dst_vma,
 				 unsigned long dst_addr)
 {
 	struct inode *inode;
-	pgoff_t offset, max_off;
+	loff_t offset;
 
 	if (!dst_vma->vm_file)
 		return false;
 
 	inode = dst_vma->vm_file->f_inode;
-	offset = linear_page_index(dst_vma, dst_addr);
-	max_off = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
-	return offset >= max_off;
+	offset = vma_file_offset_at(dst_vma, dst_addr);
+	return offset >= i_size_read(inode);
 }
 
 /*
@@ -748,6 +747,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
 	unsigned long src_addr, dst_addr;
 	long copied;
 	struct folio *folio;
+	unsigned long pending_offset = 0;
 	P3S_CONTEXT_REMOTE_MM(dst_mm);
 
 	/*
@@ -850,6 +850,11 @@ retry:
 		 * For shmem mappings, khugepaged is allowed to remove page
 		 * tables under us; pte_offset_map_lock() will deal with that.
 		 */
+		if (unlikely(folio && pending_offset !=
+			     vma_folio_offset(dst_vma, dst_addr))) {
+			folio_put(folio);
+			folio = NULL;
+		}
 
 		err = mfill_atomic_pte(dst_pmd, dst_vma, dst_addr,
 				       src_addr, flags, &folio);
@@ -863,6 +868,7 @@ retry:
 			uffd_mfill_unlock(dst_vma);
 			VM_WARN_ON_ONCE(!folio);
 
+			pending_offset = offset;
 			kaddr = kmap_local_folio(folio, 0);
 			err = copy_from_user(kaddr + offset,
 					     (const void __user *)src_addr,
