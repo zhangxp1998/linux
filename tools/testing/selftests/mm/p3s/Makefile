@@ -80,11 +80,39 @@ TEST_PROGS += cow_notifier_p3s.sh mmu_notifier_p3s.sh
 # Check mincore residency in process pages
 TEST_GEN_PROGS += mincore_p3s
 
-TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
+# Generate named native-control wrappers matching /*_p3s in .gitignore.
+# Non-MM commands run from their owning subsystem directories.
+P3S_NATIVE_BIN_PROGS := \
+	page_size_contract_native_p3s \
+	mincore_native_p3s \
+	vma_merge_devzero_native_p3s \
+	mlock_onfault_native_p3s \
+	mlock_file_slices_native_p3s
+P3S_NATIVE_SH_PROGS := \
+	remap_pfn_cow_native_p3s \
+	pfn_insert_native_p3s \
+	iov_range_retry_native_p3s \
+	page_range_native_p3s
+P3S_NATIVE_PROGS := $(P3S_NATIVE_BIN_PROGS) $(P3S_NATIVE_SH_PROGS)
+TEST_GEN_PROGS += $(P3S_NATIVE_PROGS)
+TEST_FILES := README.p3s run_p3stests.sh p3s_run_module.sh p3s_run_debugfs.sh
 P3S_FIXTURE_MODULES := 1
+P3S_ASM_PROGS := $(P3S_NATIVE_PROGS)
 P3S_USE_MM_UTIL := 1
 
 include ../../p3s_build.mk
+
+$(addprefix $(OUTPUT)/,$(P3S_NATIVE_BIN_PROGS)): $(OUTPUT)/%_native_p3s:
+	@printf '%s\n' '#!/bin/sh' \
+		'here=$$(CDPATH= cd -- "$$(dirname -- "$$0")" && pwd) || exit 1' \
+		'exec "$$here/$*_p3s" --native "$$@"' > $@
+	@chmod +x $@
+
+$(addprefix $(OUTPUT)/,$(P3S_NATIVE_SH_PROGS)): $(OUTPUT)/%_native_p3s:
+	@printf '%s\n' '#!/bin/sh' \
+		'here=$$(CDPATH= cd -- "$$(dirname -- "$$0")" && pwd) || exit 1' \
+		'exec sh "$$here/$*_p3s.sh" --native "$$@"' > $@
+	@chmod +x $@
 
 $(OUTPUT)/pagemap_ioctl: ../pagemap_ioctl.c ../thp_settings.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
