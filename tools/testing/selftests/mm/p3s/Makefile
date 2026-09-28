@@ -84,6 +84,13 @@ TEST_PROGS += mglru_p3s.sh mglru_folded_p3s.sh
 # Check native mTHP under mixed geometry
 TEST_GEN_PROGS += devzero_mthp_p3s mthp_native_anon_p3s
 
+# Check userfaultfd copy, move and remote operations
+TEST_GEN_PROGS += \
+	uffd_copy_tuple_p3s uffd_move_policy_p3s uffd_move_swap_window_p3s \
+	uffd_sigbus_anon_p3s userfaultfd_mixed_p3s userfaultfd_poison_remote_p3s \
+	userfaultfd_remap_p3s userfaultfd_remote_p3s userfaultfd_shmem_p3s \
+	userfaultfd_unregister_remote_p3s userfaultfd_wp_remote_p3s
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
@@ -119,6 +126,9 @@ $(eval $(call p3s_test_hdrs,file_cow_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,hole_anon_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,packed_anon_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,packed_swap_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,uffd_copy_tuple_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,uffd_move_swap_window_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,remote_write_dontneed_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,anon_rmap_split_window_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,uffd_move_policy_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,swapoff_shared_slice_p3s,p3s_tuple_test.h))
