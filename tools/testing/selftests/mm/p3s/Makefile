@@ -31,7 +31,7 @@ TEST_GEN_PROGS += mmap_hint_p3s mmap_page_zero_p3s stack_guard_gap_p3s
 
 # Check VMA slice offsets, merges and unmaps
 TEST_GEN_PROGS += \
-	devzero_slice_p3s mbind_p3s munmap_p3s print_vma_addr_p3s \
+	anon_vma_name_p3s devzero_slice_p3s mbind_p3s munmap_p3s print_vma_addr_p3s \
 	vma_merge_devzero_p3s vma_merge_file_slice_p3s vma_merge_next_pgoff_p3s \
 	vma_range_slice_p3s
 
@@ -69,9 +69,13 @@ endif
 # Check page locking across folio slices
 TEST_GEN_PROGS += mlock_file_slices_p3s mlock_large_file_p3s mlock_onfault_p3s mlock_reclaim_p3s
 
+# Check madvise at process-page boundaries
+TEST_GEN_PROGS += madvise_free_holes_p3s madvise_free_p3s madvise_guard_p3s madvise_remove_p3s
+TEST_GEN_FILES += madv_cold_large_file_p3s madvise_willneed_p3s
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
-TEST_FILES := p3s_run_module.sh
+TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
 P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
 ifneq (,$(wildcard $(KDIR)/Module.symvers))
