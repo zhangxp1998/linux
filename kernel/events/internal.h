@@ -128,6 +128,8 @@ static inline unsigned long perf_data_size(struct perf_buffer *rb)
 	return rb->nr_pages << (PAGE_SHIFT + page_order(rb));
 }
 
+#include <linux/p3s/perf.h>
+
 static inline unsigned long perf_aux_size(struct perf_buffer *rb)
 {
 	return (unsigned long)rb->aux_nr_pages << PAGE_SHIFT;
