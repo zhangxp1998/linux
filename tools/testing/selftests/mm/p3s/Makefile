@@ -25,7 +25,7 @@ TEST_GEN_PROGS += page_size_contract_p3s
 TEST_GEN_PROGS += mmap_hint_p3s stack_guard_gap_p3s
 
 # Check VMA slice offsets, merges and unmaps
-TEST_GEN_PROGS += mbind_p3s munmap_p3s print_vma_addr_p3s vma_merge_devzero_p3s vma_merge_file_slice_p3s vma_merge_next_pgoff_p3s vma_range_slice_p3s
+TEST_GEN_PROGS += anon_vma_name_p3s mbind_p3s munmap_p3s print_vma_addr_p3s vma_merge_devzero_p3s vma_merge_file_slice_p3s vma_merge_next_pgoff_p3s vma_range_slice_p3s
 
 # Exercise sliced mremap and file-offset moves
 TEST_GEN_PROGS += mremap_anon_holes_p3s mremap_commit_p3s mremap_file_slice_p3s mremap_hint_p3s mremap_rlimit_p3s mremap_slice_cow_p3s mremap_split_p3s remap_file_pages_p3s swap_slice_mremap_p3s
@@ -53,6 +53,10 @@ TEST_GEN_PROGS += shmem_thp_mmap_p3s
 # Check page locking across folio slices
 TEST_GEN_PROGS += mlock_file_slices_p3s mlock_large_file_p3s mlock_onfault_p3s mlock_reclaim_p3s
 
+# Check madvise at process-page boundaries
+TEST_GEN_PROGS += madvise_free_holes_p3s madvise_free_p3s madvise_guard_p3s madvise_remove_p3s
+TEST_GEN_PROGS += madv_cold_large_file_p3s madvise_willneed_p3s
+
 TEST_FILES := p3s_run_module.sh
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
 P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
@@ -77,4 +81,4 @@ $(eval $(call p3s_test_hdrs,iov_iter_p3s,iov_iter_p3s.h))
 $(eval $(call p3s_test_hdrs,iov_range_retry_p3s,iov_range_retry_p3s.h))
 $(eval $(call p3s_test_hdrs,page_range_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,file_cow_refs_p3s,iov_iter_p3s.h page_range_p3s.h))
-$(foreach t,mremap_anon_holes_p3s process_vm_packed_p3s dontneed_refault_p3s file_cow_p3s hole_anon_p3s packed_anon_p3s remote_write_dontneed_p3s anon_rmap_split_window_p3s,   $(eval $(call p3s_test_hdrs,$(t),p3s_slice_test.h)))
+$(foreach t,mremap_anon_holes_p3s process_vm_packed_p3s madvise_free_holes_p3s dontneed_refault_p3s file_cow_p3s hole_anon_p3s packed_anon_p3s remote_write_dontneed_p3s anon_rmap_split_window_p3s,   $(eval $(call p3s_test_hdrs,$(t),p3s_slice_test.h)))
