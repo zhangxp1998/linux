@@ -45,6 +45,7 @@
 #include <linux/spinlock.h>
 #include <linux/key.h>
 #include <linux/personality.h>
+#include <linux/p3s/mm.h>
 #include <linux/binfmts.h>
 #include <linux/utsname.h>
 #include <linux/pid_namespace.h>
@@ -260,11 +261,24 @@ static int bprm_mm_init(struct linux_binprm *bprm)
 {
 	int err;
 	struct mm_struct *mm = NULL;
+	bool force_p3s = false;
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	const char *exec_name = kbasename(bprm->filename);
+
+	/* P3S is only supported for AArch64 Android applications. */
+	force_p3s = !strcmp(exec_name, "app_process64");
+	if (force_p3s)
+		current->personality |= ADDR_PAGE_SIZE_4KB;
+#endif
 
 	bprm->mm = mm = mm_alloc();
 	err = -ENOMEM;
-	if (!mm)
+	if (!mm) {
+		if (force_p3s)
+			current->personality &= ~ADDR_PAGE_SIZE_4KB;
 		goto err;
+	}
 
 	/* Save current stack limit for all calculations made during exec. */
 	task_lock(current->group_leader);
