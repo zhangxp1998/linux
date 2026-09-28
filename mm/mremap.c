@@ -209,6 +209,14 @@ struct p3s_mremap_ctx {
 	unsigned int nr_tuples;
 };
 
+struct p3s_mremap_ctx *p3s_mremap_prepare(struct vm_area_struct *src_vma,
+		struct vm_area_struct *dst_vma, unsigned long old_addr,
+		unsigned long new_addr, unsigned long len);
+void p3s_mremap_reslice(struct p3s_mremap_ctx *ctx,
+		struct vm_area_struct *vma, unsigned long new_addr,
+		unsigned long len);
+void p3s_mremap_finish(struct p3s_mremap_ctx *ctx);
+
 static int p3s_folio_ptr_cmp(const void *a, const void *b)
 {
 	unsigned long x = (unsigned long)*(struct folio * const *)a;
@@ -217,7 +225,7 @@ static int p3s_folio_ptr_cmp(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
-static void p3s_mremap_finish(struct p3s_mremap_ctx *ctx)
+void p3s_mremap_finish(struct p3s_mremap_ctx *ctx)
 {
 	unsigned int i;
 
@@ -342,7 +350,7 @@ static int p3s_mremap_validate_sources(struct p3s_mremap_ctx *ctx,
 	return len ? -EFAULT : 0;
 }
 
-static struct p3s_mremap_ctx *p3s_mremap_prepare(
+struct p3s_mremap_ctx *p3s_mremap_prepare(
 		struct vm_area_struct *src_vma, struct vm_area_struct *dst_vma,
 		unsigned long old_addr, unsigned long new_addr, unsigned long len)
 {
@@ -468,7 +476,7 @@ static void p3s_mremap_copy_slice(struct folio *dst, unsigned int dst_slice,
 	flush_dcache_page(&dst->page);
 }
 
-static void p3s_mremap_reslice(struct p3s_mremap_ctx *ctx,
+void p3s_mremap_reslice(struct p3s_mremap_ctx *ctx,
 		struct vm_area_struct *vma, unsigned long new_addr,
 		unsigned long len)
 {
