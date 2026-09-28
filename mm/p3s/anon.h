@@ -875,4 +875,49 @@ static inline void p3s_wp_widen_range(struct folio *old_folio,
 
 #endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
 
+#ifdef CONFIG_USERFAULTFD
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * Select the PTEs of a non-exclusive swap entry while both PTLs are held.
+ * Keep the existing full-window contract: partial windows still fall back
+ * to UFFDIO_COPY. The generic move path owns cache lookup, locking and retry.
+ */
+static inline int p3s_uffd_swap_nr(unsigned long src_addr, unsigned long dst_addr,
+				   unsigned long len, pte_t *src_pte, pte_t *dst_pte,
+				   pte_t orig_pte, struct folio *folio,
+				   swp_entry_t entry)
+{
+	unsigned int i;
+
+	if (pte_swp_exclusive(orig_pte))
+		return 1;
+	if (!IS_ALIGNED(src_addr, PAGE_SIZE_KERNEL) ||
+	    !IS_ALIGNED(dst_addr, PAGE_SIZE_KERNEL) || len < PAGE_SIZE_KERNEL)
+		return -EBUSY;
+	for (i = 0; i < P3S_SLICES_PER_PAGE; i++) {
+		pte_t pte = ptep_get(src_pte + i);
+
+		if (!is_swap_pte(pte) || pte_to_swp_entry(pte).val != entry.val)
+			return -EBUSY;
+		if (!pte_none(ptep_get(dst_pte + i)))
+			return -EEXIST;
+	}
+	if (swp_swapcount(entry) != P3S_SLICES_PER_PAGE ||
+	    (folio && (folio_mapped(folio) || folio_maybe_dma_pinned(folio))))
+		return -EBUSY;
+	return P3S_SLICES_PER_PAGE;
+}
+
+#else
+static inline int p3s_uffd_swap_nr(unsigned long src_addr, unsigned long dst_addr,
+				   unsigned long len, pte_t *src_pte, pte_t *dst_pte,
+				   pte_t orig_pte, struct folio *folio,
+				   swp_entry_t entry)
+{
+	return 1;
+}
+
+#endif
+#endif
+
 #endif /* __MM_P3S_ANON_H */

@@ -1185,14 +1185,18 @@ out:
 }
 
 static int move_swap_pte(struct mm_struct *mm, struct vm_area_struct *dst_vma,
+			 struct vm_area_struct *src_vma,
 			 unsigned long dst_addr, unsigned long src_addr,
 			 pte_t *dst_pte, pte_t *src_pte,
 			 pte_t orig_dst_pte, pte_t orig_src_pte,
 			 pmd_t *dst_pmd, pmd_t dst_pmdval,
 			 spinlock_t *dst_ptl, spinlock_t *src_ptl,
 			 struct folio *src_folio,
-			 struct swap_info_struct *si, swp_entry_t entry)
+			 struct swap_info_struct *si, swp_entry_t entry,
+			 unsigned long len)
 {
+	int nr, i;
+
 	/*
 	 * Check if the folio still belongs to the target swap entry after
 	 * acquiring the lock. Folio can be freed in the swap cache while
@@ -1208,6 +1212,13 @@ static int move_swap_pte(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 				 dst_pmd, dst_pmdval)) {
 		double_pt_unlock(dst_ptl, src_ptl);
 		return -EAGAIN;
+	}
+
+	nr = p3s_uffd_swap_nr(src_addr, dst_addr, len, src_pte,
+			      dst_pte, orig_src_pte, src_folio, entry);
+	if (nr < 0) {
+		double_pt_unlock(dst_ptl, src_ptl);
+		return nr;
 	}
 
 	/*
@@ -1239,14 +1250,19 @@ static int move_swap_pte(struct mm_struct *mm, struct vm_area_struct *dst_vma,
 		}
 	}
 
-	orig_src_pte = ptep_get_and_clear(mm, src_addr, src_pte);
+	for (i = 0; i < nr; i++) {
+		unsigned long src = src_addr + i * PAGE_SIZE;
+		unsigned long dst = dst_addr + i * PAGE_SIZE;
+
+		orig_src_pte = ptep_get_and_clear(mm, src, src_pte + i);
 #ifdef CONFIG_MEM_SOFT_DIRTY
-	orig_src_pte = pte_swp_mksoft_dirty(orig_src_pte);
+		orig_src_pte = pte_swp_mksoft_dirty(orig_src_pte);
 #endif
-	set_pte_at(mm, dst_addr, dst_pte, orig_src_pte);
+		set_pte_at(mm, dst, dst_pte + i, orig_src_pte);
+	}
 	double_pt_unlock(dst_ptl, src_ptl);
 
-	return PAGE_SIZE;
+	return nr * PAGE_SIZE;
 }
 
 static int move_zeropage_pte(struct mm_struct *mm,
@@ -1478,7 +1494,7 @@ retry:
 			goto out;
 		}
 
-		if (!pte_swp_exclusive(orig_src_pte)) {
+		if (!pte_swp_exclusive(orig_src_pte) && !vma_is_p3s_4k(src_vma)) {
 			ret = -EBUSY;
 			goto out;
 		}
@@ -1521,9 +1537,10 @@ retry:
 				goto retry;
 			}
 		}
-		ret = move_swap_pte(mm, dst_vma, dst_addr, src_addr, dst_pte, src_pte,
-				orig_dst_pte, orig_src_pte, dst_pmd, dst_pmdval,
-				dst_ptl, src_ptl, src_folio, si, entry);
+		ret = move_swap_pte(mm, dst_vma, src_vma, dst_addr,
+				    src_addr, dst_pte, src_pte, orig_dst_pte,
+				    orig_src_pte, dst_pmd, dst_pmdval, dst_ptl,
+				    src_ptl, src_folio, si, entry, len);
 	}
 
 out:
