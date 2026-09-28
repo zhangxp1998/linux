@@ -970,14 +970,14 @@ static void smaps_page_accumulate(struct mem_size_stats *mss,
 	}
 }
 
-static void smaps_account(struct mem_size_stats *mss, struct page *page,
-		bool compound, bool young, bool dirty, bool locked,
-		bool present)
+static void smaps_account(struct mem_size_stats *mss, unsigned long page_size,
+		struct page *page, bool compound, bool young, bool dirty,
+		bool locked, bool present, int precise_mapcount)
 {
 	struct folio *folio = page_folio(page);
 	int i, nr = compound ? compound_nr(page) : 1;
-	unsigned long page_size = compound ? PAGE_SIZE_KERNEL : PAGE_SIZE;
-	unsigned long size = nr * page_size;
+	unsigned long size = compound ? folio_size(folio) : page_size;
+	unsigned long step_size = compound ? PAGE_SIZE : page_size;
 	bool exclusive;
 	int mapcount;
 
@@ -1015,7 +1015,8 @@ static void smaps_account(struct mem_size_stats *mss, struct page *page,
 	 * Note that it would not be safe to read the mapcount especially for
 	 * pages referenced by migration entries, even with the PTL held.
 	 */
-	if (folio_ref_count(folio) == 1 || !present) {
+	if (precise_mapcount < 0 &&
+	    (folio_ref_count(folio) == 1 || !present)) {
 		smaps_page_accumulate(mss, folio, size, size << PSS_SHIFT,
 				      dirty, locked, present);
 		return;
@@ -1032,16 +1033,19 @@ static void smaps_account(struct mem_size_stats *mss, struct page *page,
 	 * mapcount atomically.
 	 */
 	for (i = 0; i < nr; i++, page++) {
-		unsigned long pss = page_size << PSS_SHIFT;
+		unsigned long pss = step_size << PSS_SHIFT;
 
-		if (IS_ENABLED(CONFIG_PAGE_MAPCOUNT)) {
+		if (precise_mapcount >= 0) {
+			mapcount = precise_mapcount;
+			exclusive = mapcount < 2;
+		} else if (IS_ENABLED(CONFIG_PAGE_MAPCOUNT)) {
 			mapcount = folio_precise_page_mapcount(folio, page);
 			exclusive = mapcount < 2;
 		}
 
 		if (mapcount >= 2)
 			pss /= mapcount;
-		smaps_page_accumulate(mss, folio, page_size, pss,
+		smaps_page_accumulate(mss, folio, step_size, pss,
 				      dirty, locked, exclusive);
 	}
 }
@@ -1084,9 +1088,11 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 	struct mem_size_stats *mss = walk->private;
 	struct vm_area_struct *vma = walk->vma;
 	bool locked = !!(vma->vm_flags & VM_LOCKED);
+	struct folio *folio;
 	struct page *page = NULL;
 	bool present = false, young = false, dirty = false;
 	pte_t ptent = ptep_get(pte);
+	int precise_mapcount = -1;
 
 	if (pte_present(ptent)) {
 		page = vm_normal_page(vma, addr, ptent);
@@ -1124,8 +1130,23 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 
 	if (!page)
 		return;
+	folio = page_folio(page);
 
-	smaps_account(mss, page, false, young, dirty, locked, present);
+	/*
+	 * Packed anonymous folios account one mapcount for every compat PTE.
+	 * Approximate the number of whole-folio mappings so a full tuple is not
+	 * reported as four independent sharers.  This deliberately trades exact
+	 * per-slice sharing for a bounded, cheap folio-level estimate.
+	 */
+	if (present && vma_is_compat(vma) && folio_test_anon(folio) &&
+	    !folio_test_large(folio)) {
+		precise_mapcount = DIV_ROUND_UP(folio_mapcount(folio),
+						P3S_SLICES_PER_PAGE);
+		precise_mapcount = max(precise_mapcount, 1);
+	}
+
+	smaps_account(mss, mm_pte_size(vma->vm_mm), page, false, young, dirty, locked,
+		      present, precise_mapcount);
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
@@ -1160,13 +1181,214 @@ static void smaps_pmd_entry(pmd_t *pmd, unsigned long addr,
 	else
 		mss->file_thp += HPAGE_PMD_SIZE;
 
-	smaps_account(mss, page, true, pmd_young(*pmd), pmd_dirty(*pmd),
-		      locked, present);
+	smaps_account(mss, mm_pte_size(vma->vm_mm), page, true, pmd_young(*pmd), pmd_dirty(*pmd),
+		      locked, present, -1);
 }
 #else
 static void smaps_pmd_entry(pmd_t *pmd, unsigned long addr,
 		struct mm_walk *walk)
 {
+}
+#endif
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+/*
+ * File PTEs for different PPPS slices increment the same native page
+ * mapcount.  Build per-slice counts from the file reverse mappings so PSS
+ * does not treat disjoint slices as aliases.  The caller drops its PTL before
+ * this walk; page_vma_mapped_walk() takes the PTLs of every mapped VMA.
+ */
+struct ppps_file_mapcounts {
+	struct page *page;
+	int count[P3S_SLICES_PER_PAGE];
+};
+
+static bool ppps_file_mapcount_one(struct folio *folio,
+				   struct vm_area_struct *vma,
+				   unsigned long address, void *arg)
+{
+	struct ppps_file_mapcounts *mapcounts = arg;
+	pgoff_t pgoff = folio->index +
+			folio_page_idx(folio, mapcounts->page);
+	struct page_vma_mapped_walk pvmw = {
+		.pfn = page_to_pfn(mapcounts->page),
+		.nr_pages = 1,
+		.pgoff = pgoff,
+		.vma = vma,
+		.address = page_address_in_vma(folio, mapcounts->page, vma),
+	};
+	unsigned int slice;
+
+	if (pvmw.address == -EFAULT)
+		return true;
+
+	while (page_vma_mapped_walk(&pvmw)) {
+		if (mm_is_compat(vma->vm_mm)) {
+			slice = vma_slice_offset(vma, pvmw.address);
+			mapcounts->count[slice]++;
+		} else {
+			for (slice = 0; slice < P3S_SLICES_PER_PAGE; slice++)
+				mapcounts->count[slice]++;
+		}
+	}
+
+	return true;
+}
+
+static void ppps_file_page_mapcounts(struct folio *folio, struct page *page,
+				     int count[P3S_SLICES_PER_PAGE])
+{
+	struct ppps_file_mapcounts mapcounts = {
+		.page = page,
+	};
+	struct rmap_walk_control rwc = {
+		.arg = &mapcounts,
+		.rmap_one = ppps_file_mapcount_one,
+	};
+
+	if (folio_mapcount(folio) == 1) {
+		unsigned int slice;
+
+		for (slice = 0; slice < P3S_SLICES_PER_PAGE; slice++)
+			count[slice] = 1;
+		return;
+	}
+	folio_lock(folio);
+	if (folio_mapping(folio))
+		rmap_walk(folio, &rwc);
+	folio_unlock(folio);
+
+	memcpy(count, mapcounts.count, sizeof(mapcounts.count));
+}
+
+static int smaps_ppps_file_pte_range(pmd_t *pmd, unsigned long addr,
+				     unsigned long end, struct mm_walk *walk)
+{
+	struct mem_size_stats *mss = walk->private;
+	struct mem_size_stats saved_mss = *mss;
+	struct vm_area_struct *vma = walk->vma;
+	struct folio *cached_folio = NULL;
+	struct page *cached_page = NULL;
+	int mapcounts[P3S_SLICES_PER_PAGE];
+	unsigned long page_size = mm_pte_size(vma->vm_mm);
+	bool locked = !!(vma->vm_flags & VM_LOCKED);
+
+	for (; addr != end; addr += page_size) {
+		struct folio *folio;
+		struct page *page;
+		/* Protects the PTE snapshot. */
+		spinlock_t *ptl;
+		pte_t *pte;
+		pte_t ptent;
+		bool young;
+		bool dirty;
+		int mapcount;
+
+		pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
+		if (!pte) {
+			*mss = saved_mss;
+			walk->action = ACTION_AGAIN;
+			break;
+		}
+
+		ptent = ptep_get(pte);
+		page = pte_present(ptent) ? vm_normal_page(vma, addr, ptent) : NULL;
+		if (!page || folio_test_anon(page_folio(page))) {
+			smaps_pte_entry(pte, addr, walk);
+			pte_unmap_unlock(pte, ptl);
+			continue;
+		}
+
+		folio = page_folio(page);
+		if (page != cached_page && !folio_try_get(folio)) {
+			smaps_pte_entry(pte, addr, walk);
+			pte_unmap_unlock(pte, ptl);
+			continue;
+		}
+
+		young = pte_young(ptent);
+		dirty = pte_dirty(ptent);
+		pte_unmap_unlock(pte, ptl);
+
+		if (page != cached_page) {
+			if (cached_folio)
+				folio_put(cached_folio);
+			cached_folio = folio;
+			cached_page = page;
+			ppps_file_page_mapcounts(folio, page, mapcounts);
+		}
+
+		mapcount = mapcounts[vma_slice_offset(vma, addr)];
+		/* The PTE was present in our snapshot even if it raced with rmap. */
+		mapcount = max(mapcount, 1);
+		if (mm_is_compat(vma->vm_mm)) {
+			smaps_account(mss, page_size, page, false, young, dirty,
+				      locked, true, mapcount);
+		} else {
+			unsigned int slice;
+
+			for (slice = 0; slice < P3S_SLICES_PER_PAGE; slice++)
+				smaps_account(mss, PAGE_SIZE_4KB, page, false,
+					      young, dirty, locked, true,
+					      max(mapcounts[slice], 1));
+		}
+	}
+
+	if (cached_folio)
+		folio_put(cached_folio);
+	cond_resched();
+	return 0;
+}
+#endif
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+static bool smaps_ppps_file_pmd(pmd_t *pmd, unsigned long addr,
+		unsigned long end, struct mm_walk *walk, spinlock_t *ptl)
+{
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	struct vm_area_struct *vma = walk->vma;
+	struct mem_size_stats *mss = walk->private;
+	bool locked = !!(vma->vm_flags & VM_LOCKED);
+	struct folio *folio;
+	struct page *page;
+	pmd_t entry = *pmd;
+	unsigned int slice;
+	int count[P3S_SLICES_PER_PAGE];
+
+	if (!vma->vm_file || mm_is_compat(vma->vm_mm) ||
+	    !pmd_present(entry))
+		return false;
+	page = vm_normal_page_pmd(vma, addr, entry);
+	if (IS_ERR_OR_NULL(page))
+		return false;
+	folio = page_folio(page);
+	if (folio_test_anon(folio) || !folio_try_get(folio))
+		return false;
+	spin_unlock(ptl);
+
+	if (folio_test_swapbacked(folio))
+		mss->shmem_thp += end - addr;
+	else if (!folio_is_zone_device(folio))
+		mss->file_thp += end - addr;
+	page += (addr & ~PMD_MASK) >> PAGE_SHIFT;
+	for (; addr < end; addr += PAGE_SIZE, page++) {
+		ppps_file_page_mapcounts(folio, page, count);
+		for (slice = 0; slice < P3S_SLICES_PER_PAGE; slice++)
+			smaps_account(mss, PAGE_SIZE_4KB, page, false,
+				      pmd_young(entry), pmd_dirty(entry), locked,
+				      true, max(count[slice], 1));
+	}
+	folio_put(folio);
+	return true;
+#else
+	return false;
+#endif
+}
+#else
+static inline bool smaps_ppps_file_pmd(pmd_t *pmd, unsigned long addr,
+		unsigned long end, struct mm_walk *walk, spinlock_t *ptl)
+{
+	return false;
 }
 #endif
 
@@ -1179,10 +1401,17 @@ static int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 
 	ptl = pmd_trans_huge_lock(pmd, vma);
 	if (ptl) {
+		if (smaps_ppps_file_pmd(pmd, addr, end, walk, ptl))
+			goto out;
 		smaps_pmd_entry(pmd, addr, walk);
 		spin_unlock(ptl);
 		goto out;
 	}
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (vma->vm_file)
+		return smaps_ppps_file_pte_range(pmd, addr, end, walk);
+#endif
 
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	if (!pte) {
@@ -2031,8 +2260,12 @@ static int add_to_pagemap(pagemap_entry_t *pme, struct pagemapread *pm)
 	return 0;
 }
 
-static bool __folio_page_mapped_exclusively(struct folio *folio, struct page *page)
+static bool __folio_page_mapped_exclusively(struct folio *folio,
+					    struct page *page,
+					    int precise_mapcount)
 {
+	if (precise_mapcount >= 0)
+		return precise_mapcount == 1;
 	if (IS_ENABLED(CONFIG_PAGE_MAPCOUNT))
 		return folio_precise_page_mapcount(folio, page) == 1;
 	return !folio_maybe_mapped_shared(folio);
@@ -2079,7 +2312,8 @@ out:
 }
 
 static pagemap_entry_t pte_to_pagemap_entry(struct pagemapread *pm,
-		struct vm_area_struct *vma, unsigned long addr, pte_t pte)
+		struct vm_area_struct *vma, unsigned long addr, pte_t pte,
+		int precise_mapcount)
 {
 	u64 frame = 0, flags = 0;
 	struct page *page = NULL;
@@ -2128,7 +2362,7 @@ static pagemap_entry_t pte_to_pagemap_entry(struct pagemapread *pm,
 		if (!folio_test_anon(folio))
 			flags |= PM_FILE;
 		if ((flags & PM_PRESENT) &&
-		    __folio_page_mapped_exclusively(folio, page))
+		    __folio_page_mapped_exclusively(folio, page, precise_mapcount))
 			flags |= PM_MMAP_EXCLUSIVE;
 	}
 	if (vma->vm_flags & VM_SOFTDIRTY)
@@ -2137,6 +2371,75 @@ static pagemap_entry_t pte_to_pagemap_entry(struct pagemapread *pm,
 	return make_pme(frame, flags);
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+static int pagemap_ppps_file_pte_range(pmd_t *pmdp, unsigned long addr,
+				       unsigned long end, struct mm_walk *walk)
+{
+	struct vm_area_struct *vma = walk->vma;
+	struct pagemapread *pm = walk->private;
+	int saved_pos = pm->pos;
+	struct folio *cached_folio = NULL;
+	struct page *cached_page = NULL;
+	int mapcounts[P3S_SLICES_PER_PAGE];
+	unsigned long page_size = mm_pte_size(walk->mm);
+	int err = 0;
+
+	for (; addr < end; addr += page_size) {
+		struct folio *folio;
+		struct page *page;
+		pagemap_entry_t pme;
+		/* Protects the PTE snapshot. */
+		spinlock_t *ptl;
+		pte_t *pte;
+		pte_t ptent;
+		int mapcount;
+
+		pte = pte_offset_map_lock(walk->mm, pmdp, addr, &ptl);
+		if (!pte) {
+			pm->pos = saved_pos;
+			walk->action = ACTION_AGAIN;
+			break;
+		}
+
+		ptent = ptep_get(pte);
+		page = pte_present(ptent) ? vm_normal_page(vma, addr, ptent) : NULL;
+		if (!page || folio_test_anon(page_folio(page))) {
+			pme = pte_to_pagemap_entry(pm, vma, addr, ptent, -1);
+			pte_unmap_unlock(pte, ptl);
+			goto add_entry;
+		}
+
+		folio = page_folio(page);
+		if (page != cached_page && !folio_try_get(folio)) {
+			pme = pte_to_pagemap_entry(pm, vma, addr, ptent, -1);
+			pte_unmap_unlock(pte, ptl);
+			goto add_entry;
+		}
+		pte_unmap_unlock(pte, ptl);
+
+		if (page != cached_page) {
+			if (cached_folio)
+				folio_put(cached_folio);
+			cached_folio = folio;
+			cached_page = page;
+			ppps_file_page_mapcounts(folio, page, mapcounts);
+		}
+
+		mapcount = mapcounts[vma_slice_offset(vma, addr)];
+		mapcount = max(mapcount, 1);
+		pme = pte_to_pagemap_entry(pm, vma, addr, ptent, mapcount);
+add_entry:
+		err = add_to_pagemap(&pme, pm);
+		if (err)
+			break;
+	}
+
+	if (cached_folio)
+		folio_put(cached_folio);
+	cond_resched();
+	return err;
+}
+#endif
 static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 			     struct mm_walk *walk)
 {
@@ -2204,7 +2507,7 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 			pagemap_entry_t pme;
 
 			if (folio && (flags & PM_PRESENT) &&
-			    __folio_page_mapped_exclusively(folio, page))
+			    __folio_page_mapped_exclusively(folio, page + idx, -1))
 				cur_flags |= PM_MMAP_EXCLUSIVE;
 
 			pme = make_pme(frame, cur_flags);
@@ -2223,6 +2526,11 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 	}
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (vma->vm_file)
+		return pagemap_ppps_file_pte_range(pmdp, addr, end, walk);
+#endif
+
 	/*
 	 * We can assume that @vma always points to a valid one and @end never
 	 * goes beyond vma->vm_end.
@@ -2235,7 +2543,7 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 	for (; addr < end; pte++, addr += PAGE_SIZE) {
 		pagemap_entry_t pme;
 
-		pme = pte_to_pagemap_entry(pm, vma, addr, ptep_get(pte));
+		pme = pte_to_pagemap_entry(pm, vma, addr, ptep_get(pte), -1);
 		err = add_to_pagemap(&pme, pm);
 		if (err)
 			break;
