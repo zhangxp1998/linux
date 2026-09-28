@@ -2855,7 +2855,7 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 		return addr;
 	if (IS_ERR_VALUE(addr))
 		return addr;
-	if (addr & ~PAGE_MASK)
+	if (!mm_pte_aligned(current->mm, addr))
 		return addr;
 	if (addr > TASK_SIZE - len)
 		return addr;
@@ -2911,6 +2911,9 @@ unsigned long shmem_get_unmapped_area(struct file *file,
 		if (SHMEM_SB(sb)->huge == SHMEM_HUGE_NEVER && !order)
 			return addr;
 	}
+
+	if (mm_is_p3s_4k(current->mm))
+		return addr;
 
 	if (len < hpage_size)
 		return addr;
