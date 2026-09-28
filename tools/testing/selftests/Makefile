@@ -40,6 +40,7 @@ TARGETS += exec/p3s
 TARGETS += fchmodat2
 TARGETS += filesystems
 TARGETS += filesystems/binderfs
+TARGETS += filesystems/binderfs/p3s
 TARGETS += filesystems/epoll
 TARGETS += filesystems/fat
 TARGETS += filesystems/overlayfs
