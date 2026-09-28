@@ -7,6 +7,8 @@
 
 #include "p3s_test.h"
 
+/* MADV_PAGEOUT is asynchronous; poll smaps this often, 10ms apart. */
+#define PAGEOUT_POLLS		1000
 
 /* /proc/self/pagemap */
 
@@ -48,6 +50,82 @@ static inline bool same_pfn(const uint64_t pfn[P3S_SLICES])
 		if (pfn[i] != pfn[0])
 			return false;
 	return true;
+}
+
+/* The listed slices are present and share one native page. */
+static inline bool same_present_pfns(const unsigned char *base,
+				     const unsigned int *slices,
+				     unsigned int nr)
+{
+	uint64_t first = 0, pfn;
+	unsigned int i;
+
+	for (i = 0; i < nr; i++) {
+		if (!p3s_pfn(base + slices[i] * PROCESS_PAGE_SIZE, &pfn))
+			return false;
+		if (i && pfn != first)
+			return false;
+		first = pfn;
+	}
+	return true;
+}
+
+/* Exactly one slice of the native page at @base is present. */
+static inline bool only_slice_present(const unsigned char *base,
+				      unsigned int present_slice)
+{
+	uint64_t entry;
+	unsigned int i;
+
+	for (i = 0; i < P3S_SLICES; i++) {
+		if (!p3s_pagemap_entry(base + i * PROCESS_PAGE_SIZE, &entry) ||
+		    !!(entry & PM_PRESENT) != (i == present_slice))
+			return false;
+	}
+	return true;
+}
+
+/* /proc/self/status */
+
+/* RssAnon of this process in bytes, or -1. */
+static inline long rss_anon_bytes(void)
+{
+	long kb = p3s_status_kb("RssAnon");
+
+	return kb < 0 ? -1 : kb * 1024;
+}
+
+/* Wait for an already requested pageout to move @minimum bytes to swap. */
+static inline bool wait_for_swap(void *address, unsigned long length,
+				 unsigned long minimum)
+{
+	unsigned long swap;
+	unsigned int attempt;
+
+	for (attempt = 0; attempt < PAGEOUT_POLLS; attempt++) {
+		if (!p3s_smaps_bytes(address, length, "Swap", &swap)) {
+			ksft_print_msg("Swap accounting unavailable: length=%lu\n", length);
+			return false;
+		}
+		if (swap >= minimum)
+			return true;
+		usleep(10000);
+	}
+	ksft_print_msg("pageout stopped at Swap=%lu, expected at least %lu bytes\n",
+		       swap, minimum);
+	return false;
+}
+
+/* Request pageout and wait until the specified range is really swapped. */
+static inline bool pageout_reaches_swap(void *address, unsigned long length,
+					unsigned long minimum)
+{
+	if (madvise(address, length, MADV_PAGEOUT)) {
+		ksft_print_msg("MADV_PAGEOUT failed: errno=%d length=%lu\n",
+			       errno, length);
+		return false;
+	}
+	return wait_for_swap(address, length, minimum);
 }
 
 /*
