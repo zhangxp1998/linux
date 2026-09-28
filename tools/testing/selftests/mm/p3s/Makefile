@@ -57,6 +57,15 @@ TEST_GEN_PROGS += \
 	mixed_context_switch_p3s mixed_mm_access_p3s process_madvise_p3s \
 	process_mrelease_p3s process_vm_access_p3s remote_write_dontneed_p3s
 
+# Exercise file and shmem slice mappings
+TEST_GEN_PROGS += \
+	file_cow_p3s fork_filemap_p3s msync_offset_p3s shmem_mmap_offset_p3s \
+	shmem_swap_usage_p3s thp_mmap_offset_p3s truncate_p3s truncate_remote_p3s
+TEST_GEN_FILES += file_cow_refs_p3s filemap_eof_p3s truncate_tail_p3s
+ifeq ($(ARCH),arm64)
+TEST_GEN_PROGS += shmem_thp_mmap_p3s
+endif
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh
@@ -85,8 +94,10 @@ $(eval $(call p3s_test_hdrs,gup_retry_p3s,gup_retry_p3s.h))
 $(eval $(call p3s_test_hdrs,iov_iter_p3s,iov_iter_p3s.h))
 $(eval $(call p3s_test_hdrs,iov_range_retry_p3s,iov_range_retry_p3s.h))
 $(eval $(call p3s_test_hdrs,page_range_p3s,iov_iter_p3s.h page_range_p3s.h))
+$(eval $(call p3s_test_hdrs,file_cow_refs_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,cow_notifier_p3s,mmu_notifier_p3s.h))
 $(eval $(call p3s_test_hdrs,dontneed_refault_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,file_cow_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,hole_anon_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,packed_anon_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,remote_write_dontneed_p3s,p3s_tuple_test.h))
