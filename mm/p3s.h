@@ -256,6 +256,21 @@ static inline void p3s_anon_install_folio(struct vm_area_struct *vma,
 		existing_folio = p3s_anon_folio_lookaround_pte(vma, vmf->pte, addr);
 
 	if (existing_folio) {
+		unsigned long offset =
+			(unsigned long)vma_slice_offset(vma, addr) << PAGE_SHIFT_4KB;
+		unsigned long size =
+			(unsigned long)nr_pages << PAGE_SHIFT_4KB;
+
+		/*
+		 * A local anonymous refault must replace stale slice contents
+		 * with the newly allocated (normally zeroed) slice.  Remote GUP
+		 * faults used while building an exec stack populate the returned
+		 * page only after this function returns, so copying here would
+		 * erase argv and environment strings already stored in siblings.
+		 */
+		if (!(vmf->flags & FAULT_FLAG_REMOTE))
+			memcpy(folio_address(existing_folio) + offset,
+			       folio_address(folio) + offset, size);
 		folio_put(folio);
 		*foliop = folio = existing_folio;
 	}
