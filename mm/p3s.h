@@ -10,9 +10,10 @@
 #include <linux/userfaultfd_k.h>
 #include <linux/huge_mm.h>
 #include <linux/pgtable.h>
-#include <asm/mte.h>
 
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+
+#include <asm/mte.h>
 
 static inline void p3s_copy_folio_range(struct folio *dst, struct folio *src,
 					unsigned long offset, unsigned long size)
