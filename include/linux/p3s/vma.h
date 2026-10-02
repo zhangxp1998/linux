@@ -49,6 +49,11 @@ static inline bool vma_is_p3s_4k(const struct vm_area_struct *vma)
 	return mm_is_p3s_4k(vma->vm_mm);
 }
 
+static inline bool vma_is_compat(const struct vm_area_struct *vma)
+{
+	return vma_is_p3s_4k(vma);
+}
+
 static inline unsigned long vma_offset_in_page(const struct vm_area_struct *vma,
 					       unsigned long addr)
 {

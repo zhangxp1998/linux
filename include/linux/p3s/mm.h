@@ -109,6 +109,11 @@ static inline bool mm_is_p3s_4k(const struct mm_struct *mm)
 	return mm_pte_shift(mm) != PAGE_SHIFT_KERNEL;
 }
 
+static inline bool mm_is_compat(const struct mm_struct *mm)
+{
+	return mm_is_p3s_4k(mm);
+}
+
 static inline unsigned long mm_pmd_size(const struct mm_struct *mm)
 {
 	return mm_is_p3s_4k(mm) ? PMD_SIZE_4KB : PMD_SIZE;

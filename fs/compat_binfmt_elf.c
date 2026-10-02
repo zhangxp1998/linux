@@ -16,6 +16,7 @@
 
 #include <linux/elfcore-compat.h>
 #include <linux/time.h>
+#include <linux/p3s_user_pages.h>
 
 #define ELF_COMPAT	1
 
