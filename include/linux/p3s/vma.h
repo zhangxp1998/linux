@@ -302,6 +302,15 @@ static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 		P3S_SLICE_SHIFT);
 }
 
+/* Offset passed to get_unmapped_area(), in mmap ABI page units. */
+static inline pgoff_t vma_mmap_pgoff(const struct vm_area_struct *vma,
+				     unsigned long addr)
+{
+	if (vma_is_p3s_4k(vma) && vma->vm_file)
+		return vma_file_offset_at(vma, addr) >> mm_pte_shift(vma->vm_mm);
+	return vma_linear_page_index(vma, addr);
+}
+
 /*
  * vma_pgoff_pages - Number of page offsets that @vma covers
  * @vma: Pointer to struct vm_area_struct
