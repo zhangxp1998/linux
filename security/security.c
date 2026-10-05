@@ -1245,6 +1245,23 @@ int security_settime64(const struct timespec64 *ts, const struct timezone *tz)
 	return call_int_hook(settime, ts, tz);
 }
 
+static int security_vm_enough_memory(struct mm_struct *mm, long pages,
+				     long charge)
+{
+	struct lsm_static_call *scall;
+	int cap_sys_admin = 1;
+	int rc;
+
+	lsm_for_each_hook(scall, vm_enough_memory) {
+		rc = scall->hl->hook.vm_enough_memory(mm, pages);
+		if (rc < 0) {
+			cap_sys_admin = 0;
+			break;
+		}
+	}
+	return __vm_enough_memory(mm, charge, cap_sys_admin);
+}
+
 /**
  * security_vm_enough_memory_mm() - Check if allocating a new mem map is allowed
  * @mm: mm struct
@@ -1260,24 +1277,12 @@ int security_settime64(const struct timespec64 *ts, const struct timezone *tz)
  */
 int security_vm_enough_memory_mm(struct mm_struct *mm, long pages)
 {
-	struct lsm_static_call *scall;
-	int cap_sys_admin = 1;
-	int rc;
+	return security_vm_enough_memory(mm, pages, vm_commit_mm_pages(mm, pages));
+}
 
-	/*
-	 * The module will respond with 0 if it thinks the __vm_enough_memory()
-	 * call should be made with the cap_sys_admin set. If all of the modules
-	 * agree that it should be set it will. If any module thinks it should
-	 * not be set it won't.
-	 */
-	lsm_for_each_hook(scall, vm_enough_memory) {
-		rc = scall->hl->hook.vm_enough_memory(mm, pages);
-		if (rc < 0) {
-			cap_sys_admin = 0;
-			break;
-		}
-	}
-	return __vm_enough_memory(mm, pages, cap_sys_admin);
+int security_vm_enough_memory_native(struct mm_struct *mm, long pages)
+{
+	return security_vm_enough_memory(mm, pages, vm_commit_native_pages(pages));
 }
 
 /**
