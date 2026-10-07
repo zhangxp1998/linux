@@ -3312,6 +3312,7 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
 					union swap_header *swap_header,
 					struct inode *inode)
 {
+	__u32 *badpages = swap_header->info.badpages;
 	int i;
 	unsigned long maxpages;
 	unsigned long swapfilepages;
@@ -3330,7 +3331,7 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
 		if (swap_header->info.nr_badpages > p3s_swap_header_max_badpages(swap_header))
 			return 0;
 		for (i = 0; i < swap_header->info.nr_badpages; i++)
-			swab32s(&swap_header->info.badpages[i]);
+			swab32s(badpages + i);
 	}
 	/* Check the swap header's sub-version */
 	if (swap_header->info.version != 1) {
@@ -3378,11 +3379,12 @@ static int setup_swap_map(struct swap_info_struct *si,
 			  unsigned char *swap_map,
 			  unsigned long maxpages)
 {
+	const __u32 *badpages = swap_header->info.badpages;
 	unsigned long i;
 
 	swap_map[0] = SWAP_MAP_BAD; /* omit header page */
 	for (i = 0; i < swap_header->info.nr_badpages; i++) {
-		unsigned int page_nr = swap_header->info.badpages[i];
+		unsigned int page_nr = badpages[i];
 		if (page_nr == 0 || page_nr > swap_header->info.last_page)
 			return -EINVAL;
 		if (page_nr < maxpages) {
@@ -3403,6 +3405,7 @@ static struct swap_cluster_info *setup_clusters(struct swap_info_struct *si,
 						union swap_header *swap_header,
 						unsigned long maxpages)
 {
+	const __u32 *badpages = swap_header->info.badpages;
 	unsigned long nr_clusters = DIV_ROUND_UP(maxpages, SWAPFILE_CLUSTER);
 	struct swap_cluster_info *cluster_info;
 	int err = -ENOMEM;
@@ -3436,7 +3439,7 @@ static struct swap_cluster_info *setup_clusters(struct swap_info_struct *si,
 	if (err)
 		goto err;
 	for (i = 0; i < swap_header->info.nr_badpages; i++) {
-		unsigned int page_nr = swap_header->info.badpages[i];
+		unsigned int page_nr = badpages[i];
 
 		if (page_nr >= maxpages)
 			continue;
