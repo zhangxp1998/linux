@@ -4,6 +4,8 @@
 
 #include <linux/p3s/mm.h>
 #include <linux/minmax.h>
+#include <linux/errno.h>
+#include <linux/overflow.h>
 
 struct vm_area_struct;
 
@@ -36,6 +38,29 @@ static inline unsigned long vma_page_size(const struct vm_area_struct *vma)
 static inline unsigned long vma_page_mask(const struct vm_area_struct *vma)
 {
 	return mm_pte_mask(vma->vm_mm);
+}
+
+/**
+ * vma_aligned_size - Round an object size up to the VMA's page size
+ * @vma: VMA whose owning mm supplies the page size
+ * @size: Object size in bytes, including a possible final partial page
+ * @aligned: Rounded size in bytes, valid only on success
+ *
+ * Keep object sizes in u64 so native-page offsets and the final partial
+ * process page can be checked without narrowing to the address width.
+ * Callers storing the result in a narrower type must check that it fits.
+ *
+ * Return: 0 on success (including a zero size), -EOVERFLOW on wraparound.
+ */
+static inline int vma_aligned_size(const struct vm_area_struct *vma, u64 size,
+				   u64 *aligned)
+{
+	u64 mask = vma_page_size(vma) - 1;
+
+	if (check_add_overflow(size, mask, aligned))
+		return -EOVERFLOW;
+	*aligned &= ~mask;
+	return 0;
 }
 
 static inline unsigned long vma_phys_pfn(const struct vm_area_struct *vma,
