@@ -70,21 +70,17 @@ static inline pte_t mm_frame_pte(const struct mm_struct *mm,
 				(frame & P3S_SLICE_MASK) << PAGE_SHIFT_4KB);
 }
 
-/*
- * vma_pfnmap_phys - Physical address of the frame a PFN mapping maps
- * @vma: Pointer to struct vm_area_struct
- * @addr: Virtual address within @vma
- * @pfn: Kernel page frame number found by follow_pfnmap_start()
- *
- * Adds the slice that a 4KB compatibility VMA maps at @addr, as set up by
- * remap_pfn_range() and insert_pfn().
- */
-static inline phys_addr_t vma_pfnmap_phys(const struct vm_area_struct *vma,
-					  unsigned long addr,
-					  unsigned long pfn)
+/* Preserve the actual mapped 4KB slice, which need not match VMA geometry. */
+static inline resource_size_t
+p3s_pfnmap_phys(const struct follow_pfnmap_args *args)
 {
-	return ((phys_addr_t)pfn << PAGE_SHIFT_KERNEL) +
-	       ((phys_addr_t)vma_slice_offset(vma, addr) << PAGE_SHIFT_4KB);
+	resource_size_t phys = (resource_size_t)args->pfn << PAGE_SHIFT_KERNEL;
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	if (vma_is_p3s_4k(args->vma) && args->ptep)
+		phys |= __pte_to_phys(ptep_get(args->ptep)) & ~PAGE_MASK_KERNEL;
+#endif
+	return phys;
 }
 
 #endif /* __MM_P3S_PGTABLE_H */
