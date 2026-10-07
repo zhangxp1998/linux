@@ -69,6 +69,7 @@ static inline unsigned long vma_slice_walk_end(const struct vm_area_struct *vma,
 /*
  * p3s_anon_rmap_range - Widen the anon_vma lookup of @folio to its window
  * @folio: Folio being walked
+ * @anon_vma: Locked anon_vma tree
  * @start: First page offset to look up
  * @end: Last page offset to look up
  *
@@ -78,10 +79,17 @@ static inline unsigned long vma_slice_walk_end(const struct vm_area_struct *vma,
  * up every page offset of the window.
  */
 static inline void p3s_anon_rmap_range(const struct folio *folio,
+				       struct anon_vma *anon_vma,
 				       pgoff_t *start, pgoff_t *end)
 {
+	struct rb_node *node;
+
 	if (!IS_ENABLED(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) ||
 	    folio_test_large(folio))
+		return;
+	/* Fork-related mms in this locked tree share one page-table geometry. */
+	node = rb_first_cached(&anon_vma->rb_root);
+	if (!node || !vma_is_p3s_4k(rb_entry(node, struct anon_vma_chain, rb)->vma))
 		return;
 	*start -= min_t(pgoff_t, *start, P3S_SLICE_MASK);
 	*end += P3S_SLICE_MASK;
@@ -96,9 +104,9 @@ static inline void p3s_anon_rmap_range(const struct folio *folio,
  * In a 4KB anonymous VMA without a file, whose page offsets count 4KB
  * pages, the walk starts at the first address of @folio's window in @vma.
  * A private mapping of /dev/zero indexes its folios by file page instead,
- * as vma_linear_page_index() does, so vma_address() already finds them.
- * Returns true for a VMA that holds no part of the window, which the
- * widened lookup can find in any mm.
+ * as vma_linear_page_index() does; clip its native-page address to the
+ * VMA's slice range. Return true if the widened lookup found a VMA that
+ * holds no part of the window.
  */
 static inline bool p3s_anon_rmap_skip(const struct vm_area_struct *vma,
 				      const struct folio *folio,
@@ -107,8 +115,15 @@ static inline bool p3s_anon_rmap_skip(const struct vm_area_struct *vma,
 	if (!IS_ENABLED(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE) ||
 	    folio_test_large(folio))
 		return false;
-	if (vma_is_p3s_4k(vma) && !vma->vm_ops && !vma->vm_file)
-		*address = vma_anon_slice_window(vma, folio_pgoff(folio));
+	if (vma_is_p3s_4k(vma)) {
+		if (!vma->vm_ops && !vma->vm_file) {
+			*address = vma_anon_slice_window(vma, folio_pgoff(folio));
+		} else if (*address != -EFAULT) {
+			unsigned int nr_slices;
+
+			vma_folio_slice_bounds(vma, *address, &nr_slices, address);
+		}
+	}
 	return *address == -EFAULT;
 }
 
