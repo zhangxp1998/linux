@@ -3730,9 +3730,17 @@ int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 int p3s_vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start,
 			unsigned long len);
+int p3s_mmap_phys_object(struct vm_area_struct *vma, phys_addr_t phys,
+			 size_t size);
 #else
 static inline int p3s_vm_iomap_memory(struct vm_area_struct *vma,
 				      phys_addr_t start, unsigned long len)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int p3s_mmap_phys_object(struct vm_area_struct *vma,
+				       phys_addr_t phys, size_t size)
 {
 	return -EOPNOTSUPP;
 }

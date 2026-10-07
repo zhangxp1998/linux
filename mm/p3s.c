@@ -212,3 +212,25 @@ int p3s_vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start,
 	return p3s_remap_phys_range(vma, vma->vm_start, start + offset, vm_len,
 				    pgprot_decrypted(vma->vm_page_prot));
 }
+
+/*
+ * p3s_mmap_phys_object - Map a 4KB compat VMA onto a contiguous object
+ * @vma: 4KB compat VMA, whose file offset selects the start in the object
+ * @phys: Physical start of the object, 4KB aligned
+ * @size: Size of the object in bytes
+ *
+ * Returns -ENXIO if the VMA's file range does not fit in the object.
+ */
+int p3s_mmap_phys_object(struct vm_area_struct *vma, phys_addr_t phys,
+			 size_t size)
+{
+	unsigned long len = vma->vm_end - vma->vm_start;
+	u64 offset = vma_file_offset(vma);
+	u64 aligned_size;
+
+	if (vma_aligned_size(vma, size, &aligned_size) ||
+	    offset >= aligned_size || len > aligned_size - offset)
+		return -ENXIO;
+	return p3s_remap_phys_range(vma, vma->vm_start, phys + offset, len,
+				    vma->vm_page_prot);
+}
