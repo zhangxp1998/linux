@@ -523,6 +523,20 @@ static inline void vma_set_split_offset(struct vm_area_struct *target,
 }
 
 /*
+ * vma_filter_merge_neighbor - Invalidate neighbor reference if it points to self
+ * @neighbor: Potential neighbor VMA to merge with
+ * @vma: Source VMA being copied
+ * @faulted_in_anon_vma: Whether source VMA had faulted anon_vma
+ */
+static inline struct vm_area_struct *
+vma_filter_merge_neighbor(struct vm_area_struct *neighbor,
+			  const struct vm_area_struct *vma,
+			  bool faulted_in_anon_vma)
+{
+	return (faulted_in_anon_vma && neighbor == vma) ? NULL : neighbor;
+}
+
+/*
  * p3s_adjust_unmapped_area_info - Align unmapped area allocations to host page
  * @info: Pointer to struct vm_unmapped_area_info
  *

@@ -90,6 +90,22 @@ static bool vma_can_merge_offsets(const struct vm_area_struct *left,
 }
 
 /*
+ * vmg_new_range_slice - Slice at vmg->start of a proposed new range
+ * @vmg: VMA merge structure without a middle VMA
+ * @neighbour: The VMA to merge with, mapping the same file
+ *
+ * Private /dev/zero mappings keep vm_file without vm_ops and, like
+ * anonymous memory, take their slice from the virtual address.
+ */
+static unsigned int vmg_new_range_slice(struct vma_merge_struct *vmg,
+					struct vm_area_struct *neighbour)
+{
+	if (!neighbour->vm_ops)
+		return (vmg->start >> PAGE_SHIFT_4KB) & P3S_SLICE_MASK;
+	return vmg->slice_off;
+}
+
+/*
  * vmg_can_merge_offsets - Verify offset & slice continuity for VMA merge
  * @vmg: VMA merge structure
  * @merge_next: True if merging with vmg->next, false if merging with vmg->prev
@@ -97,6 +113,7 @@ static bool vma_can_merge_offsets(const struct vm_area_struct *left,
 bool vmg_can_merge_offsets(struct vma_merge_struct *vmg, bool merge_next)
 {
 	if (merge_next) {
+		unsigned int start_slice;
 		unsigned long total_slices;
 
 		if (!vmg_is_p3s_4k(vmg))
@@ -111,13 +128,19 @@ bool vmg_can_merge_offsets(struct vma_merge_struct *vmg, bool merge_next)
 			return vmg->next->vm_pgoff ==
 			       vmg->pgoff + ((vmg->end - vmg->start) >> PAGE_SHIFT_4KB);
 
-		total_slices = vmg->slice_off + ((vmg->end - vmg->start) >> PAGE_SHIFT_4KB);
+		start_slice = vmg_new_range_slice(vmg, vmg->next);
+		total_slices = start_slice + ((vmg->end - vmg->start) >> PAGE_SHIFT_4KB);
 
 		return vmg->next->vm_pgoff == vmg->pgoff + (total_slices >> P3S_SLICE_SHIFT) &&
-		       vma_slice_off(vmg->next) == (total_slices & P3S_SLICE_MASK);
+		       vma_slice_offset(vmg->next, vmg->end) ==
+		       (total_slices & P3S_SLICE_MASK);
 	}
 
-	return vma_can_merge_offsets(vmg->prev, vmg->pgoff, vmg->slice_off,
-				     vmg->start, vmg_is_p3s_4k(vmg),
-				     !vma_is_anonymous(vmg->prev));
+	if (!vmg->prev)
+		return false;
+
+	return vma_can_merge_offsets(vmg->prev, vmg->pgoff,
+				     vmg->middle ? vma_slice_off(vmg->middle) :
+				     vmg_new_range_slice(vmg, vmg->prev),
+				     vmg->start, vmg_is_p3s_4k(vmg), !!vmg->file);
 }

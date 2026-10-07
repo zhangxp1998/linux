@@ -97,7 +97,7 @@ struct vma_merge_struct {
 	unsigned long start;
 	unsigned long end;
 	pgoff_t pgoff;
-	/* Slice of page pgoff that start maps, see vm_slice_off. */
+	/* 4KB slice at @start of a proposed new range, which has no VMA yet. */
 	unsigned short slice_off;
 
 	vm_flags_t vm_flags;
@@ -177,7 +177,6 @@ static inline void vmg_set_slice_off(struct vma_merge_struct *vmg,
 {
 	vmg->slice_off = slice_off;
 }
-
 #else
 static inline void vmg_set_slice_off(struct vma_merge_struct *vmg,
 				     unsigned short slice_off)

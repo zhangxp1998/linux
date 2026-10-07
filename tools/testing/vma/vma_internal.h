@@ -810,6 +810,14 @@ static inline void vma_set_split_offset(struct vm_area_struct *target,
 	target->vm_pgoff = vma_linear_page_index(src, addr);
 }
 
+static inline struct vm_area_struct *
+vma_filter_merge_neighbor(struct vm_area_struct *neighbor,
+			  const struct vm_area_struct *vma,
+			  bool faulted_in_anon_vma)
+{
+	return faulted_in_anon_vma && neighbor == vma ? NULL : neighbor;
+}
+
 static inline pgoff_t mm_mmap_pgoff(const struct mm_struct *mm,
 				    const struct file *file, pgoff_t pgoff)
 {
