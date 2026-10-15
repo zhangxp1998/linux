@@ -122,7 +122,7 @@ static inline unsigned int vma_slice_offset(const struct vm_area_struct *vma,
 	 * addresses, so the index of @addr's 4KB page in that window is its
 	 * slice.
 	 */
-	if (!vma->vm_ops)
+	if (!vma->vm_ops && !vma->vm_file)
 		return (addr >> PAGE_SHIFT_4KB) & P3S_SLICE_MASK;
 
 	/*
@@ -237,6 +237,17 @@ static inline loff_t vma_file_offset_at(const struct vm_area_struct *vma,
 }
 
 /*
+ * vma_kernel_pages - Number of kernel pages that @vma maps slices of
+ * @vma: Pointer to struct vm_area_struct
+ *
+ * A 4KB compatibility VMA can start at any slice of a kernel page, so
+ * count its pages from slice 0 of the first kernel page. A macro, as
+ * vma_pages() is defined after this header is included.
+ */
+#define vma_kernel_pages(vma)						\
+	mm_kernel_pages((vma)->vm_mm, vma_slice_off(vma) + vma_pages(vma))
+
+/*
  * vma_linear_page_index - Page offset that @addr maps
  * @vma: Pointer to struct vm_area_struct
  * @addr: Virtual address within @vma
@@ -274,7 +285,7 @@ static inline pgoff_t vma_linear_page_index(const struct vm_area_struct *vma,
 		return vma->vm_pgoff +
 		       ((addr - vma->vm_start) >> PAGE_SHIFT_KERNEL);
 
-	if (!vma->vm_ops)
+	if (!vma->vm_ops && !vma->vm_file)
 		return vma->vm_pgoff +
 		       ((addr - vma->vm_start) >> PAGE_SHIFT_4KB);
 
@@ -315,7 +326,7 @@ static inline pgoff_t vma_pgoff_pages(const struct vm_area_struct *vma)
 {
 	unsigned long nr_slices = vma_size(vma) >> mm_pte_shift(vma->vm_mm);
 
-	if (!vma_is_p3s_4k(vma) || !vma->vm_ops)
+	if (!vma_is_p3s_4k(vma) || (!vma->vm_ops && !vma->vm_file))
 		return nr_slices;
 
 	return DIV_ROUND_UP(vma_slice_off(vma) + nr_slices,
@@ -359,7 +370,7 @@ vma_pgoff_to_address(const struct vm_area_struct *vma, pgoff_t pgoff)
 	if (pgoff <= vma->vm_pgoff)
 		return vma->vm_start;
 
-	if (vma->vm_ops) {
+	if (vma->vm_ops || vma->vm_file) {
 		addr = vma->vm_start +
 			((pgoff - vma->vm_pgoff) << PAGE_SHIFT_KERNEL) -
 			((unsigned long)vma_slice_off(vma) << PAGE_SHIFT_4KB);
@@ -373,7 +384,7 @@ vma_pgoff_to_address(const struct vm_area_struct *vma, pgoff_t pgoff)
 
 /*
  * vma_anon_slice_window - First address of the slices of a page in @vma
- * @vma: Anonymous VMA
+ * @vma: Anonymous VMA without a file
  * @pgoff: Index of a small anonymous folio
  *
  * In a 4KB anonymous VMA, @pgoff counts 4KB pages and the slices of the

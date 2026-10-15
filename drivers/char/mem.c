@@ -325,6 +325,7 @@ static const struct vm_operations_struct mmap_mem_ops = {
 static int mmap_mem(struct file *file, struct vm_area_struct *vma)
 {
 	size_t size = vma->vm_end - vma->vm_start;
+	size_t ksize = vma_kernel_pages(vma) << PAGE_SHIFT;
 	phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
 
 	/* Does it even fit in phys_addr_t? */
@@ -332,24 +333,24 @@ static int mmap_mem(struct file *file, struct vm_area_struct *vma)
 		return -EINVAL;
 
 	/* It's illegal to wrap around the end of the physical address space. */
-	if (offset + (phys_addr_t)size - 1 < offset)
+	if (offset + (phys_addr_t)ksize - 1 < offset)
 		return -EINVAL;
 
-	if (!valid_mmap_phys_addr_range(vma->vm_pgoff, size))
+	if (!valid_mmap_phys_addr_range(vma->vm_pgoff, ksize))
 		return -EINVAL;
 
 	if (!private_mapping_ok(vma))
 		return -ENOSYS;
 
-	if (!range_is_allowed(vma->vm_pgoff, size))
+	if (!range_is_allowed(vma->vm_pgoff, ksize))
 		return -EPERM;
 
-	if (!phys_mem_access_prot_allowed(file, vma->vm_pgoff, size,
+	if (!phys_mem_access_prot_allowed(file, vma->vm_pgoff, ksize,
 						&vma->vm_page_prot))
 		return -EINVAL;
 
 	vma->vm_page_prot = phys_mem_access_prot(file, vma->vm_pgoff,
-						 size,
+						 ksize,
 						 vma->vm_page_prot);
 
 	vma->vm_ops = &mmap_mem_ops;
