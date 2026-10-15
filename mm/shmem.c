@@ -91,6 +91,7 @@ static struct vfsmount *shm_mnt __ro_after_init;
 #include <linux/uaccess.h>
 
 #include "internal.h"
+#include "p3s/truncate.h"
 
 #ifdef CONFIG_ASHMEM
 #include "../drivers/staging/android/ashmem.h"
@@ -1348,6 +1349,8 @@ static int shmem_setattr(struct mnt_idmap *idmap,
 		}
 		if (newsize <= oldsize) {
 			loff_t holebegin = round_up(newsize, PAGE_SIZE);
+
+			p3s_unmap_truncated_tail(inode->i_mapping, newsize);
 			if (oldsize > holebegin)
 				unmap_mapping_range(inode->i_mapping,
 							holebegin, 0, 1);
@@ -1355,6 +1358,7 @@ static int shmem_setattr(struct mnt_idmap *idmap,
 				shmem_truncate_range(inode,
 							newsize, (loff_t)-1);
 			/* unmap again to remove racily COWed private pages */
+			p3s_unmap_truncated_tail(inode->i_mapping, newsize);
 			if (oldsize > holebegin)
 				unmap_mapping_range(inode->i_mapping,
 							holebegin, 0, 1);
