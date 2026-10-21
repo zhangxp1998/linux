@@ -4641,6 +4641,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	rmap_t rmap_flags = RMAP_NONE;
 	bool need_clear_cache = false;
 	bool exclusive = false;
+	unsigned long sibling_slices = 0;
 	swp_entry_t entry;
 	pte_t pte;
 	vm_fault_t ret = 0;
@@ -4976,6 +4977,10 @@ check_folio:
 	 * yet.
 	 */
 	swap_free_nr(entry, nr_pages);
+
+	/* 4KB compatibility VMAs: free the swap entries of sibling slices */
+	sibling_slices = p3s_swapin_free_sibling_swap(vmf, folio, entry);
+
 	if (should_try_to_free_swap(folio, vma, vmf->flags))
 		folio_free_swap(folio);
 
@@ -5035,6 +5040,7 @@ check_folio:
 	set_ptes(vma->vm_mm, address, ptep, pte, nr_pages);
 	arch_do_swap_page_nr(vma->vm_mm, vma, address,
 			pte, pte, nr_pages);
+	p3s_swapin_map_sibling_slices(vmf, folio, sibling_slices, rmap_flags);
 
 	folio_unlock(folio);
 	if (folio != swapcache && swapcache) {
