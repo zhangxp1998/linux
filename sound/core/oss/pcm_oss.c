@@ -20,6 +20,7 @@
 #include <linux/math64.h>
 #include <linux/string.h>
 #include <linux/compat.h>
+#include <linux/p3s/mm.h>
 #include <sound/core.h>
 #include <sound/minors.h>
 #include <sound/pcm.h>
@@ -2890,6 +2891,9 @@ static int snd_pcm_oss_mmap(struct file *file, struct vm_area_struct *area)
 	struct snd_pcm_substream *substream = NULL;
 	struct snd_pcm_runtime *runtime;
 	int err;
+
+	if (p3s_4k_unsupported(area->vm_mm))
+		return -EOPNOTSUPP;
 
 #ifdef OSS_DEBUG
 	pr_debug("pcm_oss: mmap begin\n");
