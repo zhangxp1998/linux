@@ -9,4 +9,14 @@ set noparent
 # The expanded list of reviewers can be found at:
 # https://android.googlesource.com/kernel/common/+/android-mainline/OWNERS_DrNo
 
+## mm team
+tjmercier@google.com
+wusamuel@google.com
+
+# 16kb team
+jyescas@google.com
+kaleshsingh@google.com
+runpinglai@google.com
+zhangkelvin@google.com
+
 include kernel/common:android-mainline:/OWNERS_DrNo
