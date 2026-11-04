@@ -19,6 +19,11 @@ obj-m += mmap_fail_p3s_module.o
 obj-m += iov_range_retry_p3s_module.o
 
 # PFN and device mappings
+obj-m += vm_iomap_memory_p3s_module.o
+obj-m += remap_pfn_cow_p3s_module.o
+obj-m += pfn_insert_p3s_module.o
+obj-m += vm_map_pages_p3s_module.o
+obj-m += vmalloc_align_p3s_module.o
 
 # MMU notifier
 ifneq ($(CONFIG_MMU_NOTIFIER),)
