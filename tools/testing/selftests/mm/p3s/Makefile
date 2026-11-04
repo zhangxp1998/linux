@@ -99,6 +99,11 @@ TEST_GEN_PROGS += \
 TEST_GEN_FILES += pagewalk_p3s
 TEST_GEN_FILES += pagemap_ioctl
 
+# Check PFN remap and kernel-page mapping bounds
+TEST_GEN_FILES += \
+	pfn_insert_p3s remap_pfn_cow_p3s vm_iomap_memory_p3s vm_map_pages_p3s \
+	vmalloc_align_p3s
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
@@ -125,6 +130,7 @@ $(OUTPUT)/$(1): $(2)
 endef
 $(eval $(call p3s_test_hdrs,fault_in_p3s,fault_in_p3s.h))
 $(eval $(call p3s_test_hdrs,folio_within_range_p3s,folio_within_range_p3s.h))
+$(eval $(call p3s_test_hdrs,pfn_insert_p3s,pfn_insert_p3s.h))
 $(eval $(call p3s_test_hdrs,gup_retry_p3s,gup_retry_p3s.h))
 $(eval $(call p3s_test_hdrs,iov_iter_p3s,iov_iter_p3s.h))
 $(eval $(call p3s_test_hdrs,iov_range_retry_p3s,iov_range_retry_p3s.h))
@@ -132,6 +138,7 @@ $(eval $(call p3s_test_hdrs,page_range_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,file_cow_refs_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,cow_notifier_p3s,mmu_notifier_p3s.h))
 $(eval $(call p3s_test_hdrs,pagewalk_p3s,pagewalk_p3s.h))
+$(eval $(call p3s_test_hdrs,vm_map_pages_p3s,vm_map_pages_p3s.h))
 $(eval $(call p3s_test_hdrs,dontneed_refault_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,file_cow_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,hole_anon_p3s,p3s_tuple_test.h))

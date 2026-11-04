@@ -23,6 +23,13 @@ ifneq ($(CONFIG_MAPPING_DIRTY_HELPERS),)
 obj-m += pagewalk_p3s_module.o
 endif
 
+obj-m += vm_iomap_memory_p3s_module.o
+obj-m += vm_iomap_unaligned_p3s_module.o
+obj-m += remap_pfn_cow_p3s_module.o
+obj-m += pfn_insert_p3s_module.o
+obj-m += vm_map_pages_p3s_module.o
+obj-m += vmalloc_align_p3s_module.o
+
 else # userspace selftest build
 
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
