@@ -18,4 +18,7 @@ TEST_GEN_PROGS :=
 TEST_GEN_FILES :=
 TEST_PROGS :=
 
+# Validate native and process page-size contracts
+TEST_GEN_PROGS += page_size_contract_p3s
+
 include ../../p3s_build.mk
