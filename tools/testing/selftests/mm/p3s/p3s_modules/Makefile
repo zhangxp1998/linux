@@ -7,22 +7,25 @@ ccflags-y += -I$(srctree)/mm
 # for tests, and do not turn compiler failures into SKIPs.
 include $(src)/../../../p3s_fixture_exports.mk
 
-
-
+# mremap
 obj-m += mremap_pgoff_p3s_module.o
 
+# Anonymous ownership
 obj-m += anon_exclusive_probe_p3s_module.o
 
+# GUP and iov_iter
 $(eval $(call p3s_export_fixture,gup_retry_p3s_module,pin_user_pages_unlocked))
 obj-m += iov_iter_p3s_module.o
 $(eval $(call p3s_export_fixture,fault_in_p3s_module,fault_in_readable fault_in_safe_writeable fault_in_writeable))
 obj-m += folio_within_range_p3s_module.o
 obj-m += iov_range_retry_p3s_module.o
 
+# Pagemap and pagewalk
 ifneq ($(CONFIG_MAPPING_DIRTY_HELPERS),)
 obj-m += pagewalk_p3s_module.o
 endif
 
+# PFN and device mappings
 obj-m += vm_iomap_memory_p3s_module.o
 obj-m += vm_iomap_unaligned_p3s_module.o
 obj-m += remap_pfn_cow_p3s_module.o
@@ -30,6 +33,7 @@ obj-m += pfn_insert_p3s_module.o
 obj-m += vm_map_pages_p3s_module.o
 obj-m += vmalloc_align_p3s_module.o
 
+# MMU notifier
 ifneq ($(CONFIG_MMU_NOTIFIER),)
 obj-m += mmu_notifier_p3s_module.o
 endif

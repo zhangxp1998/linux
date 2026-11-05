@@ -40,6 +40,7 @@ TEST_GEN_PROGS += \
 	mremap_commit_p3s mremap_file_slice_p3s mremap_hint_p3s mremap_rlimit_p3s \
 	mremap_slice_cow_p3s mremap_split_p3s remap_file_pages_p3s swap_slice_mremap_p3s
 TEST_GEN_FILES += mremap_pgoff_p3s
+TEST_PROGS += mremap_pgoff_p3s.sh
 
 # Check anonymous COW, fork and reverse mappings
 TEST_GEN_PROGS += \
@@ -112,12 +113,13 @@ TEST_GEN_PROGS += mincore_p3s
 
 # One kselftest entry/timeout per remaining MM fixture or mode command.
 # Non-MM commands run from their owning subsystem directories.
-P3S_SPECIAL_CASES := $(shell sh ./run_p3stests.sh --list | awk 'index($$0, "../../") == 0 && (NF != 1 || /\.sh$$/) { print NR }')
+P3S_SPECIAL_CASES := $(shell sh ./run_p3stests.sh --list | awk 'index($$0, "../../") == 0 && !/mremap_pgoff_p3s/ && (NF != 1 || /\.sh$$/) { print NR }')
 P3S_SPECIAL_PROGS := $(addprefix run_p3s_case_,$(P3S_SPECIAL_CASES))
 TEST_GEN_PROGS += $(P3S_SPECIAL_PROGS)
-TEST_PROGS += mremap_pgoff_p3s.sh
-
-TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
+TEST_FILES := README.p3s run_p3stests.sh p3s_run_module.sh \
+	p3s_run_debugfs.sh \
+	cow_notifier_p3s.sh mmu_notifier_p3s.sh \
+	vmalloc_align_p3s.sh
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
 P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
 ifneq (,$(wildcard $(KDIR)/Module.symvers))
@@ -126,15 +128,21 @@ TEST_GEN_MODS_DIR := p3s_modules
 endif
 endif
 LOCAL_HDRS += ../../kselftest_p3s.h ../../p3s_harness.h
-P3S_MM_TESTS := $(TEST_GEN_PROGS) $(TEST_GEN_FILES)
+P3S_MM_TESTS := $(filter-out $(P3S_SPECIAL_PROGS),$(TEST_GEN_PROGS) $(TEST_GEN_FILES))
+
 include ../../lib.mk
+
+$(OUTPUT)/run_p3s_case_%: run_p3stests.sh
+	@printf '#!/bin/sh\ncd "$$(dirname "$$0")" || exit 1\nexec sh ./run_p3stests.sh --case %s\n' '$*' > $@
+	@chmod +x $@
+
 P3S_MM_TARGETS := $(addprefix $(OUTPUT)/,$(P3S_MM_TESTS))
 $(P3S_MM_TARGETS): ../vm_util.c ../thp_settings.c
 $(OUTPUT)/pagemap_ioctl: ../pagemap_ioctl.c ../vm_util.c ../thp_settings.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 $(OUTPUT)/anon_vma_name_p3s $(OUTPUT)/iov_iter_p3s \
 $(OUTPUT)/mremap_pgoff_p3s: LDFLAGS += -pie
-# Add header dependencies only when their test first lands.
+# Shared headers used by userspace tests and their fixture modules.
 define p3s_test_hdrs
 $(OUTPUT)/$(1): LOCAL_HDRS += $(2)
 $(OUTPUT)/$(1): $(2)
@@ -151,14 +159,9 @@ $(eval $(call p3s_test_hdrs,mmu_notifier_p3s,mmu_notifier_p3s.h))
 $(eval $(call p3s_test_hdrs,cow_notifier_p3s,mmu_notifier_p3s.h))
 $(eval $(call p3s_test_hdrs,pagewalk_p3s,pagewalk_p3s.h))
 $(eval $(call p3s_test_hdrs,vm_map_pages_p3s,vm_map_pages_p3s.h))
-$(eval $(call p3s_test_hdrs,dontneed_refault_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,file_cow_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,hole_anon_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,packed_anon_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,packed_swap_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,uffd_copy_tuple_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,uffd_move_swap_window_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,remote_write_dontneed_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,anon_rmap_split_window_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,uffd_move_policy_p3s,p3s_tuple_test.h))
-$(eval $(call p3s_test_hdrs,swapoff_shared_slice_p3s,p3s_tuple_test.h))
+$(foreach t,dontneed_refault_p3s file_cow_p3s hole_anon_p3s packed_anon_p3s \
+	packed_swap_p3s uffd_copy_tuple_p3s uffd_move_swap_window_p3s \
+	remote_write_dontneed_p3s anon_rmap_split_window_p3s \
+	uffd_move_policy_p3s \
+	swapoff_shared_slice_p3s vmsplice_slice_p3s, \
+	$(eval $(call p3s_test_hdrs,$(t),p3s_tuple_test.h)))
