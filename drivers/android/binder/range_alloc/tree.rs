@@ -252,6 +252,9 @@ impl<T> TreeRangeAllocator<T> {
         self.free_oneway_space += free_oneway_space_add;
 
         let mut freed_range = FreedRange::interior_pages(offset, size);
+        // The mapping's partial last page has no following in-use buffer.
+        let partial_tail = self.size % PAGE_SIZE != 0;
+        let frees_partial_tail = partial_tail && offset + size == self.size;
         // Compute how large the next free region needs to be to include one more page in
         // the newly freed range.
         let add_next_page_needed = match (offset + size) % PAGE_SIZE {
@@ -268,14 +271,21 @@ impl<T> TreeRangeAllocator<T> {
         // Merge next into current if next is free
         let remove_next = match cursor.peek_next() {
             Some((_, next)) if next.state.is_none() => {
-                if next.size >= add_next_page_needed {
+                if next.size >= add_next_page_needed
+                    || (partial_tail && next.offset + next.size == self.size)
+                {
                     freed_range.end_page_idx += 1;
                 }
                 self.free_tree.remove(&(next.size, next.offset));
                 size += next.size;
                 true
             }
-            _ => false,
+            _ => {
+                if frees_partial_tail {
+                    freed_range.end_page_idx += 1;
+                }
+                false
+            }
         };
 
         if remove_next {
