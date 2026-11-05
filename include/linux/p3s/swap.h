@@ -3,7 +3,9 @@
 #define _LINUX_P3S_SWAP_H
 
 #include <linux/types.h>
+#include <linux/mm.h>
 #include <linux/swap.h>
+#include <linux/swapops.h>
 #include <linux/sort.h>
 #include <linux/p3s/const.h>
 #include <linux/p3s/mm.h>
@@ -17,6 +19,8 @@
  *
  * Several 4KB PTEs can refer to the same native swap slot. Slot zero is
  * reserved for the swap header, so it cannot match the initial value.
+ *
+ * Return: true if @entry repeats @last; update @last to @entry either way.
  */
 static inline bool p3s_swap_entry_repeats(swp_entry_t *last, swp_entry_t entry)
 {
@@ -24,6 +28,36 @@ static inline bool p3s_swap_entry_repeats(swp_entry_t *last, swp_entry_t entry)
 
 	*last = entry;
 	return repeats;
+}
+
+/**
+ * p3s_swap_pte_is_sibling - Check for another slice of the last swap slot
+ * @mm: mm being scanned
+ * @pmd: PMD that maps @addr
+ * @addr: user address of the PTE to check
+ * @last: swap entry that the scan charged last
+ *
+ * In a 4KB process, several 4KB PTEs can hold the swap entry of one native
+ * page. A scan that stops at a budget of native pages uses this to pass over
+ * the rest of the slot it charged last.
+ *
+ * Return: true if @mm is a 4KB process and the PTE at @addr holds @last.
+ */
+static inline bool p3s_swap_pte_is_sibling(struct mm_struct *mm, pmd_t *pmd,
+					   unsigned long addr, swp_entry_t last)
+{
+	/* The PTE lock protects the snapshot against concurrent changes. */
+	spinlock_t *ptl;
+	pte_t *ptep, pte;
+
+	if (!mm_is_p3s_4k(mm))
+		return false;
+	ptep = pte_offset_map_lock(mm, pmd, addr, &ptl);
+	if (!ptep)
+		return false;
+	pte = ptep_get(ptep);
+	pte_unmap_unlock(ptep, ptl);
+	return is_swap_pte(pte) && pte_to_swp_entry(pte).val == last.val;
 }
 
 /*
@@ -146,6 +180,12 @@ static inline int p3s_convert_swap_header(union swap_header *swap_header)
 #else /* !(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE && CONFIG_SWAP) */
 
 static inline bool p3s_swap_entry_repeats(swp_entry_t *last, swp_entry_t entry)
+{
+	return false;
+}
+
+static inline bool p3s_swap_pte_is_sibling(struct mm_struct *mm, pmd_t *pmd,
+					   unsigned long addr, swp_entry_t last)
 {
 	return false;
 }
