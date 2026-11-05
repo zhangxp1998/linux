@@ -13,6 +13,7 @@ struct task_struct;
 #ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
 
 #define VM_COMMIT_SHIFT PAGE_SHIFT_4KB
+#define P3S_MIN_PAGE_SHIFT PAGE_SHIFT_4KB
 
 static inline bool personality_4kb_pages(unsigned long pers)
 {
@@ -78,6 +79,7 @@ static inline unsigned long mm_reader_pages(const struct mm_struct *mm,
 #else /* !CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
 
 #define VM_COMMIT_SHIFT PAGE_SHIFT_KERNEL
+#define P3S_MIN_PAGE_SHIFT PAGE_SHIFT_KERNEL
 
 static inline unsigned int mm_pte_shift(const struct mm_struct *mm)
 {
