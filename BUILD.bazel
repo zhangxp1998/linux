@@ -45,6 +45,7 @@ load(
     "get_kunit_modules_list",
     "get_kunit_modules_superset",
 )
+load(":bazel/p3s_kselftest.bzl", "define_p3s_kselftest_modules", "define_p3s_kselftests")
 
 package(
     default_visibility = [
@@ -2550,6 +2551,16 @@ cc_binary_with_abi(
     ],
 )
 
+define_p3s_kselftests(
+    name = "kselftest_p3s",
+    kselftest_copts = _KSELFTEST_COPTS,
+    kselftest_dir = _KSELFTEST_DIR,
+)
+
+define_p3s_kselftest_modules(
+    name = "kselftest_p3s_modules_arm64_16k",
+)
+
 cc_binary_with_abi(
     name = "kselftest_size_test_get_size",
     srcs = ["tools/testing/selftests/size/get_size.c"],
@@ -3376,6 +3387,7 @@ pkg_filegroup(
         ":kselftest_net_psock_tpacket_arm64",
         ":kselftest_net_reuseaddr_conflict_arm64",
         ":kselftest_net_socket_arm64",
+        ":kselftest_p3s_arm64",
         ":kselftest_ptrace_peeksiginfo_arm64",
         ":kselftest_rtc_rtctest_arm64",
         ":kselftest_seccomp_seccomp_bpf_arm64",
@@ -3539,6 +3551,7 @@ pkg_zip(
 pkg_zip(
     name = "tests_zip_arm64_16k",
     srcs = [
+        ":kselftest_p3s_modules_arm64_16k",
         ":kselftest_tests_arm64_pkg_filegroup",
         ":kunit_tests_arm64_16k_pkg_files",
     ],

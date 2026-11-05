@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 The Android Open Source Project
+
+"""Kleaf DDK fixture modules for P3S dma kselftests."""
+
+load("//common:bazel/p3s_kselftest.bzl", "define_p3s_subsystem_modules")
+
+define_p3s_subsystem_modules(
+    name = "kselftest_p3s_modules_arm64_16k",
+    kernel_build = "//common:kernel_aarch64_16k",
+    kselftest_dir = "testcases/selftests",
+    subsys = "dma",
+    deps = ["//common:kselftest_p3s_modules_arm64_16k_hdrs"],
+)
