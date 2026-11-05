@@ -3,7 +3,9 @@
 #define _LINUX_P3S_SWAP_H
 
 #include <linux/types.h>
+#include <linux/mm.h>
 #include <linux/swap.h>
+#include <linux/swapops.h>
 #include <linux/sort.h>
 #include <linux/p3s/const.h>
 #include <linux/p3s/mm.h>
@@ -24,6 +26,23 @@ static inline bool p3s_swap_entry_repeats(swp_entry_t *last, swp_entry_t entry)
 
 	*last = entry;
 	return repeats;
+}
+
+/* After charging a native slot, only its remaining 4KB PTE siblings may pass. */
+static inline bool p3s_swap_pte_is_sibling(struct mm_struct *mm, pmd_t *pmd,
+					 unsigned long addr, swp_entry_t last)
+{
+	spinlock_t *ptl;
+	pte_t *ptep, pte;
+
+	if (!mm_is_p3s_4k(mm))
+		return false;
+	ptep = pte_offset_map_lock(mm, pmd, addr, &ptl);
+	if (!ptep)
+		return false;
+	pte = ptep_get(ptep);
+	pte_unmap_unlock(ptep, ptl);
+	return is_swap_pte(pte) && pte_to_swp_entry(pte).val == last.val;
 }
 
 /*
@@ -146,6 +165,12 @@ static inline int p3s_convert_swap_header(union swap_header *swap_header)
 #else /* !(CONFIG_ARM64_PER_PROCESS_PAGE_SIZE && CONFIG_SWAP) */
 
 static inline bool p3s_swap_entry_repeats(swp_entry_t *last, swp_entry_t entry)
+{
+	return false;
+}
+
+static inline bool p3s_swap_pte_is_sibling(struct mm_struct *mm, pmd_t *pmd,
+					 unsigned long addr, swp_entry_t last)
 {
 	return false;
 }

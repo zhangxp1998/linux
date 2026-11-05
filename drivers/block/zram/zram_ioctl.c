@@ -72,9 +72,18 @@ static int zram_process_walker(pmd_t *pmd, unsigned long start,
 	u64 nr_pages = zram->disksize >> PAGE_SHIFT;
 
 	for (addr = start; addr < end; addr += mm_pte_size(walk->mm)) {
+		if (!private->nr_remaining_pages) {
+			if (p3s_swap_pte_is_sibling(walk->mm, pmd, addr,
+						    private->last_entry))
+				continue;
+			private->next_addr = addr;
+			return 1;
+		}
+
 		ptep = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
-		if (!ptep)
+		if (!ptep) {
 			break;
+		}
 
 		pte = ptep_get(ptep);
 		pte_unmap_unlock(ptep, ptl);
@@ -126,12 +135,6 @@ static int zram_process_walker(pmd_t *pmd, unsigned long start,
 
 		if (p3s_swap_entry_repeats(&private->last_entry, entry))
 			goto unlock_swap_device;
-		if (private->nr_remaining_pages == 0) {
-			private->next_addr = addr;
-			put_swap_device(sis);
-			return 1;
-		}
-
 		if (cmd == ZRAM_ANDROID_IOC_PROCESS_RANGE_WRITEBACK) {
 			/* Use PAGE_WRITEBACK for single index */
 			scan_slots_for_writeback(zram, 0, index, index+1,
