@@ -23,6 +23,9 @@ TEST_GEN_PROGS :=
 TEST_GEN_FILES :=
 TEST_PROGS :=
 
+# Validate native and process page-size contracts
+TEST_GEN_PROGS += page_size_contract_p3s
+
 
 TEST_FILES := 
 LOCAL_HDRS += ../../kselftest_p3s.h ../../p3s_harness.h
