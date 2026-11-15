@@ -77,6 +77,9 @@ TEST_PROGS += pfn_insert_p3s.sh remap_pfn_cow_p3s.sh vm_iomap_memory_p3s.sh vm_m
 TEST_GEN_FILES += mmu_notifier_p3s cow_notifier_p3s
 TEST_PROGS += cow_notifier_p3s.sh mmu_notifier_p3s.sh
 
+# Check mincore residency in process pages
+TEST_GEN_PROGS += mincore_p3s
+
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
 P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
