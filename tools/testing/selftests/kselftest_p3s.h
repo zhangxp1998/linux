@@ -93,6 +93,13 @@ static inline bool p3s_is_4kb_process(void)
 	       p3s_mmu_page_size() == PROCESS_PAGE_SIZE;
 }
 
+/* Hard precondition of every 4KB-side test body. */
+static inline void p3s_require_4kb(void)
+{
+	if (!p3s_is_4kb_process())
+		ksft_exit_skip("P3S 4KB process unavailable\n");
+}
+
 /* Re-exec /proc/self/exe with the 4KB bit set or cleared.  -1 with errno. */
 static inline int p3s_execv(bool four_kb, char *const argv[])
 {
