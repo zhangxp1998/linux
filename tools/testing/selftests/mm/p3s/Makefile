@@ -52,6 +52,11 @@ TEST_GEN_FILES += \
 	fault_in_p3s folio_within_range_p3s gup_retry_p3s iov_iter_p3s \
 	iov_range_retry_p3s mmap_action_cleanup_p3s page_range_p3s
 
+# Check remote MM access and process release
+TEST_GEN_PROGS += \
+	mixed_context_switch_p3s mixed_mm_access_p3s process_madvise_p3s \
+	process_mrelease_p3s process_vm_access_p3s remote_write_dontneed_p3s
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh
@@ -84,4 +89,5 @@ $(eval $(call p3s_test_hdrs,cow_notifier_p3s,mmu_notifier_p3s.h))
 $(eval $(call p3s_test_hdrs,dontneed_refault_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,hole_anon_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,packed_anon_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,remote_write_dontneed_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,anon_rmap_split_window_p3s,p3s_tuple_test.h))
