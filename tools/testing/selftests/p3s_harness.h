@@ -5,6 +5,20 @@
 #include "kselftest_p3s.h"
 #include "kselftest_harness.h"
 
+/* Remove a test-specific first argument without disturbing harness options. */
+static inline char *p3s_harness_take_positional(int *argc, char ***argv)
+{
+	char *value;
+
+	if (*argc < 2 || (*argv)[1][0] == '-')
+		return NULL;
+	value = (*argv)[1];
+	(*argv)[1] = (*argv)[0];
+	(*argv)++;
+	(*argc)--;
+	return value;
+}
+
 static inline bool p3s_harness_listing(int argc, char **argv)
 {
 	int i;
@@ -84,6 +98,7 @@ static inline void p3s_harness_require_native_4kb(void)
 /* One entry for normal tests, native controls, and child-only roles. */
 static inline int p3s_harness_entry(int argc, char **argv,
 				    int (*role)(int, char **),
+				    void (*setup)(int *, char ***),
 				    bool native_default,
 				    bool native_control)
 {
@@ -95,6 +110,7 @@ static inline int p3s_harness_entry(int argc, char **argv,
 	}
 #ifndef __aarch64__
 	(void)role;
+	(void)setup;
 	(void)native_default;
 	(void)native_control;
 	ksft_print_header();
@@ -173,6 +189,8 @@ static inline int p3s_harness_entry(int argc, char **argv,
 	}
 	if (!native)
 		p3s_harness_require_4kb();
+	if (setup)
+		setup(&argc, &argv);
 	return test_harness_run(argc, argv);
 #endif
 }
@@ -189,12 +207,17 @@ static inline int p3s_harness_entry(int argc, char **argv,
 #define P3S_HARNESS_NATIVE_CONTROL 0
 #endif
 
+#ifndef P3S_HARNESS_SETUP
+#define P3S_HARNESS_SETUP NULL
+#endif
+
 #define P3S_HARNESS_4KB_MAIN			\
 int main(int argc, char **argv)			\
 {						\
 	return p3s_harness_entry(argc, \
 				 argv, \
 				 P3S_HARNESS_ROLE, \
+				 P3S_HARNESS_SETUP, \
 				 P3S_HARNESS_DEFAULT_NATIVE, \
 				 P3S_HARNESS_NATIVE_CONTROL); \
 }
