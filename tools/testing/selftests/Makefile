@@ -7,6 +7,7 @@ TARGETS += android/p3s
 TARGETS += arm64
 TARGETS += arm64/mte/p3s
 TARGETS += bpf
+TARGETS += bpf/p3s
 TARGETS += breakpoints
 TARGETS += cachestat
 TARGETS += capabilities
