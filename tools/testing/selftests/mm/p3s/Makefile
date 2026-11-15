@@ -31,7 +31,7 @@ TEST_GEN_PROGS += mmap_hint_p3s mmap_page_zero_p3s stack_guard_gap_p3s
 
 # Check VMA slice offsets, merges and unmaps
 TEST_GEN_PROGS += \
-	devzero_slice_p3s munmap_p3s print_vma_addr_p3s \
+	devzero_slice_p3s mbind_p3s munmap_p3s print_vma_addr_p3s \
 	vma_merge_devzero_p3s vma_merge_file_slice_p3s vma_merge_next_pgoff_p3s \
 	vma_range_slice_p3s
 
