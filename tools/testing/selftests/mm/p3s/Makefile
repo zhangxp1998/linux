@@ -29,6 +29,12 @@ TEST_GEN_PROGS += page_size_contract_p3s
 # Check process-page mmap placement and stack guards
 TEST_GEN_PROGS += mmap_hint_p3s mmap_page_zero_p3s stack_guard_gap_p3s
 
+# Check VMA slice offsets, merges and unmaps
+TEST_GEN_PROGS += \
+	devzero_slice_p3s munmap_p3s print_vma_addr_p3s \
+	vma_merge_devzero_p3s vma_merge_file_slice_p3s vma_merge_next_pgoff_p3s \
+	vma_range_slice_p3s
+
 
 TEST_FILES := 
 LOCAL_HDRS += ../../kselftest_p3s.h ../../p3s_harness.h
@@ -36,3 +42,5 @@ P3S_MM_TESTS := $(TEST_GEN_PROGS) $(TEST_GEN_FILES)
 include ../../lib.mk
 P3S_MM_TARGETS := $(addprefix $(OUTPUT)/,$(P3S_MM_TESTS))
 $(P3S_MM_TARGETS): ../vm_util.c ../thp_settings.c
+$(OUTPUT)/anon_vma_name_p3s $(OUTPUT)/iov_iter_p3s \
+$(OUTPUT)/mremap_pgoff_p3s: LDFLAGS += -pie
