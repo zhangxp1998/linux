@@ -27,6 +27,26 @@ TEST_GEN_PROGS += mmap_hint_p3s stack_guard_gap_p3s
 # Check VMA slice offsets, merges and unmaps
 TEST_GEN_PROGS += mbind_p3s munmap_p3s print_vma_addr_p3s vma_merge_devzero_p3s vma_merge_file_slice_p3s vma_merge_next_pgoff_p3s vma_range_slice_p3s
 
+# Exercise sliced mremap and file-offset moves
+TEST_GEN_PROGS += mremap_anon_holes_p3s mremap_file_slice_p3s mremap_hint_p3s mremap_rlimit_p3s mremap_slice_cow_p3s mremap_split_p3s remap_file_pages_p3s swap_slice_mremap_p3s
+TEST_GEN_FILES += mremap_pgoff_p3s
+TEST_PROGS += mremap_pgoff_p3s.sh
+
+TEST_FILES := p3s_run_module.sh
+KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
+P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
+ifneq (,$(wildcard $(KDIR)/Module.symvers))
+ifneq (,$(wildcard $(P3S_KERNEL_SOURCE)/include/linux/p3s.h))
+TEST_GEN_MODS_DIR := p3s_modules
+endif
+endif
 P3S_USE_MM_UTIL := 1
 
 include ../../p3s_build.mk
+
+# Shared headers used by userspace tests and their fixture modules.
+define p3s_test_hdrs
+$(OUTPUT)/$(1): LOCAL_HDRS += $(2)
+$(OUTPUT)/$(1): $(2)
+endef
+$(foreach t,mremap_anon_holes_p3s,   $(eval $(call p3s_test_hdrs,$(t),p3s_slice_test.h)))

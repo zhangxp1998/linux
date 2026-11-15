@@ -246,4 +246,19 @@ static inline bool pwrite_full(int fd, const void *buffer, size_t size,
 	return true;
 }
 
+/* Test fixtures (device nodes, debugfs files, ...) */
+
+/* An error from opening a fixture that means "not on this system". */
+static inline bool p3s_fixture_unavailable(int error)
+{
+	return error == ENOENT || error == ENXIO || error == ENODEV ||
+	       error == ENOTDIR || error == EACCES || error == EPERM;
+}
+
+/* open(2) a fixture with O_CLOEXEC; -1 with errno preserved on failure. */
+static inline int p3s_open_fixture(const char *path, int flags)
+{
+	return open(path, flags | O_CLOEXEC);
+}
+
 #endif /* __KSELFTEST_P3S_H */
