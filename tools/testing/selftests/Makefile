@@ -127,6 +127,7 @@ TARGETS += signal
 TARGETS += size
 TARGETS += sparc64
 TARGETS += splice
+TARGETS += splice/p3s
 TARGETS += static_keys
 TARGETS += sync
 TARGETS += syscall_user_dispatch
