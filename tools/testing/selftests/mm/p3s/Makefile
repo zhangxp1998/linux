@@ -73,6 +73,14 @@ TEST_GEN_PROGS += mlock_file_slices_p3s mlock_large_file_p3s mlock_onfault_p3s m
 TEST_GEN_PROGS += madvise_free_holes_p3s madvise_free_p3s madvise_guard_p3s madvise_remove_p3s
 TEST_GEN_FILES += madv_cold_large_file_p3s madvise_willneed_p3s
 
+# Check reclaim and swap at slice boundaries
+TEST_GEN_PROGS += \
+	anon_pageout_p3s packed_swap_p3s partial_anon_reclaim_p3s swap_badpages_loop_p3s \
+	swap_header_badpages_p3s swap_header_p3s swap_pss_p3s swap_vma_readahead_p3s \
+	swapoff_shared_slice_p3s
+TEST_GEN_FILES += memory_failure_anon_p3s mglru_folded_p3s mglru_p3s
+TEST_PROGS += mglru_p3s.sh mglru_folded_p3s.sh
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
@@ -107,5 +115,7 @@ $(eval $(call p3s_test_hdrs,dontneed_refault_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,file_cow_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,hole_anon_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,packed_anon_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,packed_swap_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,remote_write_dontneed_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,anon_rmap_split_window_p3s,p3s_tuple_test.h))
+$(eval $(call p3s_test_hdrs,swapoff_shared_slice_p3s,p3s_tuple_test.h))
