@@ -28,7 +28,7 @@ TEST_GEN_PROGS += mmap_hint_p3s stack_guard_gap_p3s
 TEST_GEN_PROGS += mbind_p3s munmap_p3s print_vma_addr_p3s vma_merge_devzero_p3s vma_merge_file_slice_p3s vma_merge_next_pgoff_p3s vma_range_slice_p3s
 
 # Exercise sliced mremap and file-offset moves
-TEST_GEN_PROGS += mremap_anon_holes_p3s mremap_file_slice_p3s mremap_hint_p3s mremap_rlimit_p3s mremap_slice_cow_p3s mremap_split_p3s remap_file_pages_p3s swap_slice_mremap_p3s
+TEST_GEN_PROGS += mremap_anon_holes_p3s mremap_commit_p3s mremap_file_slice_p3s mremap_hint_p3s mremap_rlimit_p3s mremap_slice_cow_p3s mremap_split_p3s remap_file_pages_p3s swap_slice_mremap_p3s
 TEST_GEN_FILES += mremap_pgoff_p3s
 TEST_PROGS += mremap_pgoff_p3s.sh
 
