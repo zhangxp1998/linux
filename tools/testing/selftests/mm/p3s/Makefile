@@ -47,6 +47,11 @@ TEST_GEN_PROGS += \
 	fork_page_size_p3s hole_anon_p3s packed_anon_p3s zero_sibling_mlock_p3s
 TEST_GEN_FILES += cow_notifier_p3s rmap_file_referenced_p3s
 
+# Exercise GUP and iov_iter slice boundaries
+TEST_GEN_FILES += \
+	fault_in_p3s folio_within_range_p3s gup_retry_p3s iov_iter_p3s \
+	iov_range_retry_p3s mmap_action_cleanup_p3s page_range_p3s
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh
@@ -69,6 +74,12 @@ define p3s_test_hdrs
 $(OUTPUT)/$(1): LOCAL_HDRS += $(2)
 $(OUTPUT)/$(1): $(2)
 endef
+$(eval $(call p3s_test_hdrs,fault_in_p3s,fault_in_p3s.h))
+$(eval $(call p3s_test_hdrs,folio_within_range_p3s,folio_within_range_p3s.h))
+$(eval $(call p3s_test_hdrs,gup_retry_p3s,gup_retry_p3s.h))
+$(eval $(call p3s_test_hdrs,iov_iter_p3s,iov_iter_p3s.h))
+$(eval $(call p3s_test_hdrs,iov_range_retry_p3s,iov_range_retry_p3s.h))
+$(eval $(call p3s_test_hdrs,page_range_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,cow_notifier_p3s,mmu_notifier_p3s.h))
 $(eval $(call p3s_test_hdrs,dontneed_refault_p3s,p3s_tuple_test.h))
 $(eval $(call p3s_test_hdrs,hole_anon_p3s,p3s_tuple_test.h))

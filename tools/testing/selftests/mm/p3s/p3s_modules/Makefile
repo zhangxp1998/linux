@@ -5,12 +5,19 @@ ccflags-y += -I$(srctree)/mm
 
 # Fixtures must use the exports of the tested kernel; do not add exports only
 # for tests, and do not turn compiler failures into SKIPs.
+include $(src)/../../../p3s_fixture_exports.mk
 
 
 
 obj-m += mremap_pgoff_p3s_module.o
 
 obj-m += anon_exclusive_probe_p3s_module.o
+
+$(eval $(call p3s_export_fixture,gup_retry_p3s_module,pin_user_pages_unlocked))
+obj-m += iov_iter_p3s_module.o
+$(eval $(call p3s_export_fixture,fault_in_p3s_module,fault_in_readable fault_in_safe_writeable fault_in_writeable))
+obj-m += folio_within_range_p3s_module.o
+obj-m += iov_range_retry_p3s_module.o
 
 else # userspace selftest build
 
