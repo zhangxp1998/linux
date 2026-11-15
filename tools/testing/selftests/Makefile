@@ -97,6 +97,7 @@ TARGETS += net/rds
 TARGETS += net/tcp_ao
 TARGETS += nolibc
 TARGETS += nsfs
+TARGETS += pci/p3s
 TARGETS += pci_endpoint
 TARGETS += pcie_bwctrl
 TARGETS += perf_events
