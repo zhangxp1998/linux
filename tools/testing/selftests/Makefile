@@ -83,6 +83,7 @@ TARGETS += mqueue
 TARGETS += mseal_system_mappings
 TARGETS += nci
 TARGETS += net
+TARGETS += net/p3s
 TARGETS += net/af_unix
 TARGETS += net/can
 TARGETS += net/forwarding
