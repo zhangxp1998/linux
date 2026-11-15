@@ -51,6 +51,7 @@ TARGETS += fpu
 TARGETS += ftrace
 TARGETS += ftrace/p3s
 TARGETS += futex
+TARGETS += futex/p3s
 TARGETS += gpio
 TARGETS += hid
 TARGETS += intel_pstate
