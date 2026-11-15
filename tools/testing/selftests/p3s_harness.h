@@ -84,6 +84,7 @@ static inline void p3s_harness_require_native_4kb(void)
 /* One entry for normal tests, native controls, and child-only roles. */
 static inline int p3s_harness_entry(int argc, char **argv,
 				    int (*role)(int, char **),
+				    bool native_default,
 				    bool native_control)
 {
 	p3s_argv0 = argv[0];
@@ -94,6 +95,7 @@ static inline int p3s_harness_entry(int argc, char **argv,
 	}
 #ifndef __aarch64__
 	(void)role;
+	(void)native_default;
 	(void)native_control;
 	ksft_print_header();
 	ksft_exit_skip("requires arm64 16K native / P3S 4K geometry\n");
@@ -117,12 +119,12 @@ static inline int p3s_harness_entry(int argc, char **argv,
 		optind = 1;
 	}
 	if (p3s_harness_has_flag(argc, argv, "--native") &&
-	    !native_control) {
+	    !native_default && !native_control) {
 		ksft_print_header();
 		ksft_exit_skip("this test requires a 4KB process\n");
 	}
 	native_requested = p3s_harness_has_flag(argc, argv, "--native");
-	native = native_requested;
+	native = native_default || native_requested;
 	if (native) {
 		if (p3s_is_4kb_process()) {
 			if (reexec) {
@@ -179,6 +181,10 @@ static inline int p3s_harness_entry(int argc, char **argv,
 #define P3S_HARNESS_ROLE NULL
 #endif
 
+#ifndef P3S_HARNESS_DEFAULT_NATIVE
+#define P3S_HARNESS_DEFAULT_NATIVE 0
+#endif
+
 #ifndef P3S_HARNESS_NATIVE_CONTROL
 #define P3S_HARNESS_NATIVE_CONTROL 0
 #endif
@@ -189,6 +195,7 @@ int main(int argc, char **argv)			\
 	return p3s_harness_entry(argc, \
 				 argv, \
 				 P3S_HARNESS_ROLE, \
+				 P3S_HARNESS_DEFAULT_NATIVE, \
 				 P3S_HARNESS_NATIVE_CONTROL); \
 }
 

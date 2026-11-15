@@ -24,4 +24,9 @@ TEST_GEN_PROGS += page_size_contract_p3s
 # Check process-page mmap placement and stack guards
 TEST_GEN_PROGS += mmap_hint_p3s stack_guard_gap_p3s
 
+# Check VMA slice offsets, merges and unmaps
+TEST_GEN_PROGS += munmap_p3s print_vma_addr_p3s vma_merge_devzero_p3s vma_merge_file_slice_p3s vma_merge_next_pgoff_p3s vma_range_slice_p3s
+
+P3S_USE_MM_UTIL := 1
+
 include ../../p3s_build.mk

@@ -210,4 +210,40 @@ static inline bool read_full(int fd, void *buffer, size_t size)
 	return true;
 }
 
+static inline bool write_full(int fd, const void *buffer, size_t size)
+{
+	const unsigned char *position = buffer;
+
+	while (size) {
+		ssize_t bytes = write(fd, position, size);
+
+		if (bytes < 0 && errno == EINTR)
+			continue;
+		if (bytes <= 0)
+			return false;
+		position += bytes;
+		size -= bytes;
+	}
+	return true;
+}
+
+static inline bool pwrite_full(int fd, const void *buffer, size_t size,
+			       off_t offset)
+{
+	const unsigned char *position = buffer;
+
+	while (size) {
+		ssize_t bytes = pwrite(fd, position, size, offset);
+
+		if (bytes < 0 && errno == EINTR)
+			continue;
+		if (bytes <= 0)
+			return false;
+		position += bytes;
+		offset += bytes;
+		size -= bytes;
+	}
+	return true;
+}
+
 #endif /* __KSELFTEST_P3S_H */
