@@ -35,8 +35,22 @@ TEST_GEN_PROGS += \
 	vma_merge_devzero_p3s vma_merge_file_slice_p3s vma_merge_next_pgoff_p3s \
 	vma_range_slice_p3s
 
+# Exercise sliced mremap and file-offset moves
+TEST_GEN_PROGS += \
+	mremap_file_slice_p3s mremap_hint_p3s mremap_rlimit_p3s \
+	mremap_slice_cow_p3s mremap_split_p3s remap_file_pages_p3s swap_slice_mremap_p3s
+TEST_GEN_FILES += mremap_pgoff_p3s
 
-TEST_FILES := 
+TEST_PROGS += mremap_pgoff_p3s.sh
+
+TEST_FILES := p3s_run_module.sh
+KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
+P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
+ifneq (,$(wildcard $(KDIR)/Module.symvers))
+ifneq (,$(wildcard $(P3S_KERNEL_SOURCE)/include/linux/p3s.h))
+TEST_GEN_MODS_DIR := p3s_modules
+endif
+endif
 LOCAL_HDRS += ../../kselftest_p3s.h ../../p3s_harness.h
 P3S_MM_TESTS := $(TEST_GEN_PROGS) $(TEST_GEN_FILES)
 include ../../lib.mk
