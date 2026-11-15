@@ -114,6 +114,7 @@ TARGETS += pstore
 TARGETS += ptrace
 TARGETS += openat2
 TARGETS += resctrl
+TARGETS += ring-buffer/p3s
 TARGETS += riscv
 TARGETS += rlimits
 TARGETS += rseq
