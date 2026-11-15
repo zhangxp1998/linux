@@ -69,6 +69,7 @@ TARGETS += lib
 TARGETS += livepatch
 TARGETS += lkdtm
 TARGETS += lsm
+TARGETS += lsm/p3s
 TARGETS += membarrier
 TARGETS += memfd
 TARGETS += memory-hotplug
