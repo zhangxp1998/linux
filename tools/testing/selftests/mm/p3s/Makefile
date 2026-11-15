@@ -73,6 +73,10 @@ TEST_GEN_FILES += pagemap_ioctl
 TEST_GEN_FILES += pfn_insert_p3s remap_pfn_cow_p3s vm_iomap_memory_p3s vm_map_pages_p3s vmalloc_align_p3s
 TEST_PROGS += pfn_insert_p3s.sh remap_pfn_cow_p3s.sh vm_iomap_memory_p3s.sh vm_map_pages_p3s.sh vmalloc_align_p3s.sh
 
+# Validate notifier ranges and cleanup
+TEST_GEN_FILES += mmu_notifier_p3s cow_notifier_p3s
+TEST_PROGS += cow_notifier_p3s.sh mmu_notifier_p3s.sh
+
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
 P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
@@ -102,5 +106,7 @@ $(eval $(call p3s_test_hdrs,iov_range_retry_p3s,iov_range_retry_p3s.h))
 $(eval $(call p3s_test_hdrs,page_range_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,file_cow_refs_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(eval $(call p3s_test_hdrs,vm_iomap_memory_p3s,vm_iomap_memory_p3s.h))
+$(eval $(call p3s_test_hdrs,mmu_notifier_p3s,mmu_notifier_p3s.h))
+$(eval $(call p3s_test_hdrs,cow_notifier_p3s,mmu_notifier_p3s.h))
 $(eval $(call p3s_test_hdrs,vm_map_pages_p3s,vm_map_pages_p3s.h))
 $(foreach t,mremap_anon_holes_p3s process_vm_packed_p3s madvise_free_holes_p3s uffd_move_packed_p3s dontneed_refault_p3s file_cow_p3s hole_anon_p3s packed_anon_p3s packed_swap_p3s uffd_copy_tuple_p3s uffd_move_swap_window_p3s remote_write_dontneed_p3s anon_rmap_split_window_p3s uffd_move_policy_p3s anon_pageout_p3s partial_anon_reclaim_p3s swap_pss_p3s swap_vma_readahead_p3s swapoff_shared_slice_p3s,   $(eval $(call p3s_test_hdrs,$(t),p3s_slice_test.h)))

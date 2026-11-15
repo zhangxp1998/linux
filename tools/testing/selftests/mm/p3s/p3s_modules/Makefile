@@ -27,6 +27,7 @@ obj-m += vmalloc_align_p3s_module.o
 
 # MMU notifier
 ifneq ($(CONFIG_MMU_NOTIFIER),)
+$(eval $(call p3s_export_fixture,mmu_notifier_p3s_module,mmu_notifier_register mmu_notifier_unregister))
 endif
 
 else # userspace selftest build
