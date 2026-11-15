@@ -5,6 +5,7 @@ TARGETS += alsa/p3s
 TARGETS += amd-pstate
 TARGETS += android/p3s
 TARGETS += arm64
+TARGETS += arm64/mte/p3s
 TARGETS += bpf
 TARGETS += breakpoints
 TARGETS += cachestat
