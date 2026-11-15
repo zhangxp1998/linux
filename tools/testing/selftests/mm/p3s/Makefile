@@ -50,6 +50,9 @@ TEST_GEN_PROGS += rmap_file_referenced_p3s
 TEST_PROGS += file_cow_refs_p3s.sh
 TEST_GEN_PROGS += shmem_thp_mmap_p3s
 
+# Check page locking across folio slices
+TEST_GEN_PROGS += mlock_file_slices_p3s mlock_large_file_p3s mlock_onfault_p3s mlock_reclaim_p3s
+
 TEST_FILES := p3s_run_module.sh
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
 P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
