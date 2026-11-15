@@ -66,6 +66,9 @@ ifeq ($(ARCH),arm64)
 TEST_GEN_PROGS += shmem_thp_mmap_p3s
 endif
 
+# Check page locking across folio slices
+TEST_GEN_PROGS += mlock_file_slices_p3s mlock_large_file_p3s mlock_onfault_p3s mlock_reclaim_p3s
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh
