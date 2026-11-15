@@ -74,6 +74,7 @@ TARGETS += lsm/p3s
 TARGETS += membarrier
 TARGETS += media_tests/p3s
 TARGETS += memfd
+TARGETS += memfd/p3s
 TARGETS += memory-hotplug
 TARGETS += mincore
 TARGETS += mount
