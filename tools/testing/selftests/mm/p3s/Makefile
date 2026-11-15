@@ -21,4 +21,7 @@ TEST_PROGS :=
 # Validate native and process page-size contracts
 TEST_GEN_PROGS += page_size_contract_p3s
 
+# Check process-page mmap placement and stack guards
+TEST_GEN_PROGS += mmap_hint_p3s stack_guard_gap_p3s
+
 include ../../p3s_build.mk
