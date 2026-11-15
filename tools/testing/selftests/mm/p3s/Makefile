@@ -107,6 +107,9 @@ TEST_GEN_FILES += \
 # Validate notifier ranges and cleanup
 TEST_GEN_FILES += mmu_notifier_p3s
 
+# Check mincore residency in process pages
+TEST_GEN_PROGS += mincore_p3s
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
