@@ -55,6 +55,7 @@ TARGETS += futex/p3s
 TARGETS += gpio
 TARGETS += hid
 TARGETS += intel_pstate
+TARGETS += io_uring/p3s
 TARGETS += iommu
 TARGETS += ipc
 TARGETS += ir
