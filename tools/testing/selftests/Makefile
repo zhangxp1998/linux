@@ -102,6 +102,7 @@ TARGETS += pci/p3s
 TARGETS += pci_endpoint
 TARGETS += pcie_bwctrl
 TARGETS += perf_events
+TARGETS += perf_events/p3s
 TARGETS += pidfd
 TARGETS += pid_namespace
 TARGETS += power_supply
