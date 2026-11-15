@@ -30,6 +30,10 @@ obj-m += pfn_insert_p3s_module.o
 obj-m += vm_map_pages_p3s_module.o
 obj-m += vmalloc_align_p3s_module.o
 
+ifneq ($(CONFIG_MMU_NOTIFIER),)
+obj-m += mmu_notifier_p3s_module.o
+endif
+
 else # userspace selftest build
 
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
