@@ -72,6 +72,7 @@ TARGETS += lkdtm
 TARGETS += lsm
 TARGETS += lsm/p3s
 TARGETS += membarrier
+TARGETS += media_tests/p3s
 TARGETS += memfd
 TARGETS += memory-hotplug
 TARGETS += mincore
