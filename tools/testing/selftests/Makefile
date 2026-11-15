@@ -108,6 +108,7 @@ TARGETS += power_supply
 TARGETS += powerpc
 TARGETS += prctl
 TARGETS += proc
+TARGETS += proc/p3s
 TARGETS += pstore
 TARGETS += ptrace
 TARGETS += openat2
