@@ -35,6 +35,11 @@ TEST_PROGS += mremap_pgoff_p3s.sh
 # Check anonymous COW, fork and reverse mappings
 TEST_GEN_PROGS += anon_rmap_split_window_p3s dontneed_refault_p3s fork_dontfork_slice_p3s fork_page_size_p3s hole_anon_p3s packed_anon_p3s zero_sibling_mlock_p3s
 
+# Exercise GUP and iov_iter slice boundaries
+TEST_GEN_FILES += fault_in_p3s vma_address_end_p3s gup_retry_p3s iov_iter_p3s iov_range_retry_p3s mmap_fail_p3s page_range_p3s
+
+TEST_PROGS += fault_in_p3s.sh gup_retry_p3s.sh iov_iter_p3s.sh iov_range_retry_p3s.sh mmap_fail_p3s.sh page_range_p3s.sh vma_address_end_p3s.sh
+
 TEST_FILES := p3s_run_module.sh
 KDIR ?= $(if $(O),$(O),/lib/modules/$(shell uname -r)/build)
 P3S_KERNEL_SOURCE ?= $(if $(wildcard $(KDIR)/source),$(realpath $(KDIR)/source),$(KDIR))
@@ -52,4 +57,10 @@ define p3s_test_hdrs
 $(OUTPUT)/$(1): LOCAL_HDRS += $(2)
 $(OUTPUT)/$(1): $(2)
 endef
+$(eval $(call p3s_test_hdrs,fault_in_p3s,fault_in_p3s.h))
+$(eval $(call p3s_test_hdrs,vma_address_end_p3s,vma_address_end_p3s.h))
+$(eval $(call p3s_test_hdrs,gup_retry_p3s,gup_retry_p3s.h))
+$(eval $(call p3s_test_hdrs,iov_iter_p3s,iov_iter_p3s.h))
+$(eval $(call p3s_test_hdrs,iov_range_retry_p3s,iov_range_retry_p3s.h))
+$(eval $(call p3s_test_hdrs,page_range_p3s,iov_iter_p3s.h page_range_p3s.h))
 $(foreach t,mremap_anon_holes_p3s dontneed_refault_p3s hole_anon_p3s packed_anon_p3s anon_rmap_split_window_p3s,   $(eval $(call p3s_test_hdrs,$(t),p3s_slice_test.h)))
