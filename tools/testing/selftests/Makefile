@@ -25,6 +25,7 @@ TARGETS += dma/p3s
 TARGETS += dmabuf-heaps
 TARGETS += dmabuf-heaps/p3s
 TARGETS += drivers/dma-buf
+TARGETS += drivers/gpu/p3s
 TARGETS += drivers/ntsync
 TARGETS += drivers/s390x/uvdevice
 TARGETS += drivers/net
