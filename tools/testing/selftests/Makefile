@@ -49,6 +49,7 @@ TARGETS += filesystems/fuse
 TARGETS += firmware
 TARGETS += fpu
 TARGETS += ftrace
+TARGETS += ftrace/p3s
 TARGETS += futex
 TARGETS += gpio
 TARGETS += hid
