@@ -60,6 +60,7 @@ TARGETS += iommu
 TARGETS += ipc
 TARGETS += ir
 TARGETS += kcmp
+TARGETS += kcov/p3s
 TARGETS += kexec
 TARGETS += kselftest_harness
 TARGETS += kvm
