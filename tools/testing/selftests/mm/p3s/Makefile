@@ -81,6 +81,9 @@ TEST_GEN_PROGS += \
 TEST_GEN_FILES += memory_failure_anon_p3s mglru_folded_p3s mglru_p3s
 TEST_PROGS += mglru_p3s.sh mglru_folded_p3s.sh
 
+# Check native mTHP under mixed geometry
+TEST_GEN_PROGS += devzero_mthp_p3s mthp_native_anon_p3s
+
 TEST_PROGS += mremap_pgoff_p3s.sh
 
 TEST_FILES := p3s_run_module.sh p3s_run_debugfs.sh
