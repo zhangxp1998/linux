@@ -3,6 +3,7 @@ TARGETS += acct
 TARGETS += alsa
 TARGETS += alsa/p3s
 TARGETS += amd-pstate
+TARGETS += android/p3s
 TARGETS += arm64
 TARGETS += bpf
 TARGETS += breakpoints
