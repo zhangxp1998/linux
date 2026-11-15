@@ -37,7 +37,7 @@ TEST_GEN_PROGS += \
 
 # Exercise sliced mremap and file-offset moves
 TEST_GEN_PROGS += \
-	mremap_file_slice_p3s mremap_hint_p3s mremap_rlimit_p3s \
+	mremap_commit_p3s mremap_file_slice_p3s mremap_hint_p3s mremap_rlimit_p3s \
 	mremap_slice_cow_p3s mremap_split_p3s remap_file_pages_p3s swap_slice_mremap_p3s
 TEST_GEN_FILES += mremap_pgoff_p3s
 
