@@ -23,6 +23,7 @@ TARGETS += devices/error_logs
 TARGETS += devices/probe
 TARGETS += dma/p3s
 TARGETS += dmabuf-heaps
+TARGETS += dmabuf-heaps/p3s
 TARGETS += drivers/dma-buf
 TARGETS += drivers/ntsync
 TARGETS += drivers/s390x/uvdevice
