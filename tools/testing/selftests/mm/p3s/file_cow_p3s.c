@@ -2,13 +2,16 @@
 /*
  * Private file COW in a 4K compat process preserves each slice's contents
  * and isolation across fork, mprotect, mremap, pageout, truncate, ptrace
- * writes and PTE-table edges. The slices need not share one folio.
+ * writes and PTE-table edges. Exclusive COW slices of a file folio can share
+ * one anonymous folio, while shared or externally referenced copies stay
+ * separate.
  */
 #define _GNU_SOURCE
 
 #include <signal.h>
 #include <sys/ptrace.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 
 #include "p3s_tuple_test.h"
@@ -786,6 +789,170 @@ static bool run_one_test(unsigned int test)
 TEST(file_cow_full_tuple)
 {
 	EXPECT_TRUE(full_tuple());
+}
+
+TEST(file_cow_packs_slices)
+{
+	const unsigned int order[P3S_SLICES] = { 2, 0, 3, 1 };
+	const unsigned char written[P3S_SLICES] = { 0x71, 0x72, 0x73, 0x74 };
+	unsigned int written_mask = 0;
+	uint64_t file_pfns[P3S_SLICES], cow_pfns[P3S_SLICES];
+	unsigned char *map;
+	int fd;
+
+	fd = pattern_file(NATIVE_PAGE_SIZE);
+	ASSERT_GE(fd, 0);
+	map = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE, fd, 0);
+	ASSERT_NE(map, MAP_FAILED);
+	for (unsigned int i = 0; i < P3S_SLICES; i++)
+		ASSERT_EQ(map[i * PROCESS_PAGE_SIZE], 0x20 + i);
+	if (!read_pfns(map, file_pfns) || !file_pfns[0]) {
+		munmap(map, NATIVE_PAGE_SIZE);
+		close(fd);
+		SKIP(return, "visible pagemap PFNs required");
+	}
+	ASSERT_TRUE(same_pfn(file_pfns));
+
+	for (unsigned int n = 0; n < P3S_SLICES; n++) {
+		unsigned int slice = order[n];
+
+		map[slice * PROCESS_PAGE_SIZE] = written[slice];
+		written_mask |= 1U << slice;
+		ASSERT_TRUE(read_pfns(map, cow_pfns));
+		ASSERT_NE(cow_pfns[slice], file_pfns[0]);
+		for (unsigned int i = 0; i < P3S_SLICES; i++)
+			EXPECT_EQ(cow_pfns[i],
+				  (written_mask & (1U << i)) ?
+				  cow_pfns[order[0]] : file_pfns[0]);
+		ASSERT_TRUE(verify_pattern(map, written, written_mask));
+	}
+	munmap(map, NATIVE_PAGE_SIZE);
+	close(fd);
+}
+
+TEST(file_cow_packs_offset_window)
+{
+	uint64_t before[P3S_SLICES], after[P3S_SLICES];
+	unsigned char *map;
+	int fd;
+
+	fd = pattern_file(2 * NATIVE_PAGE_SIZE);
+	ASSERT_GE(fd, 0);
+	map = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE, fd, PROCESS_PAGE_SIZE);
+	ASSERT_NE(map, MAP_FAILED);
+	for (unsigned int i = 0; i < P3S_SLICES; i++)
+		ASSERT_EQ(map[i * PROCESS_PAGE_SIZE], 0x21 + i);
+	if (!read_pfns(map, before) || !before[0]) {
+		munmap(map, NATIVE_PAGE_SIZE);
+		close(fd);
+		SKIP(return, "visible pagemap PFNs required");
+	}
+	ASSERT_EQ(before[0], before[1]);
+	ASSERT_EQ(before[1], before[2]);
+	ASSERT_NE(before[2], before[3]);
+
+	map[2 * PROCESS_PAGE_SIZE] = 0x72;
+	map[0] = 0x70;
+	map[PROCESS_PAGE_SIZE] = 0x71;
+	ASSERT_TRUE(read_pfns(map, after));
+	EXPECT_EQ(after[0], after[1]);
+	EXPECT_EQ(after[1], after[2]);
+	EXPECT_NE(after[0], before[0]);
+	EXPECT_EQ(after[3], before[3]);
+	for (unsigned long offset = 0; offset < NATIVE_PAGE_SIZE; offset++) {
+		unsigned int slice = offset / PROCESS_PAGE_SIZE;
+		unsigned char expected = 0x21 + slice;
+
+		if (slice < 3 && !(offset % PROCESS_PAGE_SIZE))
+			expected = 0x70 + slice;
+		ASSERT_EQ(map[offset], expected);
+	}
+	munmap(map, NATIVE_PAGE_SIZE);
+	close(fd);
+}
+
+TEST(file_cow_fork_prevents_reuse)
+{
+	uint64_t before[P3S_SLICES], after[P3S_SLICES];
+	unsigned char *map;
+	int signal_pipe[2], child_status;
+	pid_t child;
+	char go = 1;
+	bool passed;
+	int fd;
+
+	fd = pattern_file(NATIVE_PAGE_SIZE);
+	ASSERT_GE(fd, 0);
+	map = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE, fd, 0);
+	ASSERT_NE(map, MAP_FAILED);
+	for (unsigned int i = 0; i < P3S_SLICES; i++)
+		ASSERT_EQ(map[i * PROCESS_PAGE_SIZE], 0x20 + i);
+	map[0] = 0x70;
+	if (!read_pfns(map, before) || !before[0]) {
+		munmap(map, NATIVE_PAGE_SIZE);
+		close(fd);
+		SKIP(return, "visible pagemap PFNs required");
+	}
+	ASSERT_EQ(pipe(signal_pipe), 0);
+	child = fork();
+	ASSERT_GE(child, 0);
+	if (!child) {
+		close(signal_pipe[1]);
+		if (read(signal_pipe[0], &go, 1) != 1)
+			_exit(1);
+		_exit(map[0] == 0x70 && map[PROCESS_PAGE_SIZE] == 0x21 ? 0 : 1);
+	}
+	close(signal_pipe[0]);
+	map[PROCESS_PAGE_SIZE] = 0x71;
+	passed = read_pfns(map, after) && after[0] == before[0] &&
+		 after[1] != after[0] && after[1] != before[1];
+	passed &= write(signal_pipe[1], &go, 1) == 1;
+	close(signal_pipe[1]);
+	passed &= waitpid(child, &child_status, 0) == child &&
+		  WIFEXITED(child_status) && !WEXITSTATUS(child_status);
+	EXPECT_TRUE(passed);
+	munmap(map, NATIVE_PAGE_SIZE);
+	close(fd);
+}
+
+TEST(file_cow_held_ref_prevents_reuse)
+{
+	uint64_t before[P3S_SLICES], after[P3S_SLICES];
+	unsigned char *map;
+	struct iovec iov;
+	int data_pipe[2];
+	char byte;
+	int fd;
+
+	fd = pattern_file(NATIVE_PAGE_SIZE);
+	ASSERT_GE(fd, 0);
+	map = mmap(NULL, NATIVE_PAGE_SIZE, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE, fd, 0);
+	ASSERT_NE(map, MAP_FAILED);
+	for (unsigned int i = 0; i < P3S_SLICES; i++)
+		ASSERT_EQ(map[i * PROCESS_PAGE_SIZE], 0x20 + i);
+	map[0] = 0x70;
+	if (!read_pfns(map, before) || !before[0]) {
+		munmap(map, NATIVE_PAGE_SIZE);
+		close(fd);
+		SKIP(return, "visible pagemap PFNs required");
+	}
+	ASSERT_EQ(pipe(data_pipe), 0);
+	iov = (struct iovec) { .iov_base = map, .iov_len = 1 };
+	ASSERT_EQ(syscall(SYS_vmsplice, data_pipe[1], &iov, 1, 0), 1);
+	map[PROCESS_PAGE_SIZE] = 0x71;
+	ASSERT_TRUE(read_pfns(map, after));
+	EXPECT_NE(after[0], after[1]);
+	EXPECT_NE(after[1], before[1]);
+	ASSERT_EQ(read(data_pipe[0], &byte, 1), 1);
+	EXPECT_EQ(byte, 0x70);
+	close(data_pipe[0]);
+	close(data_pipe[1]);
+	munmap(map, NATIVE_PAGE_SIZE);
+	close(fd);
 }
 
 TEST(file_cow_mixed_file_and_anon)
