@@ -750,6 +750,87 @@ static inline bool p3s_wp_reuse_zero_folio(struct folio *new_folio,
 }
 
 /*
+ * Reuse an anonymous sibling for a private file mapping's first COW. The
+ * source copy is already in @new_folio, so the file PTE can be rechecked and
+ * replaced exactly as in wp_page_copy(). Only the faulting 4KB slice is
+ * copied: the other file PTEs must keep mapping the page cache until written.
+ *
+ * Keep the folio locked across the copy and rmap update. The page table lock
+ * protects the sibling PTEs, and the exact refcount check excludes existing
+ * GUP pins or references to unmapped slices. If either lock or ownership
+ * check fails, leave the PTE untouched and use the ordinary COW allocation.
+ */
+static inline bool p3s_wp_reuse_file_folio(struct folio *new_folio,
+					   struct folio *old_folio,
+					   struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct folio *existing;
+	unsigned int nr_slices;
+	unsigned long start, offset;
+	pte_t *pte_base, entry;
+
+	if (!vma_is_p3s_4k(vma) || !vma->vm_file ||
+	    (vma->vm_flags & (VM_SHARED | VM_MTE)) ||
+	    !old_folio || folio_test_anon(old_folio) ||
+	    unlikely(userfaultfd_armed(vma)) ||
+	    (vmf->flags & FAULT_FLAG_UNSHARE))
+		return false;
+
+	existing = p3s_anon_folio_lookaround_pte(vma, vmf->pte,
+						vmf->address);
+	if (!existing)
+		return false;
+	if (!folio_trylock(existing))
+		goto put_existing;
+
+	vma_folio_slice_bounds(vma, vmf->address, &nr_slices, &start);
+	pte_base = vmf->pte - ((vmf->address - start) >> PAGE_SHIFT_4KB);
+	if (!folio_test_anon(existing) || folio_test_large(existing) ||
+	    folio_test_ksm(existing) || folio_test_hwpoison(existing) ||
+	    folio_test_swapcache(existing) ||
+	    !PageAnonExclusive(&existing->page) ||
+	    folio_anon_vma(existing)->root != vma->anon_vma->root ||
+	    folio_pgoff(existing) !=
+		vma_linear_page_index(vma, vmf->address) ||
+	    p3s_count_folio_slices(vma, pte_base, start, nr_slices,
+				   existing) != folio_mapcount(existing) ||
+	    folio_ref_count(existing) != folio_mapcount(existing) + 1)
+		goto unlock_existing;
+
+	offset = (unsigned long)vma_slice_offset(vma, vmf->address) <<
+		 PAGE_SHIFT_4KB;
+	memcpy(folio_address(existing) + offset,
+	       folio_address(new_folio) + offset, PAGE_SIZE_4KB);
+	flush_dcache_folio(existing);
+	/* Publish the copied slice before its PTE can expose it. */
+	smp_wmb();
+
+	entry = vma_pte_add_slice(vma, vmf->address,
+				  folio_mk_pte(existing, vma->vm_page_prot));
+	entry = pte_sw_mkyoung(entry);
+	entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+	flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
+	ptep_clear_flush(vma, vmf->address, vmf->pte);
+	folio_add_anon_rmap_pte(existing, &existing->page, vma,
+				vmf->address, RMAP_NONE);
+	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+	update_mmu_cache_range(vmf, vma, vmf->address, vmf->pte, 1);
+	folio_remove_rmap_pte(old_folio, vmf->page, vma);
+
+	folio_unlock(existing);
+	/* The PTE owns the lookaround reference, not the temporary COW copy. */
+	folio_put(new_folio);
+	return true;
+
+unlock_existing:
+	folio_unlock(existing);
+put_existing:
+	folio_put(existing);
+	return false;
+}
+
+/*
  * p3s_wp_install_folio_slices - Map a COW copy or reuse a zero-page sibling
  * @new_folio: Copy of @old_folio or a zeroed folio, holding its allocation
  *             reference
@@ -796,6 +877,8 @@ static inline bool p3s_wp_install_folio_slices(struct folio *new_folio,
 
 	if (!old_folio)
 		return p3s_wp_reuse_zero_folio(new_folio, vmf);
+	if (!folio_test_anon(old_folio))
+		return p3s_wp_reuse_file_folio(new_folio, old_folio, vmf);
 	if (!p3s_wp_slice_bounds(old_folio, vmf, &nr_slices, &start_addr))
 		return false;
 
