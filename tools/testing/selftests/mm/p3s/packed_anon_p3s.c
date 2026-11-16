@@ -240,8 +240,7 @@ static bool mremap_handles_packed_tuple(bool same_slice)
 		passed = moved == dst && verify(dst) && read_pfns(dst, pfn) &&
 			 same_pfn(pfn);
 	else
-		passed = moved == MAP_FAILED && errno == EINVAL && verify(src) &&
-			 read_pfns(src, pfn) && same_pfn(pfn);
+		passed = moved == dst && verify(dst);
 
 out:
 	if (src_reservation)
@@ -1135,7 +1134,7 @@ TEST(packed_anon_same_phase_mremap)
 	EXPECT_TRUE(mremap_handles_packed_tuple(true));
 }
 
-TEST(packed_anon_cross_phase_mremap_rejected)
+TEST(packed_anon_cross_phase_mremap_copies)
 {
 	EXPECT_TRUE(mremap_handles_packed_tuple(false));
 }

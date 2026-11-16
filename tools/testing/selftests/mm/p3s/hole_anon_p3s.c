@@ -71,14 +71,14 @@ static bool mremap_tuple(bool shifted)
 		goto out;
 	dst = dst_area + (shifted ? PROCESS_PAGE_SIZE : 0);
 	fill_tuple(src, 0x41);
-	memset(dst, 0x69, NATIVE_PAGE_SIZE);
+	memset(dst_area, 0x69, 2 * NATIVE_PAGE_SIZE);
 	errno = 0;
 	moved = mremap(src, NATIVE_PAGE_SIZE, NATIVE_PAGE_SIZE,
 		       MREMAP_MAYMOVE | MREMAP_FIXED, dst);
 	if (shifted)
-		passed = moved == MAP_FAILED && errno == EINVAL &&
-			 check_tuple(src, 0x41) &&
-			 all_bytes_are(dst, NATIVE_PAGE_SIZE, 0x69);
+		passed = moved == dst && check_tuple(dst, 0x41) &&
+			 dst_area[0] == 0x69 &&
+			 dst[NATIVE_PAGE_SIZE] == 0x69;
 	else
 		passed = moved == dst && check_tuple(dst, 0x41) &&
 			 read_pfns(dst, pfn) && same_pfn(pfn);
@@ -111,10 +111,13 @@ static bool mremap_zero_tuple_shifted(void)
 		goto out;
 	moved = mremap(src, NATIVE_PAGE_SIZE, NATIVE_PAGE_SIZE,
 		       MREMAP_MAYMOVE | MREMAP_FIXED, dst);
-	if (moved != MAP_FAILED || errno != EINVAL)
+	if (moved != dst)
 		goto out;
-	dst = dst_area;
-	moved = mremap(src, NATIVE_PAGE_SIZE, NATIVE_PAGE_SIZE,
+	for (slice = 0; slice < P3S_SLICES; slice++)
+		if (dst[slice * PROCESS_PAGE_SIZE])
+			goto out;
+	dst = dst_area + 2 * NATIVE_PAGE_SIZE;
+	moved = mremap(moved, NATIVE_PAGE_SIZE, NATIVE_PAGE_SIZE,
 		       MREMAP_MAYMOVE | MREMAP_FIXED, dst);
 	if (moved != dst)
 		goto out;
@@ -156,8 +159,10 @@ static bool mremap_dontunmap_slices(void)
 		moved = mremap(src_page, PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
 				MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP,
 				dst_page);
-		if (moved != MAP_FAILED || errno != EINVAL || src_page[0] != value)
+		if (moved != dst_page || dst_page[0] != value ||
+		    dst_page[PROCESS_PAGE_SIZE - 1] != value || src_page[0] != 0)
 			goto out;
+		memset(src_page, value, PROCESS_PAGE_SIZE);
 		dst_page = dst_area + src_slice * PROCESS_PAGE_SIZE;
 		moved = mremap(src_page, PROCESS_PAGE_SIZE, PROCESS_PAGE_SIZE,
 			      MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP,
@@ -399,7 +404,7 @@ TEST(hole_anon_aligned_mremap)
 	EXPECT_TRUE(mremap_tuple(false));
 }
 
-TEST(hole_anon_cross_phase_mremap_rejected)
+TEST(hole_anon_cross_phase_mremap_copies)
 {
 	EXPECT_TRUE(mremap_tuple(true));
 }

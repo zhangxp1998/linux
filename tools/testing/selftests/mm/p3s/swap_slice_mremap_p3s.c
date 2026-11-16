@@ -85,7 +85,7 @@ FIXTURE_TEARDOWN(swap_move)
 		munmap(self->src_mapping, LENGTH + NATIVE_PAGE_SIZE);
 }
 
-TEST_F(swap_move, cross_slice_move_is_rejected)
+TEST_F(swap_move, cross_slice_move_rejects_swapped_ptes)
 {
 	void *moved;
 	int error;
@@ -96,7 +96,8 @@ TEST_F(swap_move, cross_slice_move_is_rejected)
 		       self->dst + PROCESS_PAGE_SIZE);
 	error = errno;
 	EXPECT_EQ(MAP_FAILED, moved);
-	EXPECT_EQ(EINVAL, error);
+	EXPECT_EQ(EOPNOTSUPP, error);
+	EXPECT_TRUE(swapped_range(self->src));
 }
 
 TEST_F(swap_move, same_slice_move_keeps_data)

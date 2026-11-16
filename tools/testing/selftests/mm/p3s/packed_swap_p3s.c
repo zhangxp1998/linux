@@ -952,7 +952,7 @@ static bool near_capacity_swap_pressure(void)
 	return passed;
 }
 
-/* Reject phase changes, then move the same swap PTEs without faulting them. */
+/* Reject copying swapped PTEs, then move them at the same phase. */
 static bool swapped_misaligned_mremap(void)
 {
 	struct mapping source = map_tuples(2 * NATIVE_PAGE_SIZE);
@@ -986,8 +986,17 @@ static bool swapped_misaligned_mremap(void)
 	moved = mremap(source.base, 2 * NATIVE_PAGE_SIZE, 2 * NATIVE_PAGE_SIZE,
 		       MREMAP_MAYMOVE | MREMAP_FIXED,
 		       target.base + PROCESS_PAGE_SIZE);
-	if (moved != MAP_FAILED || errno != EINVAL)
+	if (moved != MAP_FAILED || errno != EOPNOTSUPP)
 		goto out;
+	for (slice = 0; slice < 2 * P3S_SLICES; slice++) {
+		uint64_t entry;
+		uintptr_t addr = (uintptr_t)source.base + slice * PROCESS_PAGE_SIZE;
+
+		if (pread(fd, &entry, sizeof(entry),
+			  (addr / PROCESS_PAGE_SIZE) * sizeof(entry)) != sizeof(entry) ||
+		    (entry & PM_PRESENT) || !(entry & PM_SWAP))
+			goto out;
+	}
 	/* A same-phase move must still preserve the swapped slices. */
 	moved = mremap(source.base, 2 * NATIVE_PAGE_SIZE, 2 * NATIVE_PAGE_SIZE,
 		       MREMAP_MAYMOVE | MREMAP_FIXED, target.base);
