@@ -21,13 +21,10 @@ unsigned long __get_unmapped_area(struct file *file, unsigned long addr,
  * @new_addr: MREMAP_FIXED destination
  *
  * File and object mappings keep their backing offset without copying pages.
- * For anonymous mappings in a 4KB process, @new_addr must be at the same
- * slice of a 16KB-aligned window as @old_addr (see
- * mm_mremap_get_unmapped_area()). Copying the pages to new folios at
- * other slices would break get_user_pages() and DMA pins on the old
- * folios. Android ART's MREMAP_FIXED users,
- * MarkCompact::KernelPrepareRangeForUffd (2MB-aligned ranges) and
- * MemMap::ReplaceWith (16KB-aligned mmap() addresses), always meet this.
+ * For anonymous mappings in a 4KB process, a same-slice move can transfer
+ * the PTEs unchanged. A cross-slice MREMAP_FIXED move needs new folios;
+ * mm/mremap.c only copies exclusively owned pages without GUP/DMA references.
+ * Nonfixed moves retain the source slice so they can use the ordinary path.
  */
 static inline bool mm_mremap_fixed_keeps_slice(const struct vm_area_struct *vma,
 					       unsigned long old_addr,
@@ -76,8 +73,8 @@ static inline bool mm_mremap_fixed_keeps_slice(const struct vm_area_struct *vma,
  * the 16KB window that contains it.
  *
  * An MREMAP_FIXED @addr goes to __get_unmapped_area() unchanged.
- * check_prep_vma() rejects cross-slice anonymous moves before unmapping the
- * destination. File and object mappings retain their source slice instead.
+ * File and object mappings retain their source slice; a phase-changing
+ * private anonymous mapping is copied to new folios by mm/mremap.c.
  */
 static inline unsigned long mm_mremap_get_unmapped_area(struct file *file,
 		unsigned long addr, unsigned long len, unsigned long pgoff,

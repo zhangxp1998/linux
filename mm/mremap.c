@@ -25,6 +25,9 @@
 #include <linux/uaccess.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/mempolicy.h>
+#include <linux/memcontrol.h>
+#include <linux/rmap.h>
+#include <linux/slab.h>
 #include <linux/page_size_compat.h>
 
 #include <asm/cacheflush.h>
@@ -876,6 +879,453 @@ again:
 	return pmc_progress(pmc);
 }
 
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+struct p3s_mremap_slot {
+	pte_t pte;
+	struct folio *old_folio;
+	bool copy;
+	bool old_locked;
+};
+
+/* The source and destination have different 4K phases within a 16K folio. */
+static bool p3s_mremap_copy_needed(struct vm_area_struct *vma,
+				  unsigned long old_addr,
+				  unsigned long new_addr)
+{
+	return !mm_mremap_fixed_keeps_slice(vma, old_addr, new_addr);
+}
+
+static unsigned long p3s_mremap_folio_index(unsigned long new_addr,
+					    unsigned long addr)
+{
+	return ((addr & PAGE_MASK_KERNEL) - (new_addr & PAGE_MASK_KERNEL)) >>
+		PAGE_SHIFT_KERNEL;
+}
+
+/* Only ordinary private anonymous pages and the shared zero page can move. */
+static int p3s_mremap_snapshot(struct vm_area_struct *vma,
+			      unsigned long addr, struct p3s_mremap_slot *slot)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	struct folio *folio;
+	spinlock_t *ptl;
+	pmd_t *pmd;
+	pte_t *ptep, pte;
+
+	pmd = get_old_pmd(mm, addr);
+	if (!pmd) {
+		slot->pte = __pte(0);
+		return 0;
+	}
+	if (pmd_trans_huge(*pmd) || is_swap_pmd(*pmd) || pmd_leaf(*pmd))
+		return -EOPNOTSUPP;
+	ptep = pte_offset_map_lock(mm, pmd, addr, &ptl);
+	if (!ptep)
+		return -EAGAIN;
+	pte = ptep_get(ptep);
+	slot->pte = pte;
+	if (pte_none(pte))
+		goto out;
+	if (!pte_present(pte)) {
+		pte_unmap_unlock(ptep, ptl);
+		return -EOPNOTSUPP;
+	}
+	folio = vm_normal_folio(vma, addr, pte);
+	if (!folio) {
+		if (is_zero_pfn(pte_pfn(pte)))
+			goto out;
+		pte_unmap_unlock(ptep, ptl);
+		return -EOPNOTSUPP;
+	}
+	if (!folio_test_anon(folio) || folio_test_large(folio) ||
+	    folio_test_ksm(folio) || folio_test_hwpoison(folio) ||
+	    folio_test_swapcache(folio) ||
+	    !PageAnonExclusive(&folio->page) ||
+	    folio_maybe_dma_pinned(folio)) {
+		pte_unmap_unlock(ptep, ptl);
+		return -EBUSY;
+	}
+	/* A corrupt old phase must not be baked into an apparently valid copy. */
+	if ((__pte_to_phys(pte) & ~PAGE_MASK_KERNEL) !=
+	    (phys_addr_t)vma_slice_offset(vma, addr) << PAGE_SHIFT_4KB) {
+		pte_unmap_unlock(ptep, ptl);
+		return -EINVAL;
+	}
+	slot->copy = true;
+out:
+	pte_unmap_unlock(ptep, ptl);
+	return 0;
+}
+
+/* Keep every page-table allocation and folio allocation before PTE removal. */
+static int p3s_mremap_prepare(struct vm_area_struct *old_vma,
+			     struct vm_area_struct *new_vma,
+			     unsigned long old_addr, unsigned long new_addr,
+			     unsigned long nr, struct p3s_mremap_slot *slots,
+			     struct folio **folios)
+{
+	struct mm_struct *mm = old_vma->vm_mm;
+	unsigned long i;
+
+	for (i = 0; i < nr; i++) {
+		unsigned long src = old_addr + (i << PAGE_SHIFT_4KB);
+		unsigned long dst = new_addr + (i << PAGE_SHIFT_4KB);
+		unsigned long index = p3s_mremap_folio_index(new_addr, dst);
+		spinlock_t *ptl;
+		pte_t *ptep;
+		int err;
+
+		err = p3s_mremap_snapshot(old_vma, src, &slots[i]);
+		if (err)
+			return err;
+		if (pte_none(slots[i].pte))
+			continue;
+
+		ptep = get_locked_pte(mm, dst, &ptl);
+		if (!ptep)
+			return -ENOMEM;
+		err = pte_none(ptep_get(ptep)) ? 0 : -EAGAIN;
+		pte_unmap_unlock(ptep, ptl);
+		if (err)
+			return err;
+		if (!slots[i].copy || folios[index])
+			continue;
+
+		folios[index] = vma_alloc_zeroed_movable_folio(new_vma, dst);
+		if (!folios[index])
+			return -ENOMEM;
+		if (mem_cgroup_charge(folios[index], mm, GFP_KERNEL)) {
+			folio_put(folios[index]);
+			folios[index] = NULL;
+			return -ENOMEM;
+		}
+		/* Later PTE/rmap additions must keep this anon folio locked. */
+		folio_lock(folios[index]);
+		folio_throttle_swaprate(folios[index], GFP_KERNEL);
+	}
+	return 0;
+}
+
+static bool p3s_mremap_owns_folio(struct mm_struct *mm,
+				 struct p3s_mremap_slot *slots,
+				 unsigned long old_addr, unsigned long nr,
+				 unsigned long i)
+{
+	struct folio *folio = slots[i].old_folio;
+	unsigned long addr = old_addr + (i << PAGE_SHIFT_4KB);
+	unsigned long first_addr = addr & PAGE_MASK_KERNEL;
+	unsigned long last_addr = first_addr + PAGE_SIZE_KERNEL;
+	unsigned long old_end = old_addr + (nr << PAGE_SHIFT_4KB);
+	unsigned long j, count = 0;
+
+	for (j = first_addr; j < last_addr; j += PAGE_SIZE_4KB) {
+		spinlock_t *ptl;
+		pmd_t *pmd;
+		pte_t *ptep, pte;
+
+		if (j >= old_addr && j < old_end) {
+			count += slots[(j - old_addr) >> PAGE_SHIFT_4KB].old_folio == folio;
+			continue;
+		}
+		pmd = get_old_pmd(mm, j);
+		if (!pmd || pmd_trans_huge(*pmd) || is_swap_pmd(*pmd) ||
+		    pmd_leaf(*pmd))
+			continue;
+		ptep = pte_offset_map_lock(mm, pmd, j, &ptl);
+		if (!ptep)
+			return false;
+		pte = ptep_get(ptep);
+		if (pte_present(pte) &&
+		    (__pte_to_phys(pte) & PAGE_MASK_KERNEL) ==
+		    (phys_addr_t)folio_pfn(folio) << PAGE_SHIFT_KERNEL) {
+			/* A sibling mapped at another phase is not ours to copy. */
+			if ((__pte_to_phys(pte) & ~PAGE_MASK_KERNEL) !=
+			    (j & ~PAGE_MASK_KERNEL)) {
+				pte_unmap_unlock(ptep, ptl);
+				return false;
+			}
+			count++;
+		}
+		pte_unmap_unlock(ptep, ptl);
+	}
+	return count == folio_mapcount(folio);
+}
+
+static void p3s_mremap_restore(struct vm_area_struct *vma,
+			      unsigned long addr, unsigned long nr,
+			      struct p3s_mremap_slot *slots)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	unsigned long i;
+
+	for (i = 0; i < nr; i++, addr += PAGE_SIZE_4KB) {
+		spinlock_t *ptl;
+		pmd_t *pmd;
+		pte_t *ptep;
+
+		if (pte_none(slots[i].pte))
+			continue;
+		pmd = get_old_pmd(mm, addr);
+		ptep = pte_offset_map_lock(mm, pmd, addr, &ptl);
+		VM_BUG_ON(!ptep || !pte_none(ptep_get(ptep)));
+		set_pte_at(mm, addr, ptep, slots[i].pte);
+		update_mmu_cache(vma, addr, ptep);
+		pte_unmap_unlock(ptep, ptl);
+	}
+}
+
+/*
+ * Unlike a PTE move, a phase-changing remap needs new physical slices.
+ * Preallocation cannot protect against GUP-fast, so clear and flush every
+ * source PTE before checking its final references and copying its data.
+ * Keep old rmap/refcounts until all checks and copies have succeeded; on
+ * failure the original PTEs can then be restored without any allocation.
+ */
+static int p3s_mremap_copy(struct vm_area_struct *old_vma,
+			  struct vm_area_struct *new_vma,
+			  unsigned long old_addr, unsigned long new_addr,
+			  unsigned long len)
+{
+	struct mm_struct *mm = old_vma->vm_mm;
+	struct mmu_notifier_range range;
+	struct p3s_mremap_slot *slots;
+	struct folio **folios;
+	unsigned long nr = len >> PAGE_SHIFT_4KB;
+	unsigned long folio_nr, i;
+	bool cleared = false;
+	int err = 0;
+
+	folio_nr = DIV_ROUND_UP((new_addr & ~PAGE_MASK_KERNEL) + len,
+				PAGE_SIZE_KERNEL);
+	slots = kvcalloc(nr, sizeof(*slots), GFP_KERNEL);
+	if (!slots)
+		return -ENOMEM;
+	folios = kvcalloc(folio_nr, sizeof(*folios), GFP_KERNEL);
+	if (!folios) {
+		err = -ENOMEM;
+		goto free_slots;
+	}
+	err = p3s_mremap_prepare(old_vma, new_vma, old_addr, new_addr,
+				 nr, slots, folios);
+	if (err)
+		goto free_folios;
+
+	/* Drain transient LRU/mlock-batch references before the final check. */
+	lru_add_drain();
+	flush_cache_range(old_vma, old_addr, old_addr + len);
+	mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, mm,
+				old_addr, old_addr + len);
+	mmu_notifier_invalidate_range_start(&range);
+	if (old_vma->anon_vma)
+		anon_vma_lock_write(old_vma->anon_vma);
+
+	/* Rmap walkers cannot migrate or reclaim these folios while locked. */
+	for (i = 0; i < nr; i++) {
+		unsigned long addr = old_addr + (i << PAGE_SHIFT_4KB);
+		spinlock_t *ptl;
+		pmd_t *pmd;
+		pte_t *ptep, pte;
+
+		if (pte_none(slots[i].pte))
+			continue;
+		pmd = get_old_pmd(mm, addr);
+		if (!pmd) {
+			err = -EAGAIN;
+			goto unlock;
+		}
+		ptep = pte_offset_map_lock(mm, pmd, addr, &ptl);
+		if (!ptep) {
+			err = -EAGAIN;
+			goto unlock;
+		}
+		pte = ptep_get(ptep);
+		if (!pte_present(pte) || pte_pfn(pte) !=
+		    pte_pfn(slots[i].pte)) {
+			err = -EAGAIN;
+			goto unlock_pte;
+		}
+		slots[i].pte = pte;
+		if (slots[i].copy) {
+			slots[i].old_folio = vm_normal_folio(old_vma, addr, pte);
+			if (!slots[i].old_folio ||
+			    !PageAnonExclusive(&slots[i].old_folio->page)) {
+				err = -EBUSY;
+				goto unlock_pte;
+			}
+		}
+unlock_pte:
+		pte_unmap_unlock(ptep, ptl);
+		if (err)
+			goto unlock;
+	}
+
+	for (i = 0; i < nr; i++) {
+		unsigned long addr = old_addr + (i << PAGE_SHIFT_4KB);
+		spinlock_t *ptl;
+		pmd_t *pmd;
+		pte_t *ptep;
+
+		if (pte_none(slots[i].pte))
+			continue;
+		pmd = get_old_pmd(mm, addr);
+		ptep = pte_offset_map_lock(mm, pmd, addr, &ptl);
+		VM_BUG_ON(!ptep);
+		slots[i].pte = ptep_get_and_clear(mm, addr, ptep);
+		pte_unmap_unlock(ptep, ptl);
+	}
+	cleared = true;
+	flush_tlb_range(old_vma, old_addr, old_addr + len);
+
+	/* Trylocking avoids waiting behind a reclaimer holding this folio. */
+	for (i = 0; i < nr; i++) {
+		struct folio *folio = slots[i].old_folio;
+		unsigned long addr = old_addr + (i << PAGE_SHIFT_4KB);
+		unsigned long first = max(old_addr, addr & PAGE_MASK_KERNEL);
+		unsigned long j;
+
+		if (!folio)
+			continue;
+		for (j = (first - old_addr) >> PAGE_SHIFT_4KB; j < i; j++)
+			if (slots[j].old_folio == folio)
+				break;
+		if (j < i)
+			continue;
+		if (!folio_trylock(folio)) {
+			err = -EBUSY;
+			goto restore;
+		}
+		slots[i].old_locked = true;
+	}
+
+	for (i = 0; i < nr; i++) {
+		struct folio *folio = slots[i].old_folio;
+
+		if (!folio)
+			continue;
+		if (!PageAnonExclusive(&folio->page) ||
+		    folio_test_large(folio) || folio_test_ksm(folio) ||
+		    folio_test_swapcache(folio) ||
+		    folio_test_hwpoison(folio) ||
+		    folio_maybe_dma_pinned(folio) ||
+		    folio_ref_count(folio) != folio_mapcount(folio) ||
+		    !p3s_mremap_owns_folio(mm, slots, old_addr, nr, i)) {
+			err = -EBUSY;
+			goto restore;
+		}
+	}
+
+	for (i = 0; i < nr; i++) {
+		struct folio *src = slots[i].old_folio;
+		struct folio *dst;
+		unsigned long dst_addr;
+		phys_addr_t src_off;
+		void *from, *to;
+
+		if (!src)
+			continue;
+		dst_addr = new_addr + (i << PAGE_SHIFT_4KB);
+		dst = folios[p3s_mremap_folio_index(new_addr, dst_addr)];
+		src_off = __pte_to_phys(slots[i].pte) & ~PAGE_MASK_KERNEL;
+		from = folio_address(src) + src_off;
+		to = folio_address(dst) +
+			((unsigned long)vma_slice_offset(new_vma, dst_addr) <<
+			 PAGE_SHIFT_4KB);
+		if (copy_mc_to_kernel(to, from, PAGE_SIZE_4KB)) {
+			err = -EHWPOISON;
+			goto restore;
+		}
+	}
+	for (i = 0; i < folio_nr; i++)
+		if (folios[i]) {
+			flush_dcache_folio(folios[i]);
+			__folio_mark_uptodate(folios[i]);
+		}
+
+	for (i = 0; i < nr; i++) {
+		unsigned long dst_addr = new_addr + (i << PAGE_SHIFT_4KB);
+		struct folio *dst;
+		spinlock_t *ptl;
+		pte_t *ptep, entry;
+		phys_addr_t dst_phys;
+
+		if (pte_none(slots[i].pte))
+			continue;
+		ptep = get_locked_pte(mm, dst_addr, &ptl);
+		VM_BUG_ON(!ptep || !pte_none(ptep_get(ptep)));
+		entry = move_soft_dirty_pte(slots[i].pte);
+		dst = folios[p3s_mremap_folio_index(new_addr, dst_addr)];
+		if (slots[i].old_folio) {
+			unsigned long slice = vma_slice_offset(new_vma, dst_addr);
+
+			dst_phys = (phys_addr_t)folio_pfn(dst) << PAGE_SHIFT_KERNEL;
+			dst_phys += slice << PAGE_SHIFT_4KB;
+			entry = pte_advance_phys(entry,
+				 dst_phys - __pte_to_phys(entry));
+			if (!folio_test_anon(dst)) {
+				folio_add_new_anon_rmap(dst, new_vma,
+							dst_addr, RMAP_EXCLUSIVE);
+				folio_add_lru_vma(dst, new_vma);
+			} else {
+				folio_get(dst);
+				folio_add_anon_rmap_pte(dst, &dst->page,
+							new_vma, dst_addr,
+							RMAP_EXCLUSIVE);
+			}
+			inc_mm_counter(mm, MM_ANONPAGES);
+		}
+		set_pte_at(mm, dst_addr, ptep, entry);
+		update_mmu_cache(new_vma, dst_addr, ptep);
+		pte_unmap_unlock(ptep, ptl);
+	}
+
+	/* No source PTE remains; release the old PTE-owned rmap and references. */
+	for (i = 0; i < nr; i++) {
+		unsigned long addr = old_addr + (i << PAGE_SHIFT_4KB);
+		spinlock_t *ptl;
+		pmd_t *pmd;
+		pte_t *ptep;
+
+		if (!slots[i].old_folio)
+			continue;
+		pmd = get_old_pmd(mm, addr);
+		ptep = pte_offset_map_lock(mm, pmd, addr, &ptl);
+		VM_BUG_ON(!ptep || !pte_none(ptep_get(ptep)));
+		folio_remove_rmap_pte(slots[i].old_folio,
+					    &slots[i].old_folio->page, old_vma);
+		dec_mm_counter(mm, MM_ANONPAGES);
+		pte_unmap_unlock(ptep, ptl);
+	}
+	goto unlock;
+
+restore:
+	if (cleared)
+		p3s_mremap_restore(old_vma, old_addr, nr, slots);
+unlock:
+	if (old_vma->anon_vma)
+		anon_vma_unlock_write(old_vma->anon_vma);
+	mmu_notifier_invalidate_range_end(&range);
+	for (i = 0; i < nr; i++)
+		if (slots[i].old_locked)
+			folio_unlock(slots[i].old_folio);
+	if (!err)
+		for (i = 0; i < nr; i++)
+			if (slots[i].old_folio)
+				folio_put(slots[i].old_folio);
+free_folios:
+	for (i = 0; i < folio_nr; i++) {
+		if (!folios[i])
+			continue;
+		folio_unlock(folios[i]);
+		if (!folio_test_anon(folios[i]))
+			folio_put(folios[i]);
+	}
+	kvfree(folios);
+free_slots:
+	kvfree(slots);
+	return err;
+}
+#endif /* CONFIG_ARM64_PER_PROCESS_PAGE_SIZE */
+
 /* Set vrm->delta to the difference in VMA size specified by user. */
 static void vrm_set_delta(struct vma_remap_struct *vrm)
 {
@@ -1187,8 +1637,13 @@ static int copy_vma_and_data(struct vma_remap_struct *vrm,
 	unsigned long moved_len;
 	struct vm_area_struct *vma = vrm->vma;
 	struct vm_area_struct *new_vma;
+	bool p3s_copy = false;
 	int err = 0;
 	PAGETABLE_MOVE(pmc, NULL, NULL, vrm->addr, vrm->new_addr, vrm->old_len);
+
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+	p3s_copy = p3s_mremap_copy_needed(vma, vrm->addr, vrm->new_addr);
+#endif
 
 	new_vma = copy_vma(&vma, vrm->addr, vrm->new_addr, vrm->new_len,
 			   new_pgoff,
@@ -1206,23 +1661,29 @@ static int copy_vma_and_data(struct vma_remap_struct *vrm,
 	pmc.old = vma;
 	pmc.new = new_vma;
 
-	moved_len = move_page_tables(&pmc);
-	if (moved_len < vrm->old_len)
-		err = -ENOMEM;
-	else if (vma->vm_ops && vma->vm_ops->mremap)
-		err = vma->vm_ops->mremap(new_vma);
+	if (p3s_copy) {
+#ifdef CONFIG_ARM64_PER_PROCESS_PAGE_SIZE
+		err = p3s_mremap_copy(vma, new_vma, vrm->addr,
+				      vrm->new_addr, vrm->old_len);
+#endif
+		moved_len = 0;
+	} else {
+		moved_len = move_page_tables(&pmc);
+		if (moved_len < vrm->old_len)
+			err = -ENOMEM;
+		else if (vma->vm_ops && vma->vm_ops->mremap)
+			err = vma->vm_ops->mremap(new_vma);
+	}
 
 	if (unlikely(err)) {
-		PAGETABLE_MOVE(pmc_revert, new_vma, vma, vrm->new_addr,
-			       vrm->addr, moved_len);
+		if (!p3s_copy) {
+			PAGETABLE_MOVE(pmc_revert, new_vma, vma,
+				       vrm->new_addr, vrm->addr, moved_len);
 
-		/*
-		 * On error, move entries back from new area to old,
-		 * which will succeed since page tables still there,
-		 * and then proceed to unmap new area instead of old.
-		 */
-		pmc_revert.need_rmap_locks = true;
-		move_page_tables(&pmc_revert);
+			/* Restore entries moved before the error. */
+			pmc_revert.need_rmap_locks = true;
+			move_page_tables(&pmc_revert);
+		}
 
 		vrm->vma = new_vma;
 		vrm->old_len = vrm->new_len;
@@ -1660,8 +2121,11 @@ static int check_prep_vma(struct vma_remap_struct *vrm)
 		return -EFAULT;
 
 	if ((vrm->flags & MREMAP_FIXED) &&
-	    !mm_mremap_fixed_keeps_slice(vma, addr, vrm->new_addr))
-		return -EINVAL;
+	    !mm_mremap_fixed_keeps_slice(vma, addr, vrm->new_addr) &&
+	    ((vma->vm_flags & (VM_MTE | VM_LOCKED | VM_PFNMAP |
+			      VM_MIXEDMAP | VM_DROPPABLE)) ||
+	     userfaultfd_armed(vma)))
+		return -EOPNOTSUPP;
 
 	/* If mseal()'d, mremap() is prohibited. */
 	if (vma_is_sealed(vma))
